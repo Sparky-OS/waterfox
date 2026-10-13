@@ -86,6 +86,106 @@ static intptr_t read_source(uint8_t* buffer, uintptr_t size, void* userdata) {
   return bytes_read;
 }
 
+// The Stereoscopic 3D Video Box (st3d) of the Spherical Video V2 RFC, in the
+// first visual sample entry of the track: moov/trak/mdia/minf/stbl/stsd/
+// <entry>/st3d, a FullBox holding stereo_mode (0 mono, 1 top and bottom, 2
+// left and right, 3 custom, 4 right and left). mp4parse does not read it.
+static Maybe<uint8_t> ReadStereoMode(ByteStream* aSource,
+                                     uint32_t aTrackIndex) {
+  const auto u32 = [](const uint8_t* aData) {
+    return uint32_t(aData[0]) << 24 | uint32_t(aData[1]) << 16 |
+           uint32_t(aData[2]) << 8 | uint32_t(aData[3]);
+  };
+  // The moov box, read whole.
+  int64_t length = 0;
+  if (!aSource->Length(&length) || length <= 0) {
+    return Nothing();
+  }
+  nsTArray<uint8_t> moov;
+  for (int64_t offset = 0; offset + 8 <= length;) {
+    uint8_t header[16];
+    size_t read = 0;
+    if (NS_FAILED(aSource->ReadAt(offset, header, 16, &read)) || read < 8) {
+      return Nothing();
+    }
+    uint64_t size = u32(header);
+    size_t headerSize = 8;
+    if (size == 1 && read == 16) {
+      size = uint64_t(u32(header + 8)) << 32 | u32(header + 12);
+      headerSize = 16;
+    } else if (size == 0) {
+      size = uint64_t(length - offset);
+    }
+    if (size < headerSize || offset + int64_t(size) > length) {
+      return Nothing();
+    }
+    if (!memcmp(header + 4, "moov", 4)) {
+      constexpr uint64_t kMaxMoov = 64 * 1024 * 1024;
+      if (size > kMaxMoov) {
+        return Nothing();
+      }
+      moov.SetLength(size);
+      if (NS_FAILED(aSource->ReadAt(offset, moov.Elements(), size, &read)) ||
+          read != size) {
+        return Nothing();
+      }
+      break;
+    }
+    offset += int64_t(size);
+  }
+  if (moov.IsEmpty()) {
+    return Nothing();
+  }
+
+  // The children of the box [aBegin, aEnd) whose own children start at
+  // aChildren; the n-th one of type aType, or nothing.
+  struct Box {
+    size_t mBegin = 0;
+    size_t mEnd = 0;
+  };
+  const auto child = [&](const Box& aParent, size_t aChildren,
+                         const char* aType, uint32_t aIndex) -> Maybe<Box> {
+    for (size_t at = aParent.mBegin + aChildren; at + 8 <= aParent.mEnd;) {
+      const size_t size = u32(&moov[at]);
+      if (size < 8 || at + size > aParent.mEnd) {
+        return Nothing();
+      }
+      if (!memcmp(&moov[at + 4], aType, 4) && aIndex-- == 0) {
+        return Some(Box{at, at + size});
+      }
+      at += size;
+    }
+    return Nothing();
+  };
+  Maybe<Box> box = Some(Box{0, moov.Length()});
+  box = child(*box, 8, "trak", aTrackIndex);
+  for (const char* type : {"mdia", "minf", "stbl"}) {
+    if (box) {
+      box = child(*box, 8, type, 0);
+    }
+  }
+  if (!box || box->mEnd - box->mBegin < 16) {
+    return Nothing();
+  }
+  // stsd is a FullBox with an entry count; the first entry is a
+  // VisualSampleEntry, whose own boxes follow 78 bytes of fields (ISO/IEC
+  // 14496-12, section 12.1.3).
+  Maybe<Box> stsd = child(*box, 8, "stsd", 0);
+  if (!stsd || stsd->mEnd - stsd->mBegin < 24) {
+    return Nothing();
+  }
+  const size_t entry = stsd->mBegin + 16;
+  const size_t entrySize = u32(&moov[entry]);
+  if (entrySize < 8 + 78 || entry + entrySize > stsd->mEnd) {
+    return Nothing();
+  }
+  Maybe<Box> st3d = child(Box{entry, entry + entrySize}, 8 + 78, "st3d", 0);
+  if (!st3d || st3d->mEnd - st3d->mBegin < 13) {
+    return Nothing();
+  }
+  return Some(moov[st3d->mBegin + 12]);
+}
+
 MP4Metadata::MP4Metadata(ByteStream* aSource)
     : mSource(aSource), mSourceAdaptor(aSource) {
   DDLINKCHILD("source", aSource);
@@ -418,6 +518,31 @@ MP4Metadata::ResultAndTrackInfo MP4Metadata::GetTrackInfo(
       }
       auto track = mozilla::MakeUnique<MP4VideoInfo>();
       MediaResult updateStatus = track->Update(&info, &video);
+      // The container's mark, without the size of a view.
+      if (Maybe<uint8_t> stereo = ReadStereoMode(mSource, trackIndex.value())) {
+        switch (*stereo) {
+          case 0:
+            track->mStereoMode = StereoMode::MONO;
+            track->mStereoSource = StereoSource::CONTAINER;
+            break;
+          case 1:
+            track->mStereoMode = StereoMode::TOP_BOTTOM;
+            track->mStereoSource = StereoSource::CONTAINER;
+            break;
+          case 2:
+            track->mStereoMode = StereoMode::LEFT_RIGHT;
+            track->mStereoSource = StereoSource::CONTAINER;
+            break;
+          case 4:
+            track->mStereoMode = StereoMode::RIGHT_LEFT;
+            track->mStereoSource = StereoSource::CONTAINER;
+            break;
+          default:
+            // 3, custom: the layout is described elsewhere (a projection's
+            // meshes), which is not read here.
+            break;
+        }
+      }
       if (NS_FAILED(updateStatus)) {
         MOZ_LOG_FMT(gMP4MetadataLog, LogLevel::Warning,
                     "Updating video track failed with {}",
