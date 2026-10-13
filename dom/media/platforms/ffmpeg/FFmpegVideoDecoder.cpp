@@ -2039,6 +2039,7 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateImage(
           mVideoFramePool->GetVideoFrameSurface(*yuvData, mCodecContext);
       if (surface) {
         surface->SetYUVColorSpace(GetFrameColorSpace());
+        surface->SetStereoMode(mInfo.mStereoMode);
         surface->SetColorRange(GetFrameColorRange());
         if (mInfo.mColorPrimaries) {
           surface->SetColorPrimaries(mInfo.mColorPrimaries.value());
@@ -2142,6 +2143,7 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateImageVAAPI(
   }
 
   surface->SetYUVColorSpace(GetFrameColorSpace());
+  surface->SetStereoMode(mInfo.mStereoMode);
   surface->SetColorRange(GetFrameColorRange());
   if (mInfo.mColorPrimaries) {
     surface->SetColorPrimaries(mInfo.mColorPrimaries.value());
@@ -2361,6 +2363,7 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateImageVulkan(
   }
 
   surface->SetYUVColorSpace(GetFrameColorSpace());
+  surface->SetStereoMode(mInfo.mStereoMode);
   surface->SetColorRange(GetFrameColorRange());
   if (mInfo.mColorPrimaries) {
     surface->SetColorPrimaries(mInfo.mColorPrimaries.value());
@@ -2417,6 +2420,7 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateImageV4L2(
                        RESULT_DETAIL("V4L2 dmabuf allocation error"));
   }
   surface->SetYUVColorSpace(GetFrameColorSpace());
+  surface->SetStereoMode(mInfo.mStereoMode);
   surface->SetColorRange(GetFrameColorRange());
 
   RefPtr<VideoData> vp = VideoData::CreateFromImage(
