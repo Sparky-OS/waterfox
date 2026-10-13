@@ -94,6 +94,17 @@ partial interface HTMLVideoElement {
   VideoPlaybackQuality getVideoPlaybackQuality();
 };
 
+// Sparky Stereo OS: the user's choice, from the browser's own menu, of how a
+// video that carries no stereo mark of its own (no frame packing SEI, no
+// container mark) holds the views of a stereo picture. "" (no choice: the
+// picture's shape decides, last), "mono", "side-by-side",
+// "side-by-side-right-first", "top-bottom" or "top-bottom-right-first".
+// Pages do not see it.
+partial interface HTMLVideoElement {
+  [Func="IsChromeOrUAWidget"]
+  attribute DOMString stereoChoice;
+};
+
 // https://w3c.github.io/picture-in-picture/#htmlvideoelement-extensions
 partial interface HTMLVideoElement {
   [Pref="dom.media-pip.enabled", NewObject, Throws, UseCounter] Promise<PictureInPictureWindow> requestPictureInPicture();

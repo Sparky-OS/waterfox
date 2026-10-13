@@ -106,6 +106,19 @@ document.addEventListener(
         case "context-media-loop":
           gContextMenu.mediaCommand("loop");
           break;
+        case "context-video-stereo-auto":
+          gContextMenu.mediaCommand("stereoChoice", "");
+          break;
+        case "context-video-stereo-mono":
+        case "context-video-stereo-side-by-side":
+        case "context-video-stereo-side-by-side-right-first":
+        case "context-video-stereo-top-bottom":
+        case "context-video-stereo-top-bottom-right-first":
+          gContextMenu.mediaCommand(
+            "stereoChoice",
+            event.target.id.slice("context-video-stereo-".length)
+          );
+          break;
         case "context-leave-dom-fullscreen":
           gContextMenu.leaveDOMFullScreen();
           break;

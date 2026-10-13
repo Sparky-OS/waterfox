@@ -96,6 +96,14 @@ class VideoFrameContainer {
 
   bool SupportsOnly8BitImage() const { return mSupportsOnly8BitImage; }
 
+  // The user's choice of how frames without a stereo mark of their own (no
+  // frame packing SEI, no container mark) hold their views; Nothing() leaves
+  // them unmarked. Any thread.
+  void SetStereoChoice(const Maybe<StereoMode>& aChoice) {
+    MutexAutoLock lock(mMutex);
+    mStereoChoice = aChoice;
+  }
+
  protected:
   void SetCurrentFramesLocked(
       const gfx::IntSize& aIntrinsicSize,
@@ -130,6 +138,7 @@ class VideoFrameContainer {
   // specifies that the Image should be stretched to have the correct aspect
   // ratio.
   Maybe<gfx::IntSize> mIntrinsicSize MOZ_GUARDED_BY(mMutex);
+  Maybe<StereoMode> mStereoChoice MOZ_GUARDED_BY(mMutex);
   // We maintain our own mFrameID which is auto-incremented at every
   // SetCurrentFrame() or NewFrameID() call.
   ImageContainer::FrameID mFrameID;

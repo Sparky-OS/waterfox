@@ -108,6 +108,9 @@ export class ContextMenuChild extends JSWindowActorChild {
               case "playbackRate":
                 media.playbackRate = message.data.data;
                 break;
+              case "stereoChoice":
+                media.stereoChoice = message.data.data;
+                break;
               case "hidecontrols":
                 media.removeAttribute("controls");
                 break;
@@ -789,6 +792,7 @@ export class ContextMenuChild extends JSWindowActorChild {
         Object.assign(cleanTarget, {
           readyState: context.target.readyState,
           HAVE_CURRENT_DATA: context.target.HAVE_CURRENT_DATA,
+          stereoChoice: context.target.stereoChoice,
         });
       }
     }

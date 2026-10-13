@@ -38,6 +38,9 @@ class GPUVideoTextureData : public TextureData {
 
   void OnSetCurrent();
 
+  // The user's choice of stereo mode, sent with the descriptor.
+  void SetStereoChoice(const Maybe<StereoMode>& aChoice);
+
   GPUVideoTextureData* AsGPUVideoTextureData() override { return this; }
 
  protected:

@@ -18,6 +18,10 @@ GPUVideoTextureData::GPUVideoTextureData(IGPUVideoSurfaceManager* aManager,
 
 GPUVideoTextureData::~GPUVideoTextureData() = default;
 
+void GPUVideoTextureData::SetStereoChoice(const Maybe<StereoMode>& aChoice) {
+  mSD.get_SurfaceDescriptorRemoteDecoder().stereoChoice() = aChoice;
+}
+
 bool GPUVideoTextureData::Serialize(SurfaceDescriptor& aOutDescriptor) {
   aOutDescriptor = mSD;
   return true;

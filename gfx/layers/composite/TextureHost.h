@@ -10,6 +10,7 @@
 #include "mozilla/Assertions.h"  // for MOZ_ASSERT, etc
 #include "mozilla/Attributes.h"  // for override
 #include "mozilla/RefPtr.h"      // for RefPtr, already_AddRefed, etc
+#include "ImageTypes.h"          // for StereoMode
 #include "mozilla/dom/ipc/IdType.h"
 #include "mozilla/gfx/Logging.h"
 #include "mozilla/gfx/Matrix.h"
@@ -610,6 +611,10 @@ class TextureHost : public AtomicRefCountedWithFinalize<TextureHost> {
   void SetReadLocked();
 
   TextureReadLock* GetReadLock() { return mReadLock; }
+
+  // The user's choice of stereo mode for a picture without a mark of its
+  // own (Sparky Stereo OS); only DMABuf pictures carry stereo modes.
+  virtual void ApplyStereoChoice(StereoMode aChoice) {}
 
   virtual BufferTextureHost* AsBufferTextureHost() { return nullptr; }
   virtual ShmemTextureHost* AsShmemTextureHost() { return nullptr; }

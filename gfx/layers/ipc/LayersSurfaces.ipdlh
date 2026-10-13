@@ -155,6 +155,9 @@ namespace layers {
   RemoteDecoderVideoSubDescriptor subdesc;
   MaybeVideoBridgeSource source;
   SurfaceDescriptorRemoteDecoderId id;
+  // The user's choice of the picture's stereo mode, for a frame without a
+  // mark of its own (Sparky Stereo OS).
+  StereoMode? stereoChoice;
 };
 
 [Comparable] union SurfaceDescriptorGPUVideo {

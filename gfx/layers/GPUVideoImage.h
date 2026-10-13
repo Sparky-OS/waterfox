@@ -89,6 +89,18 @@ class GPUVideoImage final : public Image {
 
   const SurfaceDescriptorGPUVideo& SD() const { return mSD; }
 
+  // The user's choice of stereo mode for a frame without a mark of its own
+  // (Sparky Stereo OS): the compositor applies it to the decoded picture.
+  void SetStereoChoice(const Maybe<StereoMode>& aChoice) {
+    mSD.get_SurfaceDescriptorRemoteDecoder().stereoChoice() = aChoice;
+    if (TextureData* data =
+            mTextureClient ? mTextureClient->GetInternalData() : nullptr) {
+      if (GPUVideoTextureData* video = data->AsGPUVideoTextureData()) {
+        video->SetStereoChoice(aChoice);
+      }
+    }
+  }
+
   void OnSetCurrent() override {
     if (NS_WARN_IF(!mManager)) {
       return;

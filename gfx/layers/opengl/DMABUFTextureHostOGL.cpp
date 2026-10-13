@@ -49,6 +49,17 @@ gfx::ColorRange DMABUFTextureHostOGL::GetColorRange() const {
                                  : gfx::ColorRange::LIMITED;
 }
 
+// The user's choice comes after the stream's and the container's marks.
+void DMABUFTextureHostOGL::ApplyStereoChoice(StereoMode aChoice) {
+  if (!mSurface) {
+    return;
+  }
+  const StereoSource source = mSurface->GetStereoSource();
+  if (source == StereoSource::NONE || source == StereoSource::USER) {
+    mSurface->SetStereoMode(aChoice, StereoSource::USER);
+  }
+}
+
 gfx::TransferFunction DMABUFTextureHostOGL::GetTransferFunction() const {
   if (!mSurface) {
     return gfx::TransferFunction::BT709;

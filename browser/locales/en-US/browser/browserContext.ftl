@@ -241,6 +241,32 @@ main-context-menu-media-loop =
     .label = Loop
     .accesskey = L
 
+## How a video that carries no 3D mark of its own holds the two views of a
+## stereo 3D picture (Sparky Stereo OS). A mark in the video itself always
+## comes first.
+
+main-context-menu-video-stereo =
+    .label = 3D Video
+    .accesskey = 3
+
+main-context-menu-video-stereo-auto =
+    .label = Automatic
+
+main-context-menu-video-stereo-mono =
+    .label = Not 3D
+
+main-context-menu-video-stereo-side-by-side =
+    .label = Side by Side
+
+main-context-menu-video-stereo-side-by-side-right-first =
+    .label = Side by Side, Right Eye First
+
+main-context-menu-video-stereo-top-bottom =
+    .label = Top and Bottom
+
+main-context-menu-video-stereo-top-bottom-right-first =
+    .label = Top and Bottom, Right Eye First
+
 ## The access keys for "Show Controls" and "Hide Controls" are the same
 ## because the two context-menu items are mutually exclusive.
 

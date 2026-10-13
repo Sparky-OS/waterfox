@@ -10,6 +10,11 @@
 #  include "GLImages.h"  // for SurfaceTextureImage
 #endif
 #include "MediaDecoderOwner.h"
+#include "GPUVideoImage.h"
+#ifdef MOZ_WIDGET_GTK
+#  include "mozilla/layers/DMABUFSurfaceImage.h"
+#  include "mozilla/widget/DMABufSurface.h"
+#endif
 #include "mozilla/AbstractThread.h"
 #include "mozilla/gfx/BuildConstants.h"
 #include "mozilla/gfx/gfxVars.h"
@@ -137,6 +142,33 @@ void VideoFrameContainer::SetCurrentFramesLocked(
           mMainThreadState.mNewIntrinsicSize = size;
         }));
   }
+
+#ifdef MOZ_WIDGET_GTK
+  // The user's choice comes after the stream's and the container's marks and
+  // before the picture's shape, which the compositor side looks at last. A
+  // frame decoded in another process takes it to the compositor, which knows
+  // the frame's marks.
+  for (const auto& image : aImages) {
+    if (auto* gpuImage = image.mImage->AsGPUVideoImage()) {
+      gpuImage->SetStereoChoice(mStereoChoice);
+      continue;
+    }
+    auto* dmabufImage = image.mImage->AsDMABUFSurfaceImage();
+    DMABufSurface* surface = dmabufImage ? dmabufImage->GetSurface() : nullptr;
+    if (!surface) {
+      continue;
+    }
+    const StereoSource source = surface->GetStereoSource();
+    if (source != StereoSource::NONE && source != StereoSource::USER) {
+      continue;
+    }
+    if (mStereoChoice) {
+      surface->SetStereoMode(*mStereoChoice, StereoSource::USER);
+    } else if (source == StereoSource::USER) {
+      surface->SetStereoMode(StereoMode::MONO, StereoSource::NONE);
+    }
+  }
+#endif
 
   gfx::IntSize oldFrameSize = mImageContainer->GetCurrentSize();
 

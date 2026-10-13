@@ -423,6 +423,44 @@ double HTMLVideoElement::MozFrameDelay() {
   return container ? std::max(0.0, container->GetFrameDelay()) : 0.0;
 }
 
+namespace {
+
+struct StereoChoiceName {
+  StereoMode mMode;
+  const char* mName;
+};
+
+constexpr StereoChoiceName kStereoChoices[] = {
+    {StereoMode::MONO, "mono"},
+    {StereoMode::LEFT_RIGHT, "side-by-side"},
+    {StereoMode::RIGHT_LEFT, "side-by-side-right-first"},
+    {StereoMode::TOP_BOTTOM, "top-bottom"},
+    {StereoMode::BOTTOM_TOP, "top-bottom-right-first"},
+};
+
+}  // namespace
+
+void HTMLVideoElement::GetStereoChoice(nsAString& aChoice) const {
+  aChoice.Truncate();
+  if (const auto& choice = StereoChoice()) {
+    for (const auto& entry : kStereoChoices) {
+      if (entry.mMode == *choice) {
+        aChoice.AssignASCII(entry.mName);
+      }
+    }
+  }
+}
+
+void HTMLVideoElement::SetStereoChoice(const nsAString& aChoice) {
+  Maybe<StereoMode> choice;
+  for (const auto& entry : kStereoChoices) {
+    if (aChoice.EqualsASCII(entry.mName)) {
+      choice = Some(entry.mMode);
+    }
+  }
+  HTMLMediaElement::SetStereoChoice(choice);
+}
+
 bool HTMLVideoElement::MozHasAudio() const {
   MOZ_ASSERT(NS_IsMainThread(), "Should be on main thread.");
   return HasAudio();

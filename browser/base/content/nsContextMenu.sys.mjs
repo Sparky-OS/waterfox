@@ -1081,6 +1081,12 @@ export class nsContextMenu {
       onMedia && this.target.duration != Number.POSITIVE_INFINITY
     );
     this.showItem("context-media-loop", onMedia);
+    // The user's choice for a video without a stereo mark of its own
+    // (Sparky Stereo OS).
+    this.showItem(
+      "context-video-stereo",
+      this.onVideo && this.target.stereoChoice !== undefined
+    );
     this.showItem(
       "context-media-showcontrols",
       onMedia && !this.target.controls
@@ -1134,6 +1140,23 @@ export class nsContextMenu {
         this.target.playbackRate == 2.0
       );
       this.setItemAttr("context-media-loop", "checked", this.target.loop);
+      if (this.onVideo && this.target.stereoChoice !== undefined) {
+        const stereoChoice = this.target.stereoChoice || "auto";
+        for (const choice of [
+          "auto",
+          "mono",
+          "side-by-side",
+          "side-by-side-right-first",
+          "top-bottom",
+          "top-bottom-right-first",
+        ]) {
+          this.setItemAttr(
+            "context-video-stereo-" + choice,
+            "checked",
+            choice == stereoChoice
+          );
+        }
+      }
       var hasError =
         this.target.error != null ||
         this.target.networkState == this.target.NETWORK_NO_SOURCE;

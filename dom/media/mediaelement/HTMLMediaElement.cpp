@@ -7032,8 +7032,16 @@ VideoFrameContainer* HTMLMediaElement::GetVideoFrameContainer() {
   mVideoFrameContainer = new VideoFrameContainer(
       this, MakeAndAddRef<ImageContainer>(ImageUsageType::VideoFrameContainer,
                                           ImageContainer::ASYNCHRONOUS));
+  mVideoFrameContainer->SetStereoChoice(mStereoChoice);
 
   return mVideoFrameContainer;
+}
+
+void HTMLMediaElement::SetStereoChoice(const Maybe<StereoMode>& aChoice) {
+  mStereoChoice = aChoice;
+  if (mVideoFrameContainer) {
+    mVideoFrameContainer->SetStereoChoice(aChoice);
+  }
 }
 
 void HTMLMediaElement::PrincipalChanged(MediaStreamTrack* aTrack) {

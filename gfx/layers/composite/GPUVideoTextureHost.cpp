@@ -59,6 +59,10 @@ TextureHost* GPUVideoTextureHost::EnsureWrappedTextureHost() {
     return nullptr;
   }
 
+  if (sd.stereoChoice()) {
+    mWrappedTextureHost->ApplyStereoChoice(*sd.stereoChoice());
+  }
+
   if (mExternalImageId.isSome()) {
     // External image id is allocated by mWrappedTextureHost.
     mWrappedTextureHost->EnsureRenderTexture(Nothing());

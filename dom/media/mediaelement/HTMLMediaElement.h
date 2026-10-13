@@ -8,6 +8,7 @@
 
 #include "AudioChannelService.h"
 #include "DecoderTraits.h"
+#include "ImageTypes.h"
 #include "MediaDecoderOwner.h"
 #include "MediaElementEventRunners.h"
 #include "MediaEventSource.h"
@@ -311,6 +312,11 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // ImageContainer containing the video data.
   VideoFrameContainer* GetVideoFrameContainer() final;
   layers::ImageContainer* GetImageContainer();
+
+  // The user's choice of how a video without a stereo mark of its own holds
+  // its views (Sparky Stereo OS); Nothing() for none.
+  void SetStereoChoice(const Maybe<StereoMode>& aChoice);
+  const Maybe<StereoMode>& StereoChoice() const { return mStereoChoice; }
 
   /**
    * Call this to reevaluate whether we should start/stop due to our owner
@@ -1487,6 +1493,8 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // A reference to the VideoFrameContainer which contains the current frame
   // of video to display.
   RefPtr<VideoFrameContainer> mVideoFrameContainer;
+
+  Maybe<StereoMode> mStereoChoice;
 
   // Holds a reference to the MediaStream that has been set in the src
   // attribute.

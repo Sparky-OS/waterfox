@@ -125,6 +125,9 @@ class HTMLVideoElement final : public HTMLMediaElement {
 
   already_AddRefed<VideoPlaybackQuality> GetVideoPlaybackQuality();
 
+  void GetStereoChoice(nsAString& aChoice) const;
+  void SetStereoChoice(const nsAString& aChoice);
+
   already_AddRefed<Promise> CloneElementVisually(HTMLVideoElement& aTarget,
                                                  ErrorResult& rv);
 
