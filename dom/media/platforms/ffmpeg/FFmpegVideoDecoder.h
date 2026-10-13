@@ -163,6 +163,11 @@ class FFmpegVideoDecoder<LIBAV_VER>
   }
   gfx::ColorDepth GetColorDepth(const AVPixelFormat& aFormat) const;
   gfx::YUVColorSpace GetFrameColorSpace() const;
+#if LIBAVCODEC_VERSION_MAJOR >= 57
+  const AVFrameSideData* FrameStereoSideData() const;
+#endif
+  StereoMode FrameStereoMode() const;
+  StereoSource FrameStereoSource() const;
   gfx::ColorSpace2 GetFrameColorPrimaries() const;
   gfx::ColorRange GetFrameColorRange() const;
   gfx::SurfaceFormat GetSurfaceFormat() const;

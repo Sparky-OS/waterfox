@@ -1895,6 +1895,73 @@ gfx::ColorDepth FFmpegVideoDecoder<LIBAV_VER>::GetColorDepth(
   }
 }
 
+// The stream's own mark, the frame packing SEI of H.264 (D.2.26) and H.265
+// (D.3.16) with its Table D-8 types, which libavcodec exports as
+// AV_FRAME_DATA_STEREO3D side data, comes first; then the container's.
+// Only the first two members of AVStereo3D, its type and its flags, are read:
+// they have kept their place since the struct appeared.
+#if LIBAVCODEC_VERSION_MAJOR >= 57
+const AVFrameSideData* FFmpegVideoDecoder<LIBAV_VER>::FrameStereoSideData()
+    const {
+  for (int i = 0; i < mFrame->nb_side_data; i++) {
+    const AVFrameSideData* sideData = mFrame->side_data[i];
+    if (sideData->type == AV_FRAME_DATA_STEREO3D &&
+        size_t(sideData->size) >= 2 * sizeof(int)) {
+      return sideData;
+    }
+  }
+  return nullptr;
+}
+#endif
+
+StereoMode FFmpegVideoDecoder<LIBAV_VER>::FrameStereoMode() const {
+#if LIBAVCODEC_VERSION_MAJOR >= 57
+  const AVFrameSideData* sideData = FrameStereoSideData();
+  if (!sideData) {
+    return mInfo.mStereoMode;
+  }
+  int type = 0;
+  int flags = 0;
+  memcpy(&type, sideData->data, sizeof(int));
+  memcpy(&flags, sideData->data + sizeof(int), sizeof(int));
+  // AV_STEREO3D_FLAG_INVERT: the right view comes first.
+  const bool rightFirst = flags & (1 << 0);
+  // enum AVStereo3DType
+  switch (type) {
+    case 1:  // AV_STEREO3D_SIDEBYSIDE (Table D-8, type 3)
+    case 5:  // AV_STEREO3D_SIDEBYSIDE_QUINCUNX (type 3, quincunx sampled)
+      return rightFirst ? StereoMode::RIGHT_LEFT : StereoMode::LEFT_RIGHT;
+    case 2:  // AV_STEREO3D_TOPBOTTOM (type 4)
+      return rightFirst ? StereoMode::BOTTOM_TOP : StereoMode::TOP_BOTTOM;
+    case 3:  // AV_STEREO3D_FRAMESEQUENCE (type 5, frame alternation)
+      return rightFirst ? StereoMode::LACED_RIGHT_FIRST
+                        : StereoMode::LACED_LEFT_FIRST;
+    case 4:  // AV_STEREO3D_CHECKERBOARD (type 0)
+      return rightFirst ? StereoMode::CHECKERBOARD_RIGHT_FIRST
+                        : StereoMode::CHECKERBOARD_LEFT_FIRST;
+    case 6:  // AV_STEREO3D_LINES (type 2, row interleaving)
+      return rightFirst ? StereoMode::ROWS_RIGHT_FIRST
+                        : StereoMode::ROWS_LEFT_FIRST;
+    case 7:  // AV_STEREO3D_COLUMNS (type 1, column interleaving)
+      return rightFirst ? StereoMode::COLUMNS_RIGHT_FIRST
+                        : StereoMode::COLUMNS_LEFT_FIRST;
+    default:  // AV_STEREO3D_2D (type 6), or a type not known here
+      return StereoMode::MONO;
+  }
+#else
+  return mInfo.mStereoMode;
+#endif
+}
+
+StereoSource FFmpegVideoDecoder<LIBAV_VER>::FrameStereoSource() const {
+#if LIBAVCODEC_VERSION_MAJOR >= 57
+  if (FrameStereoSideData()) {
+    return StereoSource::STREAM;
+  }
+#endif
+  return mInfo.mStereoSource;
+}
+
 gfx::YUVColorSpace FFmpegVideoDecoder<LIBAV_VER>::GetFrameColorSpace() const {
   AVColorSpace colorSpace = AVCOL_SPC_UNSPECIFIED;
 #if LIBAVCODEC_VERSION_MAJOR > 58
@@ -2039,7 +2106,7 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateImage(
           mVideoFramePool->GetVideoFrameSurface(*yuvData, mCodecContext);
       if (surface) {
         surface->SetYUVColorSpace(GetFrameColorSpace());
-        surface->SetStereoMode(mInfo.mStereoMode);
+        surface->SetStereoMode(FrameStereoMode(), FrameStereoSource());
         surface->SetColorRange(GetFrameColorRange());
         if (mInfo.mColorPrimaries) {
           surface->SetColorPrimaries(mInfo.mColorPrimaries.value());
@@ -2143,7 +2210,7 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateImageVAAPI(
   }
 
   surface->SetYUVColorSpace(GetFrameColorSpace());
-  surface->SetStereoMode(mInfo.mStereoMode);
+  surface->SetStereoMode(FrameStereoMode(), FrameStereoSource());
   surface->SetColorRange(GetFrameColorRange());
   if (mInfo.mColorPrimaries) {
     surface->SetColorPrimaries(mInfo.mColorPrimaries.value());
@@ -2363,7 +2430,7 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateImageVulkan(
   }
 
   surface->SetYUVColorSpace(GetFrameColorSpace());
-  surface->SetStereoMode(mInfo.mStereoMode);
+  surface->SetStereoMode(FrameStereoMode(), FrameStereoSource());
   surface->SetColorRange(GetFrameColorRange());
   if (mInfo.mColorPrimaries) {
     surface->SetColorPrimaries(mInfo.mColorPrimaries.value());
@@ -2420,7 +2487,7 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateImageV4L2(
                        RESULT_DETAIL("V4L2 dmabuf allocation error"));
   }
   surface->SetYUVColorSpace(GetFrameColorSpace());
-  surface->SetStereoMode(mInfo.mStereoMode);
+  surface->SetStereoMode(FrameStereoMode(), FrameStereoSource());
   surface->SetColorRange(GetFrameColorRange());
 
   RefPtr<VideoData> vp = VideoData::CreateFromImage(
