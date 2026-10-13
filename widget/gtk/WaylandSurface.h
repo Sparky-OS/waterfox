@@ -350,6 +350,12 @@ class WaylandSurface final {
                                     mozilla::gfx::YUVColorSpace aColorSpace,
                                     bool aFullRange,
                                     uint32_t aWPChromaLocation);
+  bool HasColorRepresentationLocked(
+      const WaylandSurfaceLock& aProofOfLock) const {
+    return !!mColorRepresentationSurface;
+  }
+  // Back to the defaults at the next commit, as an RGB buffer needs.
+  void ClearColorRepresentationLocked(const WaylandSurfaceLock& aProofOfLock);
 
   static void ImageDescriptionFailed(
       void* aData, struct wp_image_description_v1* aImageDescription,

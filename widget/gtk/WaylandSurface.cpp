@@ -1592,6 +1592,18 @@ static int YUVColorSpaceToWLColorCoeficients(
   }
 }
 
+void WaylandSurface::ClearColorRepresentationLocked(
+    const WaylandSurfaceLock& aProofOfLock) {
+  MOZ_DIAGNOSTIC_ASSERT(&aProofOfLock == mSurfaceLock);
+  if (!mColorRepresentationSurface) {
+    return;
+  }
+  LOGWAYLAND("WaylandSurface::ClearColorRepresentationLocked()");
+  MozClearPointer(mColorRepresentationSurface,
+                  wp_color_representation_surface_v1_destroy);
+  mSurfaceNeedsCommit = true;
+}
+
 void WaylandSurface::SetColorRepresentationLocked(
     const WaylandSurfaceLock& aProofOfLock,
     mozilla::gfx::YUVColorSpace aColorSpace, bool aFullRange,

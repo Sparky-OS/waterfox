@@ -23,6 +23,7 @@
 #include <dlfcn.h>
 #include <utility>
 #include <algorithm>
+#include <cmath>
 
 #include "gfxUtils.h"
 #include "nsGtkUtils.h"
@@ -151,50 +152,64 @@ void RemoveStereoDeclaration(RefPtr<WaylandSurface> aSurface) {
   }
 }
 
-// The stereo-layer picture policy (Sparky Stereo OS) through the small C
-// wrapper installed beside the browser: file marks first, then the user's
-// choice, then the picture's shape. Gecko's StereoMode is the file mark.
-using StereoPolicyFunc = int (*)(int aWidth, int aHeight, const char* aMark,
-                                 int* aLayout, int* aOrder, int* aSource);
+// The last safety net for a video without any mark, libstereo-layer's picture
+// policy (Sparky Stereo OS), through its C entry: the user's options for such
+// videos, then the picture's shape. Marks read by the browser itself (the
+// stream's frame packing SEI, the container's mark, the user's choice in the
+// browser) come before it and do not go through it.
+struct StereoLayer {
+  // Picture::Layout, Picture::EyeOrder and Picture::Source of stereo-layer.
+  static constexpr int kSideBySide = 1;
+  static constexpr int kTopAndBottom = 2;
+  static constexpr int kRightFirst = 1;
+  static constexpr int kSourceUser = 2;
+  static constexpr int kSourceShape = 5;
 
-StereoPolicyFunc GetStereoPolicy() {
-  static StereoPolicyFunc sStereoPolicy = []() -> StereoPolicyFunc {
-    Dl_info info;
-    if (!dladdr(reinterpret_cast<void*>(&GetStereoPolicy), &info) ||
-        !info.dli_fname) {
-      return nullptr;
-    }
-    nsAutoCString path(info.dli_fname);
-    int32_t slash = path.RFindChar('/');
-    if (slash < 0) {
-      return nullptr;
-    }
-    path.Truncate(slash + 1);
-    path.AppendLiteral("libstereo-policy.so");
-    void* handle = dlopen(path.get(), RTLD_NOW | RTLD_LOCAL);
+  int (*videoLayout)(int aWidth, int aHeight, const char* aMark, int* aLayout,
+                     int* aOrder, int* aSource);
+};
+
+const StereoLayer* GetStereoLayer() {
+  static const StereoLayer* sStereoLayer = []() -> const StereoLayer* {
+    void* handle = dlopen("libstereo-layer.so.1", RTLD_NOW | RTLD_LOCAL);
     if (!handle) {
-      LOGS("%s is missing: %s", path.get(), dlerror());
+      LOGS("libstereo-layer.so.1 is missing: %s", dlerror());
       return nullptr;
     }
-    return reinterpret_cast<StereoPolicyFunc>(
-        dlsym(handle, "sparky_stereo_policy_layout"));
+    static StereoLayer lib;
+    lib.videoLayout = reinterpret_cast<decltype(lib.videoLayout)>(
+        dlsym(handle, "stereo_layer_video_layout"));
+    if (!lib.videoLayout) {
+      LOGS("libstereo-layer.so.1 has no stereo_layer_video_layout");
+      return nullptr;
+    }
+    return &lib;
   }();
-  return sStereoPolicy;
+  return sStereoLayer;
 }
 
-const char* StereoMark(StereoMode aMode) {
-  switch (aMode) {
-    case StereoMode::LEFT_RIGHT:
-      return "sideBySideLeftFirst";
-    case StereoMode::RIGHT_LEFT:
-      return "sideBySideRightFirst";
-    case StereoMode::TOP_BOTTOM:
-      return "topBottomLeftFirst";
-    case StereoMode::BOTTOM_TOP:
-      return "topBottomRightFirst";
-    default:
-      return "";
+bool IsSideBySide(StereoMode aMode) {
+  return aMode == StereoMode::LEFT_RIGHT || aMode == StereoMode::RIGHT_LEFT;
+}
+
+bool IsTopAndBottom(StereoMode aMode) {
+  return aMode == StereoMode::TOP_BOTTOM || aMode == StereoMode::BOTTOM_TOP;
+}
+
+// A mark without the size of a view (the frame packing SEI, the MP4 st3d box,
+// Matroska's StereoMode without DisplayWidth and DisplayHeight, the user's
+// choice) names the arrangement, not whether the views are half or full size.
+// The picture's displayed shape tells: no ordinary picture is 2.5 times as
+// wide as high, or as narrow as 1.2, so such a side by side or top and bottom
+// picture holds two full size views (the rule of the edition's mpv).
+bool HoldsFullSizeViews(StereoMode aMode, const gfx::Size& aShape) {
+  if (aShape.IsEmpty()) {
+    return false;
   }
+  const float aspect = aShape.width / aShape.height;
+  return IsSideBySide(aMode)     ? aspect >= 2.5f
+         : IsTopAndBottom(aMode) ? aspect <= 1.2f
+                                 : false;
 }
 
 }  // namespace
@@ -454,8 +469,15 @@ already_AddRefed<NativeLayer> NativeLayerRootWayland::CreateLayer(
     SurfacePoolHandle* aSurfacePoolHandle) {
   LOG("NativeLayerRootWayland::CreateLayer() [%d x %d] nsWindow [%p] opaque %d",
       aSize.width, aSize.height, GetLoggingWidget(), aIsOpaque);
+  MOZ_ASSERT(wr::RenderThread::IsInRenderThread());
+  mSurfacePoolHandle = aSurfacePoolHandle->AsSurfacePoolHandleWayland();
   return MakeAndAddRef<NativeLayerWaylandRender>(
       this, aSize, aIsOpaque, aSurfacePoolHandle->AsSurfacePoolHandleWayland());
+}
+
+RefPtr<SurfacePoolHandleWayland> NativeLayerRootWayland::GetSurfacePoolHandle() {
+  MOZ_ASSERT(wr::RenderThread::IsInRenderThread());
+  return mSurfacePoolHandle;
 }
 
 already_AddRefed<NativeLayer>
@@ -1043,18 +1065,18 @@ void NativeLayerWayland::UpdateLayerPlacementLocked(
 
   MOZ_RELEASE_ASSERT(mTransform.Is2D());
   auto transform2D = mTransform.As2D();
+  transform2D.PostTranslate((float)mPosition.x, (float)mPosition.y);
 
-  Rect surfaceRectClipped = Rect(0, 0, (float)mSize.width, (float)mSize.height);
-  surfaceRectClipped = surfaceRectClipped.Intersect(Rect(mDisplayRect));
+  Rect bufferRect = Rect(0, 0, (float)mSize.width, (float)mSize.height);
+  bufferRect = bufferRect.Intersect(Rect(mDisplayRect));
 
   LOGVERBOSE(
       " size [%d x %d] clipped (display rect) size [%f, %f] -> [%f x %f]",
-      mSize.width, mSize.height, surfaceRectClipped.x, surfaceRectClipped.y,
-      surfaceRectClipped.width, surfaceRectClipped.height);
+      mSize.width, mSize.height, bufferRect.x, bufferRect.y, bufferRect.width,
+      bufferRect.height);
 
-  transform2D.PostTranslate((float)mPosition.x, (float)mPosition.y);
-  surfaceRectClipped = transform2D.TransformBounds(surfaceRectClipped);
-
+  const Rect place = transform2D.TransformBounds(bufferRect);
+  Rect surfaceRectClipped = place;
   if (mClipRect) {
     surfaceRectClipped = surfaceRectClipped.Intersect(Rect(mClipRect.value()));
   }
@@ -1071,6 +1093,95 @@ void NativeLayerWayland::UpdateLayerPlacementLocked(
     LOGVERBOSE("NativeLayerWayland become visible");
   }
 
+  // A stereo picture shows each eye its view over the view's place. The
+  // compositor splits the surface's source box in two halves, so the surface
+  // shows the buffer itself only when it holds two views side by side with
+  // the left eye first and each view is visible across its whole width (a
+  // vertical clip cuts both views alike). Otherwise the visible part of each
+  // view is copied side by side into a buffer of its own (RepackStereoLocked).
+  bool stereo = false;
+  bool repack = false;
+  DecideStereoLocked(place.Size());
+  if (mStereoPacking != StereoMode::MONO) {
+    Rect view = place;
+    if (mStereoFit == StereoFit::HalfWidth) {
+      view.x += view.width / 4;
+      view.width /= 2;
+    } else if (mStereoFit == StereoFit::HalfHeight) {
+      view.y += view.height / 4;
+      view.height /= 2;
+    }
+    Rect viewClipped = view;
+    if (mClipRect) {
+      viewClipped = viewClipped.Intersect(Rect(mClipRect.value()));
+    }
+    const bool flipX = transform2D._11 < 0.0;
+    const bool flipY = transform2D._22 < 0.0;
+    if (!viewClipped.IsEmpty() && !flipX) {
+      // The visible part of a view, as a fraction of the view, in the
+      // buffer's orientation.
+      float x0 = (viewClipped.x - view.x) / view.width;
+      float x1 = (viewClipped.XMost() - view.x) / view.width;
+      float y0 = (viewClipped.y - view.y) / view.height;
+      float y1 = (viewClipped.YMost() - view.y) / view.height;
+      if (flipY) {
+        std::swap(y0, y1);
+        y0 = 1.0f - y0;
+        y1 = 1.0f - y1;
+      }
+      const float pixel = 1.0f / std::max(view.width, 1.0f);
+      const bool wholeWidth = x0 <= pixel && x1 >= 1.0f - pixel;
+      if (mStereoPacking == StereoMode::LEFT_RIGHT && wholeWidth) {
+        stereo = true;
+      } else if (mStereoCanRepack && !flipY) {
+        Rect views[2];
+        switch (mStereoPacking) {
+          case StereoMode::LEFT_RIGHT:
+            views[0] = Rect(0.0f, 0.0f, 0.5f, 1.0f);
+            views[1] = Rect(0.5f, 0.0f, 0.5f, 1.0f);
+            break;
+          case StereoMode::RIGHT_LEFT:
+            views[0] = Rect(0.5f, 0.0f, 0.5f, 1.0f);
+            views[1] = Rect(0.0f, 0.0f, 0.5f, 1.0f);
+            break;
+          case StereoMode::TOP_BOTTOM:
+            views[0] = Rect(0.0f, 0.0f, 1.0f, 0.5f);
+            views[1] = Rect(0.0f, 0.5f, 1.0f, 0.5f);
+            break;
+          default:  // BOTTOM_TOP
+            views[0] = Rect(0.0f, 0.5f, 1.0f, 0.5f);
+            views[1] = Rect(0.0f, 0.0f, 1.0f, 0.5f);
+            break;
+        }
+        for (int eye = 0; eye < 2; eye++) {
+          const Rect& v = views[eye];
+          mStereoEyeRects[eye] =
+              Rect(v.x + x0 * v.width, v.y + y0 * v.height,
+                   (x1 - x0) * v.width, (y1 - y0) * v.height);
+        }
+        const int width = std::max(
+            1, int(std::lround(mStereoEyeRects[0].width * mSize.width)));
+        const int height = std::max(
+            1, int(std::lround(mStereoEyeRects[0].height * mSize.height)));
+        mStereoBufferSize = IntSize(width * 2, height);
+        stereo = repack = true;
+      }
+    }
+    if (stereo) {
+      surfaceRectClipped = viewClipped;
+    }
+  }
+  if (!DeclareStereoLocked(aProofOfLock, stereo)) {
+    stereo = repack = false;
+  }
+  if (mStereoRepack != repack) {
+    mStereoRepack = repack;
+    mState.mMutatedFrontBuffer = true;
+  }
+
+  LOGVERBOSE("  stereo packing %d fit %d declared %d repacked %d",
+             int(mStereoPacking), int(mStereoFit), stereo, repack);
+
   mSurface->SetTransformFlippedLocked(aProofOfLock, transform2D._11 < 0.0,
                                       transform2D._22 < 0.0);
 
@@ -1080,12 +1191,6 @@ void NativeLayerWayland::UpdateLayerPlacementLocked(
           ? gfx::RoundedToInt(surfaceRectClipped)
           : gfx::RoundedToInt(surfaceRectClipped / UnknownScaleFactor(mScale));
   auto rect = DesktopIntRect::FromUnknownRect(unscaledRect);
-  if (mStereoFitOneView) {
-    // Each eye sees its half of the buffer over the whole surface: one view
-    // keeps its shape, centred in the place of the two.
-    rect.x += rect.width / 4;
-    rect.width /= 2;
-  }
   mSurface->MoveLocked(aProofOfLock, rect.TopLeft());
   mSurface->SetViewPortDestLocked(aProofOfLock, rect.Size());
 
@@ -1093,10 +1198,22 @@ void NativeLayerWayland::UpdateLayerPlacementLocked(
              rect.x, rect.y, rect.width, rect.height,
              mSurface->GetCoordinatesScaleRounded());
 
+  if (repack) {
+    // The surface shows the whole repacked buffer.
+    mSurface->SetViewPortSourceRectLocked(aProofOfLock,
+                                          DesktopIntRect(-1, -1, -1, -1));
+    return;
+  }
+
   auto transform2DInversed = transform2D.Inverse();
   Rect bufferClip = transform2DInversed.TransformBounds(surfaceRectClipped);
   auto unscaledViewportRect =
       bufferClip.Intersect(Rect(0, 0, mSize.width, mSize.height));
+  if (stereo) {
+    // Both views, across their whole width.
+    unscaledViewportRect.x = 0;
+    unscaledViewportRect.width = mSize.width;
+  }
   auto viewportRect =
       useCoordinatesScale
           ? gfx::RoundedToInt(
@@ -1109,6 +1226,34 @@ void NativeLayerWayland::UpdateLayerPlacementLocked(
              viewportRect.height, mSurface->GetCoordinatesScaleRounded());
   mSurface->SetViewPortSourceRectLocked(
       aProofOfLock, DesktopIntRect::FromUnknownRect(viewportRect));
+}
+
+// Declares on the surface, or removes, that it holds two views full side by
+// side with the left eye first (libstereo-declare, KWin's
+// kde_stereo_content_v1). Returns whether the surface is declared as asked.
+bool NativeLayerWayland::DeclareStereoLocked(
+    const WaylandSurfaceLock& aProofOfLock, bool aDeclare) {
+  if (aDeclare == mStereoDeclared) {
+    return true;
+  }
+  const auto* lib = GetStereoDeclare();
+  if (!lib) {
+    return !aDeclare;
+  }
+  wl_surface* surface = mSurface->GetWlSurface();
+  const int ret =
+      aDeclare ? lib->declare(surface, StereoDeclare::kSideBySideFull,
+                              mStereoIsVideo ? StereoDeclare::kClassVideo
+                                             : StereoDeclare::kClassNone,
+                              mStereoIsVideo ? StereoDeclare::kVideoLegacy : 0)
+               : lib->remove(surface);
+  LOG("NativeLayerWayland::DeclareStereoLocked() %s: %d",
+      aDeclare ? "declared full side by side" : "removed", ret);
+  if (ret) {
+    return false;
+  }
+  mStereoDeclared = aDeclare;
+  return true;
 }
 
 void NativeLayerWayland::RenderLayer(double aScale) {
@@ -1616,7 +1761,17 @@ void NativeLayerWaylandExternal::AttachExternalImage(
 
   auto surface = mTextureHost->GetSurface();
   mIsHDR = surface->IsHDRSurface();
-  UpdateStereoContentLocked(lock, surface);
+
+  // The picture's stereo mark, decided on with the place's shape.
+  const bool isVideo = !!surface->GetAsDMABufSurfaceYUV();
+  if (surface->GetStereoMode() != mStereoMark ||
+      surface->GetStereoSource() != mStereoSource ||
+      isVideo != mStereoIsVideo) {
+    mStereoMark = surface->GetStereoMode();
+    mStereoSource = surface->GetStereoSource();
+    mStereoIsVideo = isVideo;
+    mState.mMutatedPlacement = true;
+  }
 
   LOG("NativeLayerWaylandExternal::AttachExternalImage() host [%p] "
       "DMABufSurface [%p] DMABuf UID %d [%d x %d] HDR %d Opaque %d recycle "
@@ -1630,71 +1785,141 @@ void NativeLayerWaylandExternal::AttachExternalImage(
                      : widget::WaylandBufferDMABUF::CreateExternal(surface);
 }
 
-// A picture that holds two views, full side by side with the left eye first,
-// is declared on the layer's own surface; KWin then shows each eye its half.
-// Other packings are not declared yet.
-void NativeLayerWaylandExternal::UpdateStereoContentLocked(
-    const WaylandSurfaceLock& aProofOfLock, DMABufSurface* aSurface) {
-  const bool isVideo = !!aSurface->GetAsDMABufSurfaceYUV();
-  StereoMode mode = aSurface->GetStereoMode();
-  bool fitOneView = false;
-  if (isVideo) {
-    if (mSize != mStereoPolicySize || mode != mStereoPolicyMark) {
-      mStereoPolicySize = mSize;
-      mStereoPolicyMark = mode;
-      mStereoPolicyMode = mode;
-      mStereoPolicyFitOneView = false;
-      int layout = 0, order = 0, source = 0;
-      if (auto policy = GetStereoPolicy();
-          policy && policy(mSize.width, mSize.height, StereoMark(mode), &layout,
-                           &order, &source) == 0) {
-        // Picture::Layout SideBySide = 1, TopAndBottom = 2;
-        // Picture::EyeOrder RightFirst = 1; Picture::Source Shape = 5.
-        mStereoPolicyMode =
-            layout == 1
-                ? (order ? StereoMode::RIGHT_LEFT : StereoMode::LEFT_RIGHT)
-            : layout == 2
-                ? (order ? StereoMode::BOTTOM_TOP : StereoMode::TOP_BOTTOM)
-                : StereoMode::MONO;
-        // Without a mark the picture's place has the shape of both views.
-        mStereoPolicyFitOneView = layout == 1 && source == 5;
+// The order in which a picture says it holds two views (Sparky Stereo OS,
+// the same everywhere): the stream's frame packing SEI, then the container's
+// mark, then the user's choice, all read by the browser; for a video without
+// any of them, libstereo-layer's picture policy, last. A WebXR session's
+// canvas holds two views full side by side with the left eye first.
+void NativeLayerWaylandExternal::DecideStereoLocked(const gfx::Size& aShape) {
+  StereoMode packing = mStereoMark;
+  StereoFit fit = StereoFit::None;
+  switch (mStereoSource) {
+    case StereoSource::XR:
+    case StereoSource::CONTAINER_SIZED:
+      // The place has the size of one view.
+      break;
+    case StereoSource::STREAM:
+    case StereoSource::CONTAINER:
+    case StereoSource::USER:
+      if (HoldsFullSizeViews(packing, aShape)) {
+        fit = IsSideBySide(packing) ? StereoFit::HalfWidth
+                                    : StereoFit::HalfHeight;
       }
-      LOG("NativeLayerWaylandExternal::UpdateStereoContentLocked() [%d x %d] "
-          "mark %d policy %d fit %d",
-          mSize.width, mSize.height, static_cast<int>(mode),
-          static_cast<int>(mStereoPolicyMode), mStereoPolicyFitOneView);
+      break;
+    default: {
+      packing = StereoMode::MONO;
+      if (!mStereoIsVideo) {
+        break;
+      }
+      const IntSize shape = gfx::RoundedToInt(aShape);
+      if (shape != mStereoLayerShape) {
+        mStereoLayerShape = shape;
+        mStereoLayerPacking = StereoMode::MONO;
+        mStereoLayerFit = StereoFit::None;
+        int layout = 0, order = 0, source = 0;
+        const auto* lib = GetStereoLayer();
+        if (lib && lib->videoLayout(shape.width, shape.height, "", &layout,
+                                    &order, &source) == 0) {
+          const bool rightFirst = order == StereoLayer::kRightFirst;
+          mStereoLayerPacking =
+              layout == StereoLayer::kSideBySide
+                  ? (rightFirst ? StereoMode::RIGHT_LEFT
+                                : StereoMode::LEFT_RIGHT)
+              : layout == StereoLayer::kTopAndBottom
+                  ? (rightFirst ? StereoMode::BOTTOM_TOP
+                                : StereoMode::TOP_BOTTOM)
+                  : StereoMode::MONO;
+          // The shape rule finds two full size views side by side; the
+          // user's options for unmarked videos name only the arrangement.
+          if (source == StereoLayer::kSourceShape ||
+              (source == StereoLayer::kSourceUser &&
+               HoldsFullSizeViews(mStereoLayerPacking, aShape))) {
+            mStereoLayerFit = IsSideBySide(mStereoLayerPacking)
+                                  ? StereoFit::HalfWidth
+                                  : StereoFit::HalfHeight;
+          }
+        }
+        LOG("NativeLayerWaylandExternal::DecideStereoLocked() [%d x %d] "
+            "stereo-layer layout %d order %d source %d",
+            shape.width, shape.height, layout, order, source);
+      }
+      packing = mStereoLayerPacking;
+      fit = mStereoLayerFit;
+      break;
     }
-    mode = mStereoPolicyMode;
-    fitOneView = mStereoPolicyFitOneView;
   }
+  // Other arrangements (checkerboard, rows, columns, anaglyph, frame
+  // sequence) are shown flat.
+  if (!IsSideBySide(packing) && !IsTopAndBottom(packing)) {
+    packing = StereoMode::MONO;
+    fit = StereoFit::None;
+  }
+  if (packing != mStereoPacking || fit != mStereoFit) {
+    LOG("NativeLayerWaylandExternal::DecideStereoLocked() mark %d source %d "
+        "-> packing %d fit %d",
+        int(mStereoMark), int(mStereoSource), int(packing), int(fit));
+  }
+  mStereoPacking = packing;
+  mStereoFit = fit;
+  // Copies are 8 bit RGB: HDR video is not repacked yet.
+  mStereoCanRepack = mStereoIsVideo && !mIsHDR && !mStereoRepackFailed;
+}
 
-  const bool declare = mode == StereoMode::LEFT_RIGHT;
-  if (!declare) {
-    fitOneView = false;
+// Copies the visible part of each view into its half of a buffer from the
+// compositor's pool, left eye first, converting the video to RGB.
+RefPtr<widget::WaylandBuffer> NativeLayerWaylandExternal::RepackStereoLocked(
+    const WaylandSurfaceLock& aProofOfLock) {
+  RefPtr<DMABufSurface> surface = GetSurface();
+  if (!surface) {
+    return nullptr;
   }
-  if (declare != mStereoDeclared) {
-    const auto* lib = GetStereoDeclare();
-    if (!lib) {
-      return;
+  if (!mStereoPoolHandle) {
+    mStereoPoolHandle = mRootLayer->GetSurfacePoolHandle();
+  }
+  if (!mStereoPoolHandle || !mStereoPoolHandle->gl()) {
+    return nullptr;
+  }
+  RefPtr<gl::GLContext> gl = mStereoPoolHandle->gl();
+  if (!gl->MakeCurrent()) {
+    return nullptr;
+  }
+  ReleaseStereoBufferLocked(aProofOfLock);
+  mStereoBuffer = mStereoPoolHandle->ObtainBufferFromPool(
+      aProofOfLock, mStereoBufferSize, mRootLayer->GetDRMFormat());
+  if (!mStereoBuffer) {
+    return nullptr;
+  }
+  Maybe<GLuint> fbo =
+      mStereoPoolHandle->GetFramebufferForBuffer(mStereoBuffer, false);
+  if (!fbo) {
+    return nullptr;
+  }
+  {
+    const gl::ScopedBindFramebuffer bind(gl, *fbo);
+    const int width = mStereoBufferSize.width / 2;
+    for (int eye = 0; eye < 2; eye++) {
+      // Both are top left: the copy keeps the picture upright.
+      if (!gl->BlitHelper()->Blit(
+              surface, IntRect(eye * width, 0, width, mStereoBufferSize.height),
+              gl::OriginPos::BottomLeft, mStereoBufferSize, Nothing(),
+              Some(mStereoEyeRects[eye]))) {
+        return nullptr;
+      }
     }
-    wl_surface* surface = mSurface->GetWlSurface();
-    const int ret =
-        declare ? lib->declare(surface, StereoDeclare::kSideBySideFull,
-                               isVideo ? StereoDeclare::kClassVideo
-                                       : StereoDeclare::kClassNone,
-                               isVideo ? StereoDeclare::kVideoLegacy : 0)
-                : lib->remove(surface);
-    LOG("NativeLayerWaylandExternal::UpdateStereoContentLocked() %s: %d",
-        declare ? "declared full side by side" : "removed", ret);
-    if (ret) {
-      return;
-    }
-    mStereoDeclared = declare;
   }
-  if (fitOneView != mStereoFitOneView) {
-    mStereoFitOneView = fitOneView;
-    mState.mMutatedPlacement = true;
+  if (auto* buffer = mStereoBuffer->AsWaylandBufferDMABUF()) {
+    buffer->GetSurface()->FenceSet();
+    buffer->GetSurface()->FenceWait();
   }
+  return mStereoBuffer;
+}
+
+void NativeLayerWaylandExternal::ReleaseStereoBufferLocked(
+    const WaylandSurfaceLock& aProofOfLock) {
+  if (mStereoBuffer && mStereoPoolHandle) {
+    mStereoPoolHandle->ReturnBufferToPool(aProofOfLock, mStereoBuffer);
+  }
+  mStereoBuffer = nullptr;
 }
 
 void NativeLayerWaylandExternal::DiscardBackbuffersLocked(
@@ -1705,6 +1930,7 @@ void NativeLayerWaylandExternal::DiscardBackbuffersLocked(
   // so we can release reference here.
   mTextureHost = nullptr;
   mFrontBuffer = nullptr;
+  ReleaseStereoBufferLocked(aProofOfLock);
 }
 
 RefPtr<DrawTarget> NativeLayerWaylandExternal::NextSurfaceAsDrawTarget(
@@ -1732,7 +1958,32 @@ bool NativeLayerWaylandExternal::CommitFrontBufferToScreenLocked(
     const WaylandSurfaceLock& aProofOfLock) {
   LOG("NativeLayerWaylandExternal::CommitFrontBufferToScreenLocked()");
   mSurface->InvalidateLocked(aProofOfLock);
-  mSurface->AttachLocked(aProofOfLock, mFrontBuffer);
+  RefPtr<widget::WaylandBuffer> buffer = mFrontBuffer;
+  if (mStereoRepack) {
+    buffer = RepackStereoLocked(aProofOfLock);
+    if (!buffer) {
+      // Shown flat from the next frame on.
+      gfxCriticalNoteOnce << "NativeLayerWaylandExternal: stereo copy failed";
+      mStereoRepackFailed = true;
+      mState.mMutatedPlacement = true;
+      buffer = mFrontBuffer;
+    }
+  } else {
+    ReleaseStereoBufferLocked(aProofOfLock);
+  }
+  // The copy is RGB: the video's YCbCr coefficients and range do not apply
+  // to it (wp_color_representation_v1).
+  RefPtr<DMABufSurface> surface = GetSurface();
+  auto* surfaceYUV = surface ? surface->GetAsDMABufSurfaceYUV() : nullptr;
+  const bool rgb = buffer != mFrontBuffer || !surfaceYUV;
+  if (rgb) {
+    mSurface->ClearColorRepresentationLocked(aProofOfLock);
+  } else if (!mSurface->HasColorRepresentationLocked(aProofOfLock)) {
+    mSurface->SetColorRepresentationLocked(
+        aProofOfLock, surfaceYUV->GetYUVColorSpace(),
+        surfaceYUV->IsFullRange(), surfaceYUV->GetWPChromaLocation());
+  }
+  mSurface->AttachLocked(aProofOfLock, buffer);
   return true;
 }
 

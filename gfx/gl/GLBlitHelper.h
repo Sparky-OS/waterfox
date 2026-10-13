@@ -268,9 +268,12 @@ class GLBlitHelper final {
                  const gfx::IntSize& fbSize = gfx::IntSize()) const;
 #endif
 #ifdef MOZ_WIDGET_GTK
+  // sourceRect: the part of the surface to draw into destRect, normalized,
+  // with the surface's first row at 0; the whole surface by default.
   bool Blit(DMABufSurface* surface, const gfx::IntRect& destRect,
             OriginPos destOrigin, const gfx::IntSize& fbSize = gfx::IntSize(),
-            Maybe<gfxAlphaType> convertAlpha = {}) const;
+            Maybe<gfxAlphaType> convertAlpha = {},
+            Maybe<gfx::Rect> sourceRect = {}) const;
   bool BlitImage(layers::DMABUFSurfaceImage* srcImage,
                  const gfx::IntRect& destRect, OriginPos destOrigin,
                  const gfx::IntSize& fbSize = gfx::IntSize()) const;

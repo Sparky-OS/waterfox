@@ -1623,7 +1623,8 @@ bool GLBlitHelper::BlitImage(layers::GPUVideoImage* const srcImage,
 #ifdef MOZ_WIDGET_GTK
 bool GLBlitHelper::Blit(DMABufSurface* surface, const gfx::IntRect& destRect,
                         OriginPos destOrigin, const gfx::IntSize& fbSize,
-                        Maybe<gfxAlphaType> convertAlpha) const {
+                        Maybe<gfxAlphaType> convertAlpha,
+                        Maybe<gfx::Rect> sourceRect) const {
   const auto& srcOrigin = OriginPos::BottomLeft;
 
   DrawBlitProg::BaseArgs baseArgs;
@@ -1718,6 +1719,14 @@ bool GLBlitHelper::Blit(DMABufSurface* surface, const gfx::IntRect& destRect,
   baseArgs.texMatrix0 = SubRectMat3(0, 0, 1, 1);
   baseArgs.texSize = gfx::IntSize(surface->GetWidth(), surface->GetHeight());
   yuvArgs.texMatrix1 = SubRectMat3(0, 0, 1, 1);
+  if (sourceRect) {
+    // The part is scaled to destRect, not clipped to its size.
+    baseArgs.texMatrix0 = SubRectMat3(sourceRect->X(), sourceRect->Y(),
+                                      sourceRect->Width(),
+                                      sourceRect->Height());
+    baseArgs.texSize = gfx::IntSize();
+    yuvArgs.texMatrix1 = baseArgs.texMatrix0;
+  }
 
   const auto& prog =
       GetDrawBlitProg({kFragHeader_Tex2D,

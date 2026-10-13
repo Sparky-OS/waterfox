@@ -120,6 +120,10 @@ class NativeLayerRootWayland final : public NativeLayerRoot {
 
   void SetGLContext(gl::GLContext* aGL) { mGL = aGL; }
 
+  // The compositor's surface pool, for buffers that external layers draw
+  // themselves (stereo repacking).
+  RefPtr<SurfacePoolHandleWayland> GetSurfacePoolHandle();
+
  private:
   ~NativeLayerRootWayland();
 
@@ -141,6 +145,8 @@ class NativeLayerRootWayland final : public NativeLayerRoot {
 #endif
 
   RefPtr<gl::GLContext> mGL;
+
+  RefPtr<SurfacePoolHandleWayland> mSurfacePoolHandle;
 
   // WaylandSurface of nsWindow (our root window).
   // This WaylandSurface is owned by nsWindow so we don't map/unmap it
@@ -323,11 +329,38 @@ class NativeLayerWayland : public NativeLayer {
   LayerState mState{};
   bool mSurfaceIsFlipped = false;
   bool mIsHDR = false;
-  // The surface is declared to hold two views, full side by side with the
-  // left eye first.
+
+  // Stereo 3D (Sparky Stereo OS). The compositor takes two views full side by
+  // side with the left eye first, declared on the surface; each eye sees its
+  // half of the buffer over the surface's place.
+  enum class StereoFit : uint8_t {
+    // The place has the shape of one view.
+    None,
+    // The place has the shape of two full size views side by side, or on top
+    // of each other: one view is shown at its shape, centred in it.
+    HalfWidth,
+    HalfHeight,
+  };
+  // Decides mStereoPacking and mStereoFit for a place of the given shape.
+  virtual void DecideStereoLocked(const gfx::Size& aShape) {}
+  bool DeclareStereoLocked(const widget::WaylandSurfaceLock& aProofOfLock,
+                           bool aDeclare);
+  // The arrangement of the two views in the buffer: LEFT_RIGHT, RIGHT_LEFT,
+  // TOP_BOTTOM or BOTTOM_TOP, or MONO for a flat layer.
+  StereoMode mStereoPacking = StereoMode::MONO;
+  StereoFit mStereoFit = StereoFit::None;
+  // The buffer is a video frame, which can be copied into a buffer of two
+  // views full side by side with the left eye first.
+  bool mStereoIsVideo = false;
+  bool mStereoCanRepack = false;
+  // The surface is declared stereo.
   bool mStereoDeclared = false;
-  // The layer shows one view at its own shape in the place of the two.
-  bool mStereoFitOneView = false;
+  // The surface shows mStereoBuffer, the visible part of each view copied
+  // side by side, instead of the layer's buffer.
+  bool mStereoRepack = false;
+  // The part of the buffer each eye sees, normalized, top left origin.
+  gfx::Rect mStereoEyeRects[2];
+  gfx::IntSize mStereoBufferSize;
 
   enum class MainThreadUpdate {
     None,
@@ -404,14 +437,24 @@ class NativeLayerWaylandExternal final : public NativeLayerWayland {
  private:
   ~NativeLayerWaylandExternal() override;
 
-  void UpdateStereoContentLocked(const widget::WaylandSurfaceLock& aProofOfLock,
-                                 DMABufSurface* aSurface);
+  void DecideStereoLocked(const gfx::Size& aShape) override;
+  RefPtr<widget::WaylandBuffer> RepackStereoLocked(
+      const widget::WaylandSurfaceLock& aProofOfLock);
+  void ReleaseStereoBufferLocked(
+      const widget::WaylandSurfaceLock& aProofOfLock);
 
-  // Last picture the stereo picture policy decided on, and its decision.
-  gfx::IntSize mStereoPolicySize;
-  StereoMode mStereoPolicyMark = StereoMode::MONO;
-  StereoMode mStereoPolicyMode = StereoMode::MONO;
-  bool mStereoPolicyFitOneView = false;
+  // The picture's stereo mark and where it comes from.
+  StereoMode mStereoMark = StereoMode::MONO;
+  StereoSource mStereoSource = StereoSource::NONE;
+  // The last answer of libstereo-layer for a picture without a mark.
+  gfx::IntSize mStereoLayerShape;
+  StereoMode mStereoLayerPacking = StereoMode::MONO;
+  StereoFit mStereoLayerFit = StereoFit::None;
+  // The buffer of two views full side by side, left eye first, the surface
+  // shows when the picture needs repacking, from the compositor's pool.
+  RefPtr<SurfacePoolHandleWayland> mStereoPoolHandle;
+  RefPtr<widget::WaylandBuffer> mStereoBuffer;
+  bool mStereoRepackFailed = false;
 
   void DiscardBackbuffersLocked(const widget::WaylandSurfaceLock& aProofOfLock,
                                 bool aForce) override;
