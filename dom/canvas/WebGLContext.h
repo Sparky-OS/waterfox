@@ -503,6 +503,8 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
  private:
   bool PresentInto(gl::SwapChain& swapChain);
   bool PresentIntoXR(gl::SwapChain& swapChain, const gl::MozFramebuffer& xrFb);
+  void PresentFlatXR(const gl::MozFramebuffer& xrFb,
+                     layers::TextureType consumerType);
 
  public:
   // Present swaps the front and back buffers of the swap chain for compositing.
@@ -1310,6 +1312,10 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
 
   gl::SwapChain mSwapChain;
   gl::SwapChain mWebVRSwapChain;
+  // The frames of an immersive session on the flat stereo display, shown
+  // by the session's canvas.
+  gl::SwapChain mFlatXRSwapChain;
+  bool mFlatXRPresenting = false;
   gl::SwapChain mSnapshotSwapChain;
 
   RefPtr<layers::RemoteTextureOwnerClient> mRemoteTextureOwner;

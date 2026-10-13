@@ -1337,12 +1337,24 @@ bool VRManager::SubmitFrame(const layers::SurfaceDescriptor& aTexture,
   if (mState != VRManagerState::Active) {
     return false;
   }
-#if defined(XP_WIN) || defined(XP_MACOSX) || defined(MOZ_WIDGET_ANDROID)
+#if defined(XP_WIN) || defined(XP_MACOSX) || defined(MOZ_WIDGET_ANDROID) || \
+    defined(MOZ_WIDGET_GTK)
   MOZ_ASSERT(mBrowserState.layerState[0].type ==
              VRLayerType::LayerType_Stereo_Immersive);
   VRLayer_Stereo_Immersive& layer =
       mBrowserState.layerState[0].layer_stereo_immersive;
 
+#  if defined(MOZ_WIDGET_GTK)
+  // Only the flat stereo display runs here: the session's canvas shows the
+  // frame itself (VRLayerChild), so the service gets no texture and only
+  // paces the frames.
+  if (mDisplayInfo.mDisplayState.eightCC != kVRFlatDisplayEightCC) {
+    return false;
+  }
+  layer.textureType = VRLayerTextureType::LayerTextureType_None;
+  layer.textureSize.width = 0;
+  layer.textureSize.height = 0;
+#  else
   switch (aTexture.type()) {
 #  if defined(XP_WIN)
     case SurfaceDescriptor::TSurfaceDescriptorD3D10: {
@@ -1396,6 +1408,7 @@ bool VRManager::SubmitFrame(const layers::SurfaceDescriptor& aTexture,
       return false;
     }
   }
+#  endif  // defined(MOZ_WIDGET_GTK)
 
   layer.frameId = aFrameId;
   layer.inputFrameId =
@@ -1452,7 +1465,7 @@ void VRManager::SubmitFrameInternal(const layers::SurfaceDescriptor& aTexture,
     mCurrentSubmitTask = nullptr;
   }
 
-#if defined(XP_WIN) || defined(XP_MACOSX)
+#if defined(XP_WIN) || defined(XP_MACOSX) || defined(MOZ_WIDGET_GTK)
 
   /**
    * Trigger the next VSync immediately after we are successfully

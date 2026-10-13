@@ -371,6 +371,12 @@ nsIFrame::SizeComputationResult nsHTMLCanvasFrame::ComputeSize(
 }
 
 nsRect nsHTMLCanvasFrame::GetDestRect(const nsRect& aFrameContentBox) const {
+  if (auto* canvas = HTMLCanvasElement::FromNodeOrNull(GetContent());
+      canvas && canvas->IsPresentingFlatXR()) {
+    // The views of an immersive session on the flat stereo display were made
+    // for this box: each fills it.
+    return aFrameContentBox;
+  }
   const CSSIntSize canvasSizeInPx = GetCanvasSize();
   IntrinsicSize intrinsicSize = IntrinsicSizeFromCanvasSize(canvasSizeInPx);
   AspectRatio intrinsicRatio = IntrinsicRatioFromCanvasSize(canvasSizeInPx);

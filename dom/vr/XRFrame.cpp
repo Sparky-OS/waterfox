@@ -76,6 +76,16 @@ already_AddRefed<XRViewerPose> XRFrame::GetViewerPose(
         sensorState.pose.orientation[0], sensorState.pose.orientation[1],
         sensorState.pose.orientation[2], sensorState.pose.orientation[3]);
 
+    // The flat stereo display: the viewer sits in front of the screen, turned
+    // and moved by the mouse and keys, and each eye looks through the screen.
+    const bool flat = mSession->IsFlat();
+    XRSession::WindowViews windowViews;
+    if (flat) {
+      viewerPosition = mSession->FlatPosition();
+      viewerOrientation = mSession->FlatOrientation();
+      windowViews = mSession->GetWindowViews();
+    }
+
     gfx::Matrix4x4Double headTransform;
     headTransform.SetRotationFromQuaternion(viewerOrientation);
     headTransform.PostTranslate(viewerPosition);
@@ -90,7 +100,8 @@ already_AddRefed<XRViewerPose> XRFrame::GetViewerPose(
     viewerPose = mSession->PooledViewerPose(headTransform, emulatedPosition);
 
     auto updateEye = [&](int32_t viewIndex, gfx::VRDisplayState::Eye eye) {
-      auto offset = displayInfo.GetEyeTranslation(eye);
+      auto offset = flat ? windowViews.mOffset[eye]
+                         : displayInfo.GetEyeTranslation(eye);
       auto eyeFromHead = gfx::Matrix4x4Double::Translation(
           gfx::PointDouble3D(offset.x, offset.y, offset.z));
       auto eyeTransform = eyeFromHead * headTransform;
@@ -99,7 +110,9 @@ already_AddRefed<XRViewerPose> XRFrame::GetViewerPose(
       gfx::PointDouble3D eyeScale;
       eyeTransform.Decompose(eyePosition, eyeRotation, eyeScale);
 
-      const gfx::VRFieldOfView fov = displayInfo.mDisplayState.eyeFOV[eye];
+      const gfx::VRFieldOfView fov = flat
+                                         ? windowViews.mFieldOfView[eye]
+                                         : displayInfo.mDisplayState.eyeFOV[eye];
       gfx::Matrix4x4 projection =
           fov.ConstructProjectionMatrix(depthNear, depthFar, true);
       viewerPose->GetEye(viewIndex)->Update(eyePosition, eyeRotation,
@@ -108,6 +121,23 @@ already_AddRefed<XRViewerPose> XRFrame::GetViewerPose(
 
     updateEye(0, gfx::VRDisplayState::Eye_Left);
     updateEye(1, gfx::VRDisplayState::Eye_Right);
+  } else if (mSession->IsInlineStereo()) {
+    // inline-stereo (WebXR section 3.4): a left and a right view, through the
+    // output canvas as a window from the viewer's seat (section 4.2: "MUST
+    // compute per-view projection matrices using the output canvas
+    // geometry"). The views share the canvas, left half and right half
+    // (XRWebGLLayer::GetViewport), and the canvas is declared to hold both.
+    const XRSession::WindowViews windowViews = mSession->GetWindowViews();
+    viewerPose =
+        mSession->PooledViewerPose(gfx::Matrix4x4Double(), emulatedPosition);
+    for (int32_t eye = 0; eye < gfx::VRDisplayState::NumEyes; eye++) {
+      const gfx::Point3D& offset = windowViews.mOffset[eye];
+      viewerPose->GetEye(eye)->Update(
+          gfx::PointDouble3D(offset.x, offset.y, offset.z),
+          gfx::QuaternionDouble(),
+          windowViews.mFieldOfView[eye].ConstructProjectionMatrix(
+              depthNear, depthFar, true));
+    }
   } else {
     auto inlineVerticalFov = renderState->GetInlineVerticalFieldOfView();
     const double fov =
@@ -180,22 +210,20 @@ void XRFrame::StartInputSourceEvent() { mActive = true; }
 
 void XRFrame::EndInputSourceEvent() { mActive = false; }
 
+// The inline view's projection (WebXR section 4.2: from the inline vertical
+// field of view and the output canvas's aspect), built as the immersive
+// views' are (VRFieldOfView::ConstructProjectionMatrix, right handed, -z
+// forward), so a point in front of the viewer is in front of the camera.
 gfx::Matrix4x4 XRFrame::ConstructInlineProjection(float aFov, float aAspect,
                                                   float aNear, float aFar) {
-  gfx::Matrix4x4 m;
-  const float depth = aFar - aNear;
-  const float invDepth = 1 / depth;
   if (aFov == 0) {
     aFov = 0.5f * M_PI;
   }
-
-  m._22 = 1.0f / tan(0.5f * aFov);
-  m._11 = -m._22 / aAspect;
-  m._33 = depth * invDepth;
-  m._43 = (-aFar * aNear) * invDepth;
-  m._34 = 1.0f;
-
-  return m;
+  const double vertical = 0.5 * aFov / kRadPerDegree;
+  const double horizontal =
+      atan(tan(0.5 * aFov) * aAspect) / kRadPerDegree;
+  return gfx::VRFieldOfView(vertical, horizontal, vertical, horizontal)
+      .ConstructProjectionMatrix(aNear, aFar, true);
 }
 
 }  // namespace mozilla::dom

@@ -349,6 +349,10 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
 
  public:
   ClientWebGLContext* GetWebGLContext();
+  // The canvas shows the frames of an immersive WebXR session on the flat
+  // stereo display (Sparky Stereo OS): each eye's view has the shape of the
+  // canvas's box.
+  bool IsPresentingFlatXR();
   webgpu::CanvasContext* GetWebGPUContext();
 
   bool IsOffscreen() const { return !!mOffscreenCanvas; }

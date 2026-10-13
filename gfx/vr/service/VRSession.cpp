@@ -152,6 +152,10 @@ bool VRSession::SubmitFrame(
 
 #endif
 
+  if (aLayer.textureType == VRLayerTextureType::LayerTextureType_None) {
+    return SubmitFrameWithoutTexture(aLayer);
+  }
+
   return false;
 }
 

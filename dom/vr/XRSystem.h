@@ -49,6 +49,8 @@ class RequestSessionRequest {
   bool NeedsHardware() const;
   XRSessionMode GetSessionMode() const;
   uint32_t GetPresentationGroup() const;
+  // The inline-stereo feature (WebXR section 3.4) was granted.
+  bool mInlineStereo = false;
 
  private:
   ~RequestSessionRequest() = default;

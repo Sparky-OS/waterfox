@@ -322,7 +322,14 @@ bool VRShMem::JoinShMem() {
 #endif
 
   if (HasExternalShmem()) {
-    // An ExternalShmem is already set. No need to override and rejoin
+    // An ExternalShmem is already set. No need to override and rejoin.
+    // Without the VR process the service joins it again each time it starts,
+    // after VRManager cleared it (OpenShmem): the browser's states count
+    // again from 1, so the last one seen is forgotten, or the next state
+    // (enumeration after runtime detection) would look already seen.
+#if !defined(MOZ_WIDGET_ANDROID)
+    mBrowserGeneration = 0;
+#endif
     return true;
   }
 

@@ -1545,6 +1545,11 @@ void HTMLCanvasElement::OnDeviceReset() {
   }
 }
 
+bool HTMLCanvasElement::IsPresentingFlatXR() {
+  ClientWebGLContext* webgl = GetWebGLContext();
+  return webgl && webgl->IsPresentingFlatXR();
+}
+
 ClientWebGLContext* HTMLCanvasElement::GetWebGLContext() {
   if (GetCurrentContextType() != CanvasContextType::WebGL1 &&
       GetCurrentContextType() != CanvasContextType::WebGL2) {

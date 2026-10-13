@@ -108,6 +108,20 @@ already_AddRefed<Promise> XRSystem::IsSessionSupported(XRSessionMode aMode,
     return promise.forget();
   }
 
+  // The flat stereo display is the screen itself: always there, nothing to
+  // detect. Pages that wait only briefly for the answer (and choose their
+  // renderer by it) get it at once.
+  if (aMode == XRSessionMode::Immersive_vr &&
+      StaticPrefs::dom_vr_flat_enabled()) {
+    if (FeaturePolicyBlocked()) {
+      promise->MaybeRejectWithSecurityError(
+          "The xr-spatial-tracking feature policy is required.");
+    } else {
+      promise->MaybeResolve(true);
+    }
+    return promise.forget();
+  }
+
   if (mIsSessionSupportedRequests.IsEmpty()) {
     gfx::VRManagerChild* vm = gfx::VRManagerChild::Get();
     vm->DetectRuntimes();
@@ -164,8 +178,18 @@ already_AddRefed<Promise> XRSystem::RequestSession(
     requiredReferenceSpaceTypes.AppendElement(XRReferenceSpaceType::Local);
   }
 
+  // inline-stereo (WebXR section 3.4): two views for an inline session, on a
+  // display that shows them in stereo, the flat stereo display.
+  const bool canInlineStereo =
+      aMode == XRSessionMode::Inline && StaticPrefs::dom_vr_flat_enabled();
+  bool inlineStereo = false;
+
   if (aOptions.mRequiredFeatures.WasPassed()) {
     for (const nsString& val : aOptions.mRequiredFeatures.Value()) {
+      if (val.EqualsLiteral("inline-stereo") && canInlineStereo) {
+        inlineStereo = true;
+        continue;
+      }
       Maybe<XRReferenceSpaceType> type =
           StringToEnum<XRReferenceSpaceType>(val);
       if (type.isNothing()) {
@@ -179,6 +203,10 @@ already_AddRefed<Promise> XRSystem::RequestSession(
 
   if (aOptions.mOptionalFeatures.WasPassed()) {
     for (const nsString& val : aOptions.mOptionalFeatures.Value()) {
+      if (val.EqualsLiteral("inline-stereo") && canInlineStereo) {
+        inlineStereo = true;
+        continue;
+      }
       Maybe<XRReferenceSpaceType> type =
           StringToEnum<XRReferenceSpaceType>(val);
       if (type.isSome()) {
@@ -202,6 +230,7 @@ already_AddRefed<Promise> XRSystem::RequestSession(
   RefPtr<RequestSessionRequest> request = new RequestSessionRequest(
       aMode, presentationGroup, promise, requiredReferenceSpaceTypes,
       optionalReferenceSpaceTypes);
+  request->mInlineStereo = inlineStereo;
   if (request->WantsHardware()) {
     QueueSessionRequestWithEnumeration(request);
   } else {
@@ -336,6 +365,7 @@ void XRSystem::ResolveSessionRequests(
         } else {
           session = XRSession::CreateInlineSession(GetOwnerWindow(), this,
                                                    enabledReferenceSpaceTypes);
+          session->SetInlineStereo(request->mInlineStereo);
           mInlineSessions.AppendElement(session);
         }
         request->mPromise->MaybeResolve(session);

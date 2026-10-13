@@ -5,11 +5,14 @@
 #ifndef mozilla_dom_XRSession_h_
 #define mozilla_dom_XRSession_h_
 
+#include <array>
+
 #include "gfxVR.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/dom/WebXRBinding.h"
 #include "nsRefreshObservers.h"
 
+class nsIDOMEventListener;
 class nsRefreshDriver;
 
 namespace mozilla {
@@ -19,6 +22,8 @@ class VRDisplayPresentation;
 }  // namespace gfx
 namespace dom {
 
+class Event;
+class HTMLCanvasElement;
 class XRSystem;
 enum class XREye : uint8_t;
 enum class XRReferenceSpaceType : uint8_t;
@@ -102,6 +107,26 @@ class XRSession final : public DOMEventTargetHelper, public nsARefreshObserver {
                                         bool aEmulatedPosition);
   bool CanReportPoses() const;
 
+  // The flat stereo display (gfx/vr/service/FlatSession) and inline-stereo:
+  // each eye looks through a window from the viewer's seat, the screen for an
+  // immersive session and the output canvas for an inline-stereo one. The
+  // frustums share that window, the screen plane, and each eye sits half the
+  // separation to its side (WebXR is in metres).
+  struct WindowViews {
+    std::array<gfx::VRFieldOfView, gfx::VRDisplayState::NumEyes> mFieldOfView;
+    std::array<gfx::Point3D, gfx::VRDisplayState::NumEyes> mOffset;
+    gfx::IntSize mEyeResolution;
+  };
+  bool IsFlat() const;
+  bool IsInlineStereo() const { return mInlineStereo; }
+  void SetInlineStereo(bool aInlineStereo) { mInlineStereo = aInlineStereo; }
+  WindowViews GetWindowViews() const;
+  // With no controllers, the viewer turns with the mouse and moves with the
+  // keys and the wheel; this is the viewer's pose in the session's space.
+  gfx::QuaternionDouble FlatOrientation() const;
+  const gfx::PointDouble3D& FlatPosition() const { return mFlatPosition; }
+  void HandleFlatInput(Event& aEvent);
+
   // nsARefreshObserver
   MOZ_CAN_RUN_SCRIPT
   void WillRefresh(mozilla::TimeStamp aTime) override;
@@ -113,6 +138,8 @@ class XRSession final : public DOMEventTargetHelper, public nsARefreshObserver {
   void Shutdown();
   void ExitPresentInternal();
   void ApplyPendingRenderState();
+  void StartFlatPresentation(HTMLCanvasElement* aCanvas);
+  void StopFlatPresentation();
   RefPtr<XRFrame> PooledFrame();
   RefPtr<XRSystem> mXRSystem;
   bool mShutdown;
@@ -148,6 +175,17 @@ class XRSession final : public DOMEventTargetHelper, public nsARefreshObserver {
   uint32_t mViewerPosePoolIndex;
   nsTArray<RefPtr<XRFrame>> mFramePool;
   uint32_t mFramePoolIndex;
+
+  bool mInlineStereo = false;
+  // The canvas an immersive session on the flat display shows full screen.
+  RefPtr<HTMLCanvasElement> mFlatCanvas;
+  bool mFlatFullscreen = false;
+  // The session's canvas was not in the page: the browser put it there.
+  bool mFlatCanvasInserted = false;
+  RefPtr<nsIDOMEventListener> mFlatInput;
+  double mFlatYaw = 0.0;
+  double mFlatPitch = 0.0;
+  gfx::PointDouble3D mFlatPosition;
 };
 
 }  // namespace dom

@@ -82,6 +82,12 @@ class VRSession {
   virtual bool SubmitFrame(const mozilla::gfx::VRLayer_Stereo_Immersive& aLayer,
                            const VRLayerTextureHandle& aTexture) = 0;
 #endif
+  // A display that shows the frame itself, outside the service (FlatSession):
+  // the layer carries no texture.
+  virtual bool SubmitFrameWithoutTexture(
+      const mozilla::gfx::VRLayer_Stereo_Immersive& aLayer) {
+    return false;
+  }
   void SetControllerSelectionAndSqueezeFrameId(
       VRControllerState& controllerState, uint64_t aFrameId);
 };

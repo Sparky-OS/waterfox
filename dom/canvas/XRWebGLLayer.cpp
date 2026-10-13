@@ -139,10 +139,14 @@ already_AddRefed<XRWebGLLayer> XRWebGLLayer::Constructor(
                  std::min((float)aXRWebGLLayerInitDict.mFramebufferScaleFactor,
                           maxScale));
 
-    options.width =
-        (int32_t)ceilf(2.0f * displayState.eyeResolution.width * scaleFactor);
-    options.height =
-        (int32_t)ceilf(displayState.eyeResolution.height * scaleFactor);
+    // On the flat stereo display each eye gets the screen's resolution.
+    gfx::IntSize eyeResolution(displayState.eyeResolution.width,
+                               displayState.eyeResolution.height);
+    if (aSession.IsFlat()) {
+      eyeResolution = aSession.GetWindowViews().mEyeResolution;
+    }
+    options.width = (int32_t)ceilf(2.0f * eyeResolution.width * scaleFactor);
+    options.height = (int32_t)ceilf(eyeResolution.height * scaleFactor);
     framebuffer = gl->CreateOpaqueFramebuffer(options);
 
     if (!framebuffer) {

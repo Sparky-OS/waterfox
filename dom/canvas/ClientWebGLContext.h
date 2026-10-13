@@ -762,6 +762,11 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
 
  private:
   bool mIsCanvasDirty = false;
+  bool mFlatXR = false;
+  // The size of the frames the canvas shows while mFlatXR: the session's
+  // framebuffer, both eyes side by side.
+  uvec2 mFlatXRSize = {};
+  bool mInlineStereo = false;
   uvec2 mRequestedSize = {};
 
  public:
@@ -1097,6 +1102,15 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
   void CopyToSwapChain(
       WebGLFramebufferJS*,
       const webgl::SwapChainOptions& options = webgl::SwapChainOptions());
+  // While an immersive session presents on the flat stereo display, the
+  // canvas shows the session's frames instead of its own drawing buffer.
+  void SetFlatXR(bool flatXR, uvec2 size = {});
+  // The size of the frames the canvas shows.
+  uvec2 PresentedSize();
+  bool IsPresentingFlatXR() const { return mFlatXR; }
+  // An inline-stereo session draws its left view into the left half of the
+  // canvas and its right view into the right half.
+  void SetInlineStereo(bool inlineStereo);
   void EndOfFrame();
   Maybe<layers::SurfaceDescriptor> GetFrontBuffer(
       WebGLFramebufferJS*, const bool webvr = false) override;

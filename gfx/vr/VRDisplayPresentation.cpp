@@ -53,7 +53,9 @@ void VRDisplayPresentation::UpdateXRWebGLLayer(dom::XRWebGLLayer* aLayer) {
   Rect rightBounds(0.5, 0.0, 0.5, 1.0);
 
   vrLayer->Initialize(canvasElement, leftBounds, rightBounds);
-  vrLayer->SetXRFramebuffer(aLayer->GetFramebuffer());
+  vrLayer->SetXRFramebuffer(
+      aLayer->GetFramebuffer(),
+      gfx::IntSize(aLayer->FramebufferWidth(), aLayer->FramebufferHeight()));
 }
 
 uint32_t VRDisplayPresentation::GetGroup() const { return mGroup; }

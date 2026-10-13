@@ -30,6 +30,7 @@
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/GeneratePlaceholderCanvasData.h"
 #include "mozilla/dom/HTMLCanvasElement.h"
+#include "nsIFrame.h"
 #include "mozilla/dom/ToJSValue.h"
 #include "mozilla/dom/TypedArray.h"
 #include "mozilla/dom/WebGLContextEvent.h"
@@ -524,19 +525,6 @@ webgl::SwapChainOptions ClientWebGLContext::PrepareAsyncSwapChainOptions(
   return options;
 }
 
-// The canvas's stereolayout attribute takes the names of WebXR Layers'
-// XRLayerLayout: "stereo-left-right" and "stereo-top-bottom" declare that the
-// canvas holds two views; anything else is one view.
-static StereoMode StereoModeFromLayout(const nsAString& layout) {
-  if (layout.EqualsLiteral("stereo-left-right")) {
-    return StereoMode::LEFT_RIGHT;
-  }
-  if (layout.EqualsLiteral("stereo-top-bottom")) {
-    return StereoMode::TOP_BOTTOM;
-  }
-  return StereoMode::MONO;
-}
-
 void ClientWebGLContext::Present(WebGLFramebufferJS* const xrFb,
                                  const layers::TextureType type,
                                  const bool webvr,
@@ -548,12 +536,43 @@ void ClientWebGLContext::Present(WebGLFramebufferJS* const xrFb,
   CancelAutoFlush();
   webgl::SwapChainOptions asyncOptions =
       PrepareAsyncSwapChainOptions(xrFb, webvr, options);
-  if (!xrFb && mCanvasElement) {
-    nsAutoString layout;
-    mCanvasElement->GetAttribute(u"stereolayout"_ns, layout);
-    asyncOptions.stereoMode = uint8_t(StereoModeFromLayout(layout));
+  if (!xrFb && mFlatXR) {
+    // The canvas shows the frames of an immersive session on the flat stereo
+    // display: both eyes side by side, the left eye first.
+    asyncOptions.flatXR = true;
+    asyncOptions.stereoMode = uint8_t(StereoMode::LEFT_RIGHT);
+  } else if (!xrFb && mInlineStereo) {
+    asyncOptions.stereoMode = uint8_t(StereoMode::LEFT_RIGHT);
   }
   Run<RPROC(Present)>(xrFb ? xrFb->mId : 0, type, webvr, asyncOptions);
+}
+
+void ClientWebGLContext::SetFlatXR(const bool flatXR, const uvec2 size) {
+  if (mFlatXR == flatXR && (!flatXR || mFlatXRSize == size)) return;
+  mFlatXR = flatXR;
+  mFlatXRSize = size;
+  // The canvas's frames change size: a new canvas renderer, which only a
+  // full paint of the canvas's frame makes.
+  mResetLayer = true;
+  if (mCanvasElement) {
+    if (nsIFrame* frame = mCanvasElement->GetPrimaryFrame()) {
+      frame->InvalidateFrame();
+    }
+  }
+  MarkCanvasDirty();
+}
+
+uvec2 ClientWebGLContext::PresentedSize() {
+  if (mFlatXR && mFlatXRSize.x && mFlatXRSize.y) {
+    return mFlatXRSize;
+  }
+  return DrawingBufferSize();
+}
+
+void ClientWebGLContext::SetInlineStereo(const bool inlineStereo) {
+  if (mInlineStereo == inlineStereo) return;
+  mInlineStereo = inlineStereo;
+  MarkCanvasDirty();
 }
 
 void ClientWebGLContext::CopyToSwapChain(
@@ -656,7 +675,7 @@ bool ClientWebGLContext::UpdateWebRenderCanvasData(
     return true;
   }
 
-  const auto& size = DrawingBufferSize();
+  const auto size = PresentedSize();
 
   if (!IsContextLost() && !renderer && mNotLost->mCanvasRenderer &&
       mNotLost->mCanvasRenderer->GetSize() == gfx::IntSize(size.x, size.y) &&
@@ -691,7 +710,7 @@ bool ClientWebGLContext::InitializeCanvasRenderer(
   data.mOriginPos = gl::OriginPos::BottomLeft;
 
   const auto& options = *mInitialOptions;
-  const auto& size = DrawingBufferSize();
+  const auto size = PresentedSize();
 
   if (IsContextLost()) return false;
 

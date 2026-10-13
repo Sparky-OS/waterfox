@@ -9,6 +9,9 @@
 #include "../VRShMem.h"
 #include "../gfxVRMutex.h"
 #include "PuppetSession.h"
+#if defined(MOZ_WIDGET_GTK)
+#  include "FlatSession.h"
+#endif
 #include "mozilla/BackgroundHangMonitor.h"
 #include "mozilla/StaticPrefs_dom.h"
 #include "nsThread.h"
@@ -186,6 +189,16 @@ void VRService::ServiceInitialize() {
       session = nullptr;
     }
   } else {
+#if defined(MOZ_WIDGET_GTK)
+    // The flat stereo display, when enabled, is the screen itself.
+    if (StaticPrefs::dom_vr_flat_enabled()) {
+      session = MakeUnique<FlatSession>();
+      if (!session->Initialize(mSystemState,
+                               mBrowserState.detectRuntimesOnly)) {
+        session = nullptr;
+      }
+    }
+#endif
     // We try Oculus first to ensure we use Oculus
     // devices trough the most native interface
     // when possible.

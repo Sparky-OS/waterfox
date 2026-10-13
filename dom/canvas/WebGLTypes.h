@@ -828,16 +828,18 @@ struct SwapChainOptions final {
   layers::RemoteTextureOwnerId remoteTextureOwnerId;
   bool bgra = false;
   bool forceAsyncPresent = false;
-  // A StereoMode: how the canvas holds the two views of a stereoscopic
-  // picture, as its element's stereolayout attribute declares.
+  // A StereoMode: how the presented picture holds the two views of a
+  // stereoscopic picture.
   uint8_t stereoMode = 0;
+  // The canvas presents the frames of an immersive session on the flat
+  // stereo display (gfx/vr/service/FlatSession).
+  bool flatXR = false;
   // Pad to sizeof(u64):
-  uint8_t padding1 = 0;
   uint32_t padding2 = 0;
 
   auto MutTiedFields() {
     return std::tie(remoteTextureId, remoteTextureOwnerId, bgra,
-                    forceAsyncPresent, stereoMode, padding1, padding2);
+                    forceAsyncPresent, stereoMode, flatXR, padding2);
   }
 };
 

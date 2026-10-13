@@ -38,7 +38,8 @@ class VRLayerChild final : public PVRLayerChild {
   void Initialize(dom::HTMLCanvasElement* aCanvasElement,
                   const gfx::Rect& aLeftEyeRect,
                   const gfx::Rect& aRightEyeRect);
-  void SetXRFramebuffer(WebGLFramebufferJS*);
+  void SetXRFramebuffer(WebGLFramebufferJS*,
+                        const gfx::IntSize& aSize = gfx::IntSize());
   void SubmitFrame(const VRDisplayInfo& aDisplayInfo);
 
  private:
@@ -50,6 +51,7 @@ class VRLayerChild final : public PVRLayerChild {
   gfx::Rect mLeftEyeRect;
   gfx::Rect mRightEyeRect;
   RefPtr<WebGLFramebufferJS> mFramebuffer;
+  gfx::IntSize mFramebufferSize;
 
   Maybe<layers::SurfaceDescriptor> mThisFrameTextureDesc;
   Maybe<layers::SurfaceDescriptor> mLastFrameTextureDesc;

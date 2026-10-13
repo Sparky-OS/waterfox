@@ -5714,6 +5714,26 @@
 # alive after the browser and content no longer are using the
 # hardware.  If a VR multitasking environment, this should be set
 # very low or set to 0.
+# The flat stereo display: the screen itself offered as an immersive WebXR
+# device. Each eye's view goes through the screen as a window, seen from the
+# viewer's seat (both distances in millimetres), and the session's canvas
+# shows both eyes side by side, declared to a compositor that shows each eye
+# its half (gfx/vr/service/FlatSession.cpp). It also offers inline-stereo.
+- name: dom.vr.flat.enabled
+  type: RelaxedAtomicBool
+  value: false
+  mirror: always
+
+- name: dom.vr.flat.viewer-distance-mm
+  type: RelaxedAtomicUint32
+  value: 700
+  mirror: always
+
+- name: dom.vr.flat.eye-separation-mm
+  type: RelaxedAtomicUint32
+  value: 64
+  mirror: always
+
 - name: dom.vr.inactive.timeout
   type: RelaxedAtomicInt32
   value: 5000

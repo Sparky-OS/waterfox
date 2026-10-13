@@ -38,6 +38,12 @@ class VRManagerPromise;
 // conservative value.
 static const int kVRMaxLatencyFrames = 100;
 
+// The flat stereo display (gfx/vr/service/FlatSession): the screen itself as
+// an immersive XR device, its frames shown by the session's canvas, both
+// eyes side by side, declared to the compositor.
+static constexpr uint64_t kVRFlatDisplayEightCC =
+    GFX_VR_EIGHTCC('F', 'l', 'a', 't', ' ', ' ', ' ', ' ');
+
 struct VRDisplayInfo {
   uint32_t mDisplayID;
   uint32_t mPresentingGroups;

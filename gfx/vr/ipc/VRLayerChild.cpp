@@ -4,6 +4,8 @@
 
 #include "VRLayerChild.h"
 
+#include <algorithm>
+
 #include "mozilla/dom/HTMLCanvasElement.h"
 #include "mozilla/layers/ImageBridgeChild.h"
 #include "mozilla/layers/LayersMessages.h"  // for TimedTexture
@@ -37,8 +39,10 @@ void VRLayerChild::Initialize(dom::HTMLCanvasElement* aCanvasElement,
   mCanvasElement = aCanvasElement;
 }
 
-void VRLayerChild::SetXRFramebuffer(WebGLFramebufferJS* fb) {
+void VRLayerChild::SetXRFramebuffer(WebGLFramebufferJS* fb,
+                                    const gfx::IntSize& aSize) {
   mFramebuffer = fb;
+  mFramebufferSize = aSize;
 }
 
 static constexpr bool kIsAndroid =
@@ -91,8 +95,27 @@ void VRLayerChild::SubmitFrame(const VRDisplayInfo& aDisplayInfo) {
       texType = layers::TextureType::AndroidNativeWindow;
     }
 
-    webgl->Present(mFramebuffer, texType, true);
-    mThisFrameTextureDesc = webgl->GetFrontBuffer(mFramebuffer, true);
+    // On the flat stereo display the session's canvas shows the frame:
+    // both eyes side by side, declared to the compositor. The frame goes to
+    // the compositor as the canvas's own frames do (DMABuf on Wayland).
+    const bool flat =
+        aDisplayInfo.mDisplayState.eightCC == kVRFlatDisplayEightCC;
+    if (flat) {
+      texType = webgl->GetTexTypeForSwapChain();
+    }
+    webgl::SwapChainOptions options;
+    options.flatXR = flat;
+    webgl->Present(mFramebuffer, texType, true, options);
+    if (flat) {
+      // The VR service takes no texture from the flat display: it only
+      // paces the frames.
+      mThisFrameTextureDesc = Some(layers::SurfaceDescriptor(null_t()));
+      webgl->SetFlatXR(true, {uint32_t(std::max(mFramebufferSize.width, 0)),
+                              uint32_t(std::max(mFramebufferSize.height, 0))});
+      webgl->MarkCanvasDirty();
+    } else {
+      mThisFrameTextureDesc = webgl->GetFrontBuffer(mFramebuffer, true);
+    }
   }
 
   mLastSubmittedFrameId = frameId;
@@ -110,6 +133,9 @@ void VRLayerChild::ClearSurfaces() {
   mThisFrameTextureDesc = Nothing();
   mLastFrameTextureDesc = Nothing();
   const auto& webgl = mCanvasElement->GetWebGLContext();
+  if (webgl) {
+    webgl->SetFlatXR(false);
+  }
   if (!mFramebuffer && webgl) {
     webgl->ClearVRSwapChain();
   }

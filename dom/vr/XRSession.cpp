@@ -24,10 +24,24 @@
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/XRInputSourceEvent.h"
 #include "mozilla/dom/XRSessionEvent.h"
+#include <algorithm>
+
+#include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/dom/DOMRect.h"
+#include "mozilla/dom/Element.h"
+#include "mozilla/dom/ElementBinding.h"
+#include "mozilla/dom/HTMLCanvasElement.h"
+#include "mozilla/dom/KeyboardEvent.h"
+#include "mozilla/dom/MouseEvent.h"
+#include "mozilla/dom/WheelEvent.h"
+#include "mozilla/widget/Screen.h"
+#include "mozilla/widget/ScreenManager.h"
 #include "nsGlobalWindowInner.h"
+#include "nsIDOMEventListener.h"
 #include "nsIObserverService.h"
 #include "nsISupportsPrimitives.h"
 #include "nsRefreshDriver.h"
+#include "ClientWebGLContext.h"
 
 /**
  * Maximum instances of XRFrame and XRViewerPose objects
@@ -36,6 +50,36 @@
 const uint32_t kMaxPoolSize = 16;
 
 namespace mozilla::dom {
+
+namespace {
+
+// The viewer's input on the flat stereo display, which has no controllers.
+class FlatInputListener final : public nsIDOMEventListener {
+ public:
+  NS_DECL_ISUPPORTS
+
+  explicit FlatInputListener(XRSession* aSession) : mSession(aSession) {}
+
+  NS_IMETHOD HandleEvent(Event* aEvent) override {
+    if (mSession) {
+      mSession->HandleFlatInput(*aEvent);
+    }
+    return NS_OK;
+  }
+
+  void Disconnect() { mSession = nullptr; }
+
+ private:
+  ~FlatInputListener() = default;
+  XRSession* mSession;
+};
+
+NS_IMPL_ISUPPORTS(FlatInputListener, nsIDOMEventListener)
+
+constexpr nsLiteralString kFlatInputEvents[] = {u"mousemove"_ns, u"wheel"_ns,
+                                               u"keydown"_ns};
+
+}  // namespace
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(XRSession)
 
@@ -47,6 +91,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(XRSession,
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mInputSources)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mViewerPosePool)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFramePool)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFlatCanvas)
 
   for (uint32_t i = 0; i < tmp->mFrameRequestCallbacks.Length(); ++i) {
     NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mFrameRequestCallbacks[i]");
@@ -62,6 +107,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(XRSession, DOMEventTargetHelper)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mInputSources)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mViewerPosePool)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mFramePool)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mFlatCanvas)
 
   tmp->mFrameRequestCallbacks.Clear();
 
@@ -285,12 +331,178 @@ void XRSession::ApplyPendingRenderState() {
     if (!IsImmersive() && baseLayer->mCompositionDisabled) {
       mActiveRenderState->SetCompositionDisabled(true);
       mActiveRenderState->SetOutputCanvas(baseLayer->GetCanvas());
+      // An inline-stereo session draws both views into the canvas, left and
+      // right halves; the canvas is declared to hold them.
+      if (mInlineStereo) {
+        if (const auto& webgl = baseLayer->GetCanvas()->GetWebGLContext()) {
+          webgl->SetInlineStereo(true);
+        }
+      }
     } else {
       mActiveRenderState->SetCompositionDisabled(false);
       mActiveRenderState->SetOutputCanvas(nullptr);
       mDisplayPresentation->UpdateXRWebGLLayer(baseLayer);
+      if (IsFlat()) {
+        StartFlatPresentation(baseLayer->GetCanvas());
+      }
     }
   }  // if (baseLayer)
+}
+
+bool XRSession::IsFlat() const {
+  return mDisplayClient && mDisplayClient->GetDisplayInfo()
+                                   .mDisplayState.eightCC ==
+                               gfx::kVRFlatDisplayEightCC;
+}
+
+// An immersive session has exclusive access to the device's display
+// (WebXR section 3.3): on the flat stereo display that is the whole screen,
+// so the session's canvas, which shows its frames, goes full screen.
+void XRSession::StartFlatPresentation(HTMLCanvasElement* aCanvas) {
+  if (!aCanvas || mFlatCanvas == aCanvas) {
+    return;
+  }
+  StopFlatPresentation();
+  mFlatCanvas = aCanvas;
+  mFlatFullscreen = false;
+  IgnoredErrorResult rv;
+  // A session's canvas need not be in the page (the WebXR samples keep theirs
+  // detached). On the flat display it is what the viewer sees, so for the
+  // session the browser puts it at the end of the page's root element, full
+  // screen, and takes it out again when the session ends.
+  if (!aCanvas->IsInComposedDoc()) {
+    nsGlobalWindowInner* win = GetOwnerWindow();
+    Document* doc = win ? win->GetExtantDoc() : nullptr;
+    Element* root = doc ? doc->GetRootElement() : nullptr;
+    if (root && aCanvas->OwnerDoc() == doc) {
+      root->AppendChild(*aCanvas, rv);
+      mFlatCanvasInserted = !rv.Failed();
+    }
+  }
+  RefPtr<Promise> promise =
+      aCanvas->RequestFullscreen(FullscreenOptions(), CallerType::System, rv);
+  if (nsGlobalWindowInner* win = GetOwnerWindow()) {
+    mFlatInput = new FlatInputListener(this);
+    for (const auto& type : kFlatInputEvents) {
+      win->AddEventListener(type, mFlatInput, true);
+    }
+  }
+}
+
+void XRSession::StopFlatPresentation() {
+  if (mFlatInput) {
+    if (nsGlobalWindowInner* win = GetOwnerWindow()) {
+      for (const auto& type : kFlatInputEvents) {
+        win->RemoveEventListener(type, mFlatInput, true);
+      }
+    }
+    static_cast<FlatInputListener*>(mFlatInput.get())->Disconnect();
+    mFlatInput = nullptr;
+  }
+  if (mFlatCanvas) {
+    Document* doc = mFlatCanvas->OwnerDoc();
+    if (doc->GetUnretargetedFullscreenElement() == mFlatCanvas) {
+      Document::AsyncExitFullscreen(doc);
+    }
+    if (mFlatCanvasInserted) {
+      mFlatCanvas->Remove();
+      mFlatCanvasInserted = false;
+    }
+    mFlatCanvas = nullptr;
+  }
+}
+
+XRSession::WindowViews XRSession::GetWindowViews() const {
+  // The window: its size in device pixels and in millimetres.
+  RefPtr<widget::Screen> screen =
+      widget::ScreenManager::GetSingleton().GetPrimaryScreen();
+  double dpi = screen ? screen->GetDPI() : 0.0;
+  if (dpi <= 0.0) {
+    dpi = 96.0;
+  }
+  gfx::IntSize pixels;
+  HTMLCanvasElement* canvas =
+      mActiveRenderState ? mActiveRenderState->GetOutputCanvas() : nullptr;
+  if (!IsImmersive() && canvas) {
+    const double scale =
+        canvas->OwnerDoc()->GetPresContext()
+            ? canvas->OwnerDoc()->GetPresContext()->CSSToDevPixelScale().scale
+            : 1.0;
+    RefPtr<DOMRect> rect = canvas->GetBoundingClientRect();
+    pixels = gfx::IntSize(NSToIntRound(float(rect->Width() * scale)),
+                          NSToIntRound(float(rect->Height() * scale)));
+  } else if (screen) {
+    pixels = screen->GetRect().Size().ToUnknownSize();
+  }
+  if (pixels.IsEmpty()) {
+    pixels = gfx::IntSize(1920, 1080);
+  }
+  const double width = pixels.width * 25.4 / dpi;
+  const double height = pixels.height * 25.4 / dpi;
+  const double distance = StaticPrefs::dom_vr_flat_viewer_distance_mm();
+  const double separation = StaticPrefs::dom_vr_flat_eye_separation_mm();
+
+  // Each eye's frustum through the window: the window's edge on the eye's
+  // own side is nearer to it by half the separation, the other edge farther.
+  // VRFieldOfView takes up, right, down, left, in degrees.
+  const double ownSide =
+      atan((width - separation) / 2.0 / distance) / kRadPerDegree;
+  const double otherSide =
+      atan((width + separation) / 2.0 / distance) / kRadPerDegree;
+  const double vertical = atan(height / 2.0 / distance) / kRadPerDegree;
+  WindowViews views;
+  views.mFieldOfView[gfx::VRDisplayState::Eye_Left] =
+      gfx::VRFieldOfView(vertical, otherSide, vertical, ownSide);
+  views.mFieldOfView[gfx::VRDisplayState::Eye_Right] =
+      gfx::VRFieldOfView(vertical, ownSide, vertical, otherSide);
+  const float offset = float(separation / 2000.0);
+  views.mOffset[gfx::VRDisplayState::Eye_Left] = gfx::Point3D(-offset, 0, 0);
+  views.mOffset[gfx::VRDisplayState::Eye_Right] = gfx::Point3D(offset, 0, 0);
+  views.mEyeResolution = pixels;
+  return views;
+}
+
+gfx::QuaternionDouble XRSession::FlatOrientation() const {
+  // Turn about the vertical axis, then tilt about the viewer's own x axis.
+  const gfx::QuaternionDouble yaw(0.0, sin(mFlatYaw / 2.0), 0.0,
+                                  cos(mFlatYaw / 2.0));
+  const gfx::QuaternionDouble pitch(sin(mFlatPitch / 2.0), 0.0, 0.0,
+                                    cos(mFlatPitch / 2.0));
+  return yaw * pitch;
+}
+
+void XRSession::HandleFlatInput(Event& aEvent) {
+  if (!mFlatCanvas) {
+    return;
+  }
+  // A step along the ground in the direction the viewer faces.
+  const auto move = [&](double aForward, double aRight) {
+    mFlatPosition.x += aRight * cos(mFlatYaw) - aForward * sin(mFlatYaw);
+    mFlatPosition.z += -aRight * sin(mFlatYaw) - aForward * cos(mFlatYaw);
+  };
+  if (aEvent.WidgetEventPtr()->mClass == eWheelEventClass) {
+    auto* wheel = static_cast<WheelEvent*>(&aEvent);
+    move(-wheel->DeltaY(CallerType::System) * 0.002, 0.0);
+  } else if (MouseEvent* mouse = aEvent.AsMouseEvent()) {
+    // Dragging with the main button turns the viewer.
+    if (mouse->Buttons() & 1) {
+      mFlatYaw -= mouse->MovementX() * 0.004;
+      mFlatPitch = std::clamp(mFlatPitch - mouse->MovementY() * 0.004, -1.4,
+                              1.4);
+    }
+  } else if (KeyboardEvent* key = aEvent.AsKeyboardEvent()) {
+    nsAutoString name;
+    key->GetKey(name);
+    if (name.EqualsLiteral("ArrowUp") || name.EqualsLiteral("w")) {
+      move(0.1, 0.0);
+    } else if (name.EqualsLiteral("ArrowDown") || name.EqualsLiteral("s")) {
+      move(-0.1, 0.0);
+    } else if (name.EqualsLiteral("ArrowLeft") || name.EqualsLiteral("a")) {
+      move(0.0, -0.1);
+    } else if (name.EqualsLiteral("ArrowRight") || name.EqualsLiteral("d")) {
+      move(0.0, 0.1);
+    }
+  }
 }
 
 void XRSession::WillRefresh(mozilla::TimeStamp aTime) {
@@ -311,6 +523,20 @@ void XRSession::StartFrame() {
     return;
   }
   ApplyPendingRenderState();
+
+  // Leaving full screen (Escape) leaves the immersive session on the flat
+  // display.
+  if (mFlatCanvas) {
+    const bool fullscreen =
+        mFlatCanvas->OwnerDoc()->GetUnretargetedFullscreenElement() ==
+        mFlatCanvas;
+    if (fullscreen) {
+      mFlatFullscreen = true;
+    } else if (mFlatFullscreen) {
+      ExitPresentInternal();
+      return;
+    }
+  }
 
   XRWebGLLayer* baseLayer = mActiveRenderState->GetBaseLayer();
   if (!baseLayer) {
@@ -468,6 +694,14 @@ void XRSession::Shutdown() {
 }
 
 void XRSession::ExitPresentInternal() {
+  StopFlatPresentation();
+  if (mInlineStereo && mActiveRenderState) {
+    if (HTMLCanvasElement* canvas = mActiveRenderState->GetOutputCanvas()) {
+      if (const auto& webgl = canvas->GetWebGLContext()) {
+        webgl->SetInlineStereo(false);
+      }
+    }
+  }
   if (mInputSources) {
     mInputSources->Clear(this);
   }
@@ -526,7 +760,7 @@ RefPtr<XRViewerPose> XRSession::PooledViewerPose(
     RefPtr<XRRigidTransform> transform =
         new XRRigidTransform(static_cast<EventTarget*>(this), aTransform);
     nsTArray<RefPtr<XRView>> views;
-    if (IsImmersive()) {
+    if (IsImmersive() || mInlineStereo) {
       views.AppendElement(new XRView(GetParentObject(), XREye::Left));
       views.AppendElement(new XRView(GetParentObject(), XREye::Right));
     } else {

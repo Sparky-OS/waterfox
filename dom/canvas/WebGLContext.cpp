@@ -1069,7 +1069,8 @@ static void SetStereoMode(gl::SharedSurface* const surf,
   const auto mode = stereoMode < uint8_t(StereoMode::MAX)
                         ? StereoMode(stereoMode)
                         : StereoMode::MONO;
-  static_cast<gl::SharedSurface_DMABUF*>(surf)->mSurface->SetStereoMode(mode);
+  static_cast<gl::SharedSurface_DMABUF*>(surf)->mSurface->SetStereoMode(
+      mode, mode == StereoMode::MONO ? StereoSource::NONE : StereoSource::XR);
 }
 #endif
 
@@ -1257,10 +1258,27 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
   bool useAsync = options.remoteTextureOwnerId.IsValid() &&
                   options.remoteTextureId.IsValid();
 
+  // The canvas of an immersive session on the flat stereo display shows the
+  // session's last frame, copied when it was submitted.
+  if (!xrFb && !webvr) {
+    mFlatXRPresenting = options.flatXR && mFlatXRSwapChain.FrontBuffer();
+    if (mFlatXRPresenting) {
+      swapChain = &mFlatXRSwapChain;
+    }
+  }
+
   InitSwapChain(*gl, *swapChain, consumerType, useAsync);
 
-  bool valid =
-      maybeFB ? PresentIntoXR(*swapChain, *maybeFB) : PresentInto(*swapChain);
+  if (maybeFB && options.flatXR) {
+    PresentFlatXR(*maybeFB, consumerType);
+  }
+
+  bool valid = true;
+  if (maybeFB) {
+    valid = PresentIntoXR(*swapChain, *maybeFB);
+  } else if (swapChain != &mFlatXRSwapChain) {
+    valid = PresentInto(*swapChain);
+  }
   if (!valid) {
     EnsureContextLostRemoteTextureOwner(options);
     return;
@@ -1274,6 +1292,21 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
   if (useAsync) {
     PushRemoteTexture(nullptr, *swapChain, swapChain->FrontBuffer(), options);
   }
+}
+
+void WebGLContext::PresentFlatXR(const gl::MozFramebuffer& fb,
+                                 const layers::TextureType consumerType) {
+  InitSwapChain(*gl, mFlatXRSwapChain, consumerType, true);
+  const auto colorSpace = ToColorSpace2ForOutput(mDrawingBufferColorSpace);
+  auto presenter = mFlatXRSwapChain.Acquire(fb.mSize, colorSpace,
+                                            gfx::TransferFunction::SRGB);
+  if (!presenter) {
+    GenerateWarning("Swap chain surface creation failed.");
+    return;
+  }
+  const ScopedFBRebinder saveFB(this);
+  gl->fBindFramebuffer(LOCAL_GL_FRAMEBUFFER, presenter->Fb());
+  BlitBackbufferToCurDriverFB(nullptr, &fb);
 }
 
 void WebGLContext::WaitForTxn(layers::RemoteTextureOwnerId ownerId,
@@ -1528,6 +1561,9 @@ gl::SwapChain* WebGLContext::GetSwapChain(WebGLFramebuffer* const xrFb,
 Maybe<layers::SurfaceDescriptor> WebGLContext::GetFrontBuffer(
     WebGLFramebuffer* const xrFb, const bool webvr) {
   auto* swapChain = GetSwapChain(xrFb, webvr);
+  if (!xrFb && !webvr && mFlatXRPresenting) {
+    swapChain = &mFlatXRSwapChain;
+  }
   if (!swapChain) return {};
   const auto& front = swapChain->FrontBuffer();
   if (!front) return {};
