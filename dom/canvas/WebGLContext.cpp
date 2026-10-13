@@ -88,6 +88,10 @@
 #  include "WGLLibrary.h"
 #endif
 
+#ifdef MOZ_WIDGET_GTK
+#  include "SharedSurfaceDMABUF.h"
+#endif
+
 // Generated
 #include "mozilla/dom/WebGLRenderingContextBinding.h"
 
@@ -1054,6 +1058,21 @@ GLuint GLNameOrZero(const T& t) {
   return 0;
 }
 
+#ifdef MOZ_WIDGET_GTK
+// The front buffer carries the canvas's stereo mode to the compositor, which
+// declares it on the canvas's own surface.
+static void SetStereoMode(gl::SharedSurface* const surf,
+                          const uint8_t stereoMode) {
+  if (!surf || surf->mDesc.type != gl::SharedSurfaceType::EGLSurfaceDMABUF) {
+    return;
+  }
+  const auto mode = stereoMode < uint8_t(StereoMode::MAX)
+                        ? StereoMode(stereoMode)
+                        : StereoMode::MONO;
+  static_cast<gl::SharedSurface_DMABUF*>(surf)->mSurface->SetStereoMode(mode);
+}
+#endif
+
 // For an overview of how WebGL compositing works, see:
 // https://wiki.mozilla.org/Platform/GFX/WebGL/Compositing
 bool WebGLContext::PresentInto(gl::SwapChain& swapChain) {
@@ -1246,6 +1265,11 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
     EnsureContextLostRemoteTextureOwner(options);
     return;
   }
+#ifdef MOZ_WIDGET_GTK
+  if (!maybeFB) {
+    SetStereoMode(swapChain->FrontBuffer().get(), options.stereoMode);
+  }
+#endif
 
   if (useAsync) {
     PushRemoteTexture(nullptr, *swapChain, swapChain->FrontBuffer(), options);

@@ -828,13 +828,16 @@ struct SwapChainOptions final {
   layers::RemoteTextureOwnerId remoteTextureOwnerId;
   bool bgra = false;
   bool forceAsyncPresent = false;
+  // A StereoMode: how the canvas holds the two views of a stereoscopic
+  // picture, as its element's stereolayout attribute declares.
+  uint8_t stereoMode = 0;
   // Pad to sizeof(u64):
-  uint16_t padding1 = 0;
+  uint8_t padding1 = 0;
   uint32_t padding2 = 0;
 
   auto MutTiedFields() {
     return std::tie(remoteTextureId, remoteTextureOwnerId, bgra,
-                    forceAsyncPresent, padding1, padding2);
+                    forceAsyncPresent, stereoMode, padding1, padding2);
   }
 };
 

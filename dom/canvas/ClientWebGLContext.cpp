@@ -10,6 +10,7 @@
 
 #include "ClientWebGLExtensions.h"
 #include "HostWebGLContext.h"
+#include "ImageTypes.h"
 #include "TexUnpackBlob.h"
 #include "WebGLChild.h"
 #include "WebGLFormats.h"
@@ -28,6 +29,7 @@
 #include "mozilla/dom/BufferSourceBinding.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/GeneratePlaceholderCanvasData.h"
+#include "mozilla/dom/HTMLCanvasElement.h"
 #include "mozilla/dom/ToJSValue.h"
 #include "mozilla/dom/TypedArray.h"
 #include "mozilla/dom/WebGLContextEvent.h"
@@ -522,6 +524,19 @@ webgl::SwapChainOptions ClientWebGLContext::PrepareAsyncSwapChainOptions(
   return options;
 }
 
+// The canvas's stereolayout attribute takes the names of WebXR Layers'
+// XRLayerLayout: "stereo-left-right" and "stereo-top-bottom" declare that the
+// canvas holds two views; anything else is one view.
+static StereoMode StereoModeFromLayout(const nsAString& layout) {
+  if (layout.EqualsLiteral("stereo-left-right")) {
+    return StereoMode::LEFT_RIGHT;
+  }
+  if (layout.EqualsLiteral("stereo-top-bottom")) {
+    return StereoMode::TOP_BOTTOM;
+  }
+  return StereoMode::MONO;
+}
+
 void ClientWebGLContext::Present(WebGLFramebufferJS* const xrFb,
                                  const layers::TextureType type,
                                  const bool webvr,
@@ -533,6 +548,11 @@ void ClientWebGLContext::Present(WebGLFramebufferJS* const xrFb,
   CancelAutoFlush();
   webgl::SwapChainOptions asyncOptions =
       PrepareAsyncSwapChainOptions(xrFb, webvr, options);
+  if (!xrFb && mCanvasElement) {
+    nsAutoString layout;
+    mCanvasElement->GetAttribute(u"stereolayout"_ns, layout);
+    asyncOptions.stereoMode = uint8_t(StereoModeFromLayout(layout));
+  }
   Run<RPROC(Present)>(xrFb ? xrFb->mId : 0, type, webvr, asyncOptions);
 }
 
