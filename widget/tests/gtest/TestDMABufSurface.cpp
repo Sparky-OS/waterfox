@@ -43,8 +43,8 @@ static SurfaceDescriptor MakeRGBADescriptor(RefPtr<FileHandleWrapper> fd) {
       DMABufSurface::SURFACE_RGBA, 0, modifiers, 0, fds, width, height, width,
       height, format, strides, offsets, gfx::YUVColorSpace::BT601,
       gfx::ColorRange::LIMITED, gfx::ColorSpace2::UNKNOWN,
-      gfx::TransferFunction::Default, 0, fence, 1, 0, refCount, nullptr,
-      false));
+      gfx::TransferFunction::Default, 0, fence, 1, 0, refCount, nullptr, false,
+      StereoMode::MONO));
 }
 
 // Matches what DMABufSurfaceYUV::Serialize() produces for a two-plane 128×128
@@ -67,7 +67,7 @@ static SurfaceDescriptor MakeYUVDescriptor(RefPtr<FileHandleWrapper> fd0,
       height, widthAligned, heightAligned, format, strides, offsets,
       gfx::YUVColorSpace::BT601, gfx::ColorRange::LIMITED,
       gfx::ColorSpace2::UNKNOWN, gfx::TransferFunction::Default, 0, fence, 1, 0,
-      refCount, nullptr, false));
+      refCount, nullptr, false, StereoMode::LEFT_RIGHT));
 }
 
 // Run 3 serialize → import cycles for a single-plane RGBA surface.
@@ -82,6 +82,7 @@ static void RGBARoundtrip(RefPtr<DMABufSurface> surface) {
     EXPECT_EQ(d.height()[0], 128u);
     EXPECT_EQ(d.strides()[0], 512u);
     EXPECT_EQ(d.modifier()[0], uint64_t{0});
+    EXPECT_EQ(d.stereoMode(), StereoMode::MONO);
     surface = DMABufSurface::CreateDMABufSurface(desc);
     ASSERT_NE(surface, nullptr);
     EXPECT_EQ(surface->GetWidth(), 128);
@@ -103,12 +104,14 @@ static void YUVRoundtrip(RefPtr<DMABufSurface> surface) {
     EXPECT_EQ(d.height()[1], 64u);
     EXPECT_EQ(d.format().Length(), 2u);
     EXPECT_EQ(d.modifier().Length(), 2u);
+    EXPECT_EQ(d.stereoMode(), StereoMode::LEFT_RIGHT);
     surface = DMABufSurface::CreateDMABufSurface(desc);
     ASSERT_NE(surface, nullptr);
     EXPECT_EQ(surface->GetWidth(0), 128);
     EXPECT_EQ(surface->GetHeight(0), 128);
     EXPECT_EQ(surface->GetWidth(1), 64);
     EXPECT_EQ(surface->GetHeight(1), 64);
+    EXPECT_EQ(surface->GetStereoMode(), StereoMode::LEFT_RIGHT);
   }
 }
 
