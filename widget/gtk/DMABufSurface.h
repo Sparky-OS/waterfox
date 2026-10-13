@@ -168,11 +168,15 @@ class DMABufSurface {
     mColorRange = aColorRange;
   };
 
-  // How the surface holds the two views of a stereoscopic picture, if any.
-  void SetStereoMode(mozilla::StereoMode aStereoMode) {
+  // How the surface holds the two views of a stereoscopic picture, if any,
+  // and where that comes from.
+  void SetStereoMode(mozilla::StereoMode aStereoMode,
+                     mozilla::StereoSource aStereoSource) {
     mStereoMode = aStereoMode;
+    mStereoSource = aStereoSource;
   }
   mozilla::StereoMode GetStereoMode() const { return mStereoMode; }
+  mozilla::StereoSource GetStereoSource() const { return mStereoSource; }
 
   void FenceSet();
   void FenceWait();
@@ -344,6 +348,7 @@ class DMABufSurface {
   mozilla::gfx::ColorRange mColorRange = mozilla::gfx::ColorRange::LIMITED;
 
   mozilla::StereoMode mStereoMode = mozilla::StereoMode::MONO;
+  mozilla::StereoSource mStereoSource = mozilla::StereoSource::NONE;
 
   mozilla::gfx::YUVColorSpace mColorSpace =
       mozilla::gfx::YUVColorSpace::Default;

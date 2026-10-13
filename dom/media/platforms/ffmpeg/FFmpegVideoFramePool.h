@@ -82,8 +82,9 @@ class VideoFrameSurface<LIBAV_VER> {
   void SetWPChromaLocation(uint32_t aWPChromaLocation) {
     mSurface->GetAsDMABufSurfaceYUV()->SetWPChromaLocation(aWPChromaLocation);
   }
-  void SetStereoMode(mozilla::StereoMode aStereoMode) {
-    mSurface->SetStereoMode(aStereoMode);
+  void SetStereoMode(mozilla::StereoMode aStereoMode,
+                     mozilla::StereoSource aStereoSource) {
+    mSurface->SetStereoMode(aStereoMode, aStereoSource);
   }
   void SetVulkanCopySlotIndex(int32_t aSlotIndex) {
     mVulkanCopySlotIndex = aSlotIndex;

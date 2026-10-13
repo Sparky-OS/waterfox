@@ -32,6 +32,7 @@ struct ParamTraits<mozilla::VideoInfo> {
     // VideoInfo
     WriteParam(aWriter, aParam.mDisplay);
     WriteParam(aWriter, aParam.mStereoMode);
+    WriteParam(aWriter, aParam.mStereoSource);
     WriteParam(aWriter, aParam.mImage);
     WriteParam(aWriter, aParam.mImageRect);
     WriteParam(aWriter, *aParam.mCodecSpecificConfig);
@@ -51,6 +52,7 @@ struct ParamTraits<mozilla::VideoInfo> {
     return ReadParam(aReader, &aResult->mMimeType) &&
            ReadParam(aReader, &aResult->mDisplay) &&
            ReadParam(aReader, &aResult->mStereoMode) &&
+           ReadParam(aReader, &aResult->mStereoSource) &&
            ReadParam(aReader, &aResult->mImage) &&
            ReadParam(aReader, &aResult->mImageRect) &&
            ReadParam(aReader, aResult->mCodecSpecificConfig.get()) &&

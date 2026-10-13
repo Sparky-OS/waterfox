@@ -102,12 +102,51 @@ enum class ImageFormat {
   DCOMP_SURFACE,
 };
 
+// How a picture holds the two views of a stereoscopic picture: every packing
+// of the Matroska StereoMode (RFC 9559 section 5.1.4.1.28.3, Table 5) and of
+// the H.264 and H.265 frame packing arrangement (Table D-8), with its eye
+// order.
 enum class StereoMode {
   MONO,
   LEFT_RIGHT,
   RIGHT_LEFT,
   BOTTOM_TOP,
   TOP_BOTTOM,
+  CHECKERBOARD_LEFT_FIRST,
+  CHECKERBOARD_RIGHT_FIRST,
+  ROWS_LEFT_FIRST,
+  ROWS_RIGHT_FIRST,
+  COLUMNS_LEFT_FIRST,
+  COLUMNS_RIGHT_FIRST,
+  ANAGLYPH_CYAN_RED,
+  ANAGLYPH_GREEN_MAGENTA,
+  // Both eyes laced in one block (Matroska) or in alternate frames (Table
+  // D-8, frame alternation).
+  LACED_LEFT_FIRST,
+  LACED_RIGHT_FIRST,
+  MAX,
+};
+
+// Where a picture's StereoMode comes from, which also tells whether the size
+// of one view is known.
+enum class StereoSource : uint8_t {
+  // No mark: the picture is taken for one view unless the user or, last, its
+  // shape says otherwise.
+  NONE,
+  // The container's mark, with the size of one view (Matroska's StereoMode
+  // with its DisplayWidth and DisplayHeight, RFC 9559 section 18.10).
+  CONTAINER_SIZED,
+  // The container's mark without the size of a view (the MP4 st3d box, or
+  // Matroska's StereoMode without DisplayWidth and DisplayHeight).
+  CONTAINER,
+  // The stream's own mark, the frame packing SEI (H.264 D.2.26, H.265
+  // D.3.16), without the size of a view.
+  STREAM,
+  // The user's choice.
+  USER,
+  // A WebXR session's frames: an immersive session on the flat stereo
+  // display, or an inline-stereo session's canvas.
+  XR,
   MAX,
 };
 

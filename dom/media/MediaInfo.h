@@ -343,6 +343,7 @@ class VideoInfo : public TrackInfo {
       : TrackInfo(kVideoTrack, u"2"_ns, u"main"_ns, u""_ns, u""_ns, true, 2),
         mDisplay(aSize),
         mStereoMode(StereoMode::MONO),
+        mStereoSource(StereoSource::NONE),
         mImage(aSize),
         mCodecSpecificConfig(new MediaByteBuffer),
         mExtraData(new MediaByteBuffer),
@@ -363,6 +364,7 @@ class VideoInfo : public TrackInfo {
     }
     mDisplay = aOther.mDisplay;
     mStereoMode = aOther.mStereoMode;
+    mStereoSource = aOther.mStereoSource;
     mImage = aOther.mImage;
     mRotation = aOther.mRotation;
     mColorDepth = aOther.mColorDepth;
@@ -463,6 +465,9 @@ class VideoInfo : public TrackInfo {
 
   // Indicates the frame layout for single track stereo videos.
   StereoMode mStereoMode;
+  // Where mStereoMode comes from: the container's mark, with or without the
+  // size of one view, or none.
+  StereoSource mStereoSource;
 
   // Size of the decoded video's image.
   gfx::IntSize mImage;

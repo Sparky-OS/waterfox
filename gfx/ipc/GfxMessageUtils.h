@@ -677,6 +677,12 @@ struct ParamTraits<mozilla::StereoMode>
                                       mozilla::StereoMode::MAX> {};
 
 template <>
+struct ParamTraits<mozilla::StereoSource>
+    : public ContiguousEnumSerializer<mozilla::StereoSource,
+                                      mozilla::StereoSource::NONE,
+                                      mozilla::StereoSource::MAX> {};
+
+template <>
 struct ParamTraits<mozilla::gfx::ChromaSubsampling>
     : public ContiguousEnumSerializerInclusive<
           mozilla::gfx::ChromaSubsampling,

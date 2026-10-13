@@ -61,7 +61,8 @@ nsCString TrackInfo::ToString() const {
 
 bool VideoInfo::operator==(const VideoInfo& rhs) const {
   return (TrackInfo::IsEqualTo(rhs) && mDisplay == rhs.mDisplay &&
-          mStereoMode == rhs.mStereoMode && mImage == rhs.mImage &&
+          mStereoMode == rhs.mStereoMode &&
+          mStereoSource == rhs.mStereoSource && mImage == rhs.mImage &&
           *mCodecSpecificConfig == *rhs.mCodecSpecificConfig &&
           *mExtraData == *rhs.mExtraData && mRotation == rhs.mRotation &&
           mColorDepth == rhs.mColorDepth && mImageRect == rhs.mImageRect &&
@@ -105,7 +106,8 @@ nsCString VideoInfo::ToString() const {
   rv.Append(TrackInfo::ToString());
   rv.AppendLiteral(" VideoInfo: ");
   rv.AppendPrintf("display size: %dx%d", mDisplay.Width(), mDisplay.Height());
-  rv.AppendPrintf(", stereo mode: %d", static_cast<int>(mStereoMode));
+  rv.AppendPrintf(", stereo mode: %d (source %d)", static_cast<int>(mStereoMode),
+                  static_cast<int>(mStereoSource));
   rv.AppendPrintf(", image size: %dx%d", mImage.Width(), mImage.Height());
   if (mCodecSpecificConfig) {
     rv.AppendPrintf(", codec specific config: %zu bytes",

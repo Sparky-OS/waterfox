@@ -10,6 +10,7 @@ include "mozilla/layers/WebRenderMessageUtils.h";
 using gfxPoint from "gfxPoint.h";
 using nsIntRegion from "nsRegion.h";
 using mozilla::StereoMode from "ImageTypes.h";
+using mozilla::StereoSource from "ImageTypes.h";
 using struct mozilla::null_t from "mozilla/ipc/IPCCore.h";
 using mozilla::WindowsHandle from "mozilla/ipc/IPCTypes.h";
 using mozilla::gfx::YUVColorSpace from "mozilla/gfx/Types.h";
@@ -101,6 +102,7 @@ namespace layers {
   nullable FileHandleWrapper semaphoreFd;
   bool semaphoreFdIsSyncFd;
   StereoMode stereoMode;
+  StereoSource stereoSource;
 };
 
 [Comparable] struct SurfaceTextureDescriptor {
