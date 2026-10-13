@@ -3002,9 +3002,10 @@ nestegg_track_video_params(nestegg * ctx, unsigned int track,
     return -1;
 
   value = 0;
-  ne_get_uint(entry->video.stereo_mode, &value);
-  if (value <= NESTEGG_VIDEO_STEREO_TOP_BOTTOM ||
-      value == NESTEGG_VIDEO_STEREO_RIGHT_LEFT)
+  if (ne_get_uint(entry->video.stereo_mode, &value) != 0 ||
+      value > NESTEGG_VIDEO_STEREO_LACED_RIGHT_LEFT)
+    params->stereo_mode = NESTEGG_VIDEO_STEREO_ABSENT;
+  else
     params->stereo_mode = value;
 
   value = 0;
@@ -3035,12 +3036,16 @@ nestegg_track_video_params(nestegg * ctx, unsigned int track,
   ne_get_uint(entry->video.pixel_crop_right, &value);
   params->crop_right = value;
 
+  params->display_size_set = 0;
+
   value = params->width;
-  ne_get_uint(entry->video.display_width, &value);
+  if (ne_get_uint(entry->video.display_width, &value) == 0)
+    params->display_size_set = 1;
   params->display_width = value;
 
   value = params->height;
-  ne_get_uint(entry->video.display_height, &value);
+  if (ne_get_uint(entry->video.display_height, &value) == 0)
+    params->display_size_set = 1;
   params->display_height = value;
 
   value = 2;

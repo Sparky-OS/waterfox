@@ -85,6 +85,17 @@ extern "C" {
 #define NESTEGG_VIDEO_STEREO_BOTTOM_TOP 2 /**< Track is top-bottom stereo video.  Right first. */
 #define NESTEGG_VIDEO_STEREO_TOP_BOTTOM 3 /**< Track is top-bottom stereo video.  Left first. */
 #define NESTEGG_VIDEO_STEREO_RIGHT_LEFT 11 /**< Track is side-by-side stereo video.  Right first. */
+#define NESTEGG_VIDEO_STEREO_CHECKERBOARD_RIGHT_LEFT 4 /**< Checkerboard.  Right first. */
+#define NESTEGG_VIDEO_STEREO_CHECKERBOARD_LEFT_RIGHT 5 /**< Checkerboard.  Left first. */
+#define NESTEGG_VIDEO_STEREO_ROWS_RIGHT_LEFT 6 /**< Row interleaved.  Right first. */
+#define NESTEGG_VIDEO_STEREO_ROWS_LEFT_RIGHT 7 /**< Row interleaved.  Left first. */
+#define NESTEGG_VIDEO_STEREO_COLUMNS_RIGHT_LEFT 8 /**< Column interleaved.  Right first. */
+#define NESTEGG_VIDEO_STEREO_COLUMNS_LEFT_RIGHT 9 /**< Column interleaved.  Left first. */
+#define NESTEGG_VIDEO_STEREO_ANAGLYPH_CYAN_RED 10 /**< Anaglyph, cyan and red. */
+#define NESTEGG_VIDEO_STEREO_ANAGLYPH_GREEN_MAGENTA 12 /**< Anaglyph, green and magenta. */
+#define NESTEGG_VIDEO_STEREO_LACED_LEFT_RIGHT 13 /**< Both eyes laced in one block.  Left first. */
+#define NESTEGG_VIDEO_STEREO_LACED_RIGHT_LEFT 14 /**< Both eyes laced in one block.  Right first. */
+#define NESTEGG_VIDEO_STEREO_ABSENT 0xffffffff /**< The track has no StereoMode element. */
 
 #define NESTEGG_VIDEO_PROJECTION_RECTANGULAR     0 /**< Track uses rectangular projection type. */
 #define NESTEGG_VIDEO_PROJECTION_EQUIRECTANGULAR 1 /**< Track uses equirectangular projection type. */
@@ -152,14 +163,18 @@ typedef struct {
 
 /** Parameters specific to a video track. */
 typedef struct {
-  unsigned int stereo_mode;    /**< Video mode.  One of #NESTEGG_VIDEO_MONO,
-                                    #NESTEGG_VIDEO_STEREO_LEFT_RIGHT,
-                                    #NESTEGG_VIDEO_STEREO_BOTTOM_TOP, or
-                                    #NESTEGG_VIDEO_STEREO_TOP_BOTTOM. */
+  unsigned int stereo_mode;    /**< Video mode.  One of the values of the
+                                    StereoMode element (RFC 9559, Table 5:
+                                    #NESTEGG_VIDEO_MONO to
+                                    #NESTEGG_VIDEO_STEREO_LACED_RIGHT_LEFT),
+                                    or #NESTEGG_VIDEO_STEREO_ABSENT when the
+                                    track has no StereoMode element. */
   unsigned int width;          /**< Width of the video frame in pixels. */
   unsigned int height;         /**< Height of the video frame in pixels. */
   unsigned int display_width;  /**< Display width of the video frame in pixels. */
   unsigned int display_height; /**< Display height of the video frame in pixels. */
+  unsigned int display_size_set; /**< 1 if the track has a DisplayWidth or
+                                     DisplayHeight element, otherwise 0. */
   unsigned int crop_bottom;    /**< Pixels to crop from the bottom of the frame. */
   unsigned int crop_top;       /**< Pixels to crop from the top of the frame. */
   unsigned int crop_left;      /**< Pixels to crop from the left of the frame. */

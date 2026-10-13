@@ -562,22 +562,35 @@ nsresult WebMDemuxer::ReadMetadata() {
       mInfo.mVideo.SetImageRect(pictureRect);
       mInfo.mVideo.SetAlpha(params.alpha_mode);
 
-      switch (params.stereo_mode) {
-        case NESTEGG_VIDEO_MONO:
-          mInfo.mVideo.mStereoMode = StereoMode::MONO;
-          break;
-        case NESTEGG_VIDEO_STEREO_LEFT_RIGHT:
-          mInfo.mVideo.mStereoMode = StereoMode::LEFT_RIGHT;
-          break;
-        case NESTEGG_VIDEO_STEREO_BOTTOM_TOP:
-          mInfo.mVideo.mStereoMode = StereoMode::BOTTOM_TOP;
-          break;
-        case NESTEGG_VIDEO_STEREO_TOP_BOTTOM:
-          mInfo.mVideo.mStereoMode = StereoMode::TOP_BOTTOM;
-          break;
-        case NESTEGG_VIDEO_STEREO_RIGHT_LEFT:
-          mInfo.mVideo.mStereoMode = StereoMode::RIGHT_LEFT;
-          break;
+      // Matroska's StereoMode (RFC 9559 section 5.1.4.1.28.3, Table 5). A
+      // marked track's DisplayWidth and DisplayHeight are those of one view
+      // (section 18.10): with them, the mark comes with the size of a view;
+      // without them, the views may be half or full size.
+      static constexpr StereoMode kStereoModes[] = {
+          StereoMode::MONO,
+          StereoMode::LEFT_RIGHT,
+          StereoMode::BOTTOM_TOP,
+          StereoMode::TOP_BOTTOM,
+          StereoMode::CHECKERBOARD_RIGHT_FIRST,
+          StereoMode::CHECKERBOARD_LEFT_FIRST,
+          StereoMode::ROWS_RIGHT_FIRST,
+          StereoMode::ROWS_LEFT_FIRST,
+          StereoMode::COLUMNS_RIGHT_FIRST,
+          StereoMode::COLUMNS_LEFT_FIRST,
+          StereoMode::ANAGLYPH_CYAN_RED,
+          StereoMode::RIGHT_LEFT,
+          StereoMode::ANAGLYPH_GREEN_MAGENTA,
+          StereoMode::LACED_LEFT_FIRST,
+          StereoMode::LACED_RIGHT_FIRST,
+      };
+      if (params.stereo_mode < std::size(kStereoModes)) {
+        mInfo.mVideo.mStereoMode = kStereoModes[params.stereo_mode];
+        mInfo.mVideo.mStereoSource = params.display_size_set
+                                         ? StereoSource::CONTAINER_SIZED
+                                         : StereoSource::CONTAINER;
+      } else {
+        mInfo.mVideo.mStereoMode = StereoMode::MONO;
+        mInfo.mVideo.mStereoSource = StereoSource::NONE;
       }
       uint64_t duration = 0;
       r = nestegg_duration(context, &duration);
