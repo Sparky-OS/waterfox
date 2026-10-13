@@ -121,6 +121,10 @@ class WaylandSurface final {
 
   bool HasBufferAttached() const { return mBufferAttached; }
 
+  // The wl_surface itself, for protocols managed outside WaylandSurface.
+  // It lives as long as WaylandSurface.
+  wl_surface* GetWlSurface() const { return mSurface; }
+
   // Mapped as direct surface of MozContainer
   bool MapLocked(const WaylandSurfaceLock& aProofOfLock,
                  wl_surface* aParentWLSurface,

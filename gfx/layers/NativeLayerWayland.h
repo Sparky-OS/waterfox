@@ -5,6 +5,7 @@
 #ifndef mozilla_layers_NativeLayerWayland_h
 #define mozilla_layers_NativeLayerWayland_h
 
+#include "ImageTypes.h"
 #include "mozilla/Atomics.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/layers/NativeLayer.h"
@@ -322,6 +323,11 @@ class NativeLayerWayland : public NativeLayer {
   LayerState mState{};
   bool mSurfaceIsFlipped = false;
   bool mIsHDR = false;
+  // The surface is declared to hold two views, full side by side with the
+  // left eye first.
+  bool mStereoDeclared = false;
+  // The layer shows one view at its own shape in the place of the two.
+  bool mStereoFitOneView = false;
 
   enum class MainThreadUpdate {
     None,
@@ -397,6 +403,15 @@ class NativeLayerWaylandExternal final : public NativeLayerWayland {
 
  private:
   ~NativeLayerWaylandExternal() override;
+
+  void UpdateStereoContentLocked(const widget::WaylandSurfaceLock& aProofOfLock,
+                                 DMABufSurface* aSurface);
+
+  // Last picture the stereo picture policy decided on, and its decision.
+  gfx::IntSize mStereoPolicySize;
+  StereoMode mStereoPolicyMark = StereoMode::MONO;
+  StereoMode mStereoPolicyMode = StereoMode::MONO;
+  bool mStereoPolicyFitOneView = false;
 
   void DiscardBackbuffersLocked(const widget::WaylandSurfaceLock& aProofOfLock,
                                 bool aForce) override;
