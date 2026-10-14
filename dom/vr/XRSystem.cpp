@@ -8,6 +8,7 @@
 #include "VRManagerChild.h"
 #include "gfxVR.h"
 #include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/dom/BindingCallContext.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/FeaturePolicyUtils.h"
@@ -108,12 +109,15 @@ already_AddRefed<Promise> XRSystem::IsSessionSupported(XRSessionMode aMode,
     return promise.forget();
   }
 
-  // The flat stereo display is the screen itself: always there, nothing to
-  // detect. Pages that wait only briefly for the answer (and choose their
-  // renderer by it) get it at once.
+  // The flat stereo display is the screen: there whenever an output shows
+  // stereo 3D, or can, even beside 2D ones, and absent otherwise, so that
+  // pages take their own 2D path. Pages that wait only briefly for the
+  // answer (and choose their renderer by it) get it at once.
   if (aMode == XRSessionMode::Immersive_vr &&
       StaticPrefs::dom_vr_flat_enabled()) {
-    if (FeaturePolicyBlocked()) {
+    if (!gfx::gfxVars::StereoOutputs()) {
+      promise->MaybeResolve(false);
+    } else if (FeaturePolicyBlocked()) {
       promise->MaybeRejectWithSecurityError(
           "The xr-spatial-tracking feature policy is required.");
     } else {
@@ -180,8 +184,9 @@ already_AddRefed<Promise> XRSystem::RequestSession(
 
   // inline-stereo (WebXR section 3.4): two views for an inline session, on a
   // display that shows them in stereo, the flat stereo display.
-  const bool canInlineStereo =
-      aMode == XRSessionMode::Inline && StaticPrefs::dom_vr_flat_enabled();
+  const bool canInlineStereo = aMode == XRSessionMode::Inline &&
+                               StaticPrefs::dom_vr_flat_enabled() &&
+                               gfx::gfxVars::StereoOutputs();
   bool inlineStereo = false;
 
   if (aOptions.mRequiredFeatures.WasPassed()) {
@@ -219,6 +224,13 @@ already_AddRefed<Promise> XRSystem::RequestSession(
     if (mPendingImmersiveSession || mActiveImmersiveSession) {
       promise->MaybeRejectWithInvalidStateError(
           "There can only be one immersive XRSession.");
+      return promise.forget();
+    }
+    // The flat stereo display needs an output that shows stereo 3D.
+    if (aMode == XRSessionMode::Immersive_vr &&
+        StaticPrefs::dom_vr_flat_enabled() && !gfx::gfxVars::StereoOutputs()) {
+      promise->MaybeRejectWithNotSupportedError(
+          "No display shows stereo 3D.");
       return promise.forget();
     }
     mPendingImmersiveSession = true;

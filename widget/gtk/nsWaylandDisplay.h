@@ -13,6 +13,7 @@
 #include "mozilla/widget/gtk-primary-selection-client-protocol.h"
 #include "mozilla/widget/idle-inhibit-unstable-v1-client-protocol.h"
 #include "mozilla/widget/kde-appmenu-client-protocol.h"
+#include "mozilla/widget/kde-output-device-v2-client-protocol.h"
 #include "mozilla/widget/linux-dmabuf-unstable-v1-client-protocol.h"
 #include "mozilla/widget/primary-selection-unstable-v1-client-protocol.h"
 #include "mozilla/widget/pointer-constraints-unstable-v1-client-protocol.h"
@@ -93,6 +94,15 @@ class nsWaylandDisplay {
   // on its own.
   bool HasStereoContent() const { return mHasStereoContent; }
   void SetHasStereoContent() { mHasStereoContent = true; }
+  // An output that shows stereo 3D, or can (Sparky Stereo OS): KWin lists a
+  // 3D mode for it (the display's own HDMI 1.4 3D modes, or the virtual 3D
+  // modes its stereo toggles turn on) or pairs it with another output, as
+  // kde_output_device_v2 says. Kept in gfxVars::StereoOutputs.
+  bool HasStereoOutput() const { return mHasStereoOutput; }
+  void AddStereoOutputDevice(kde_output_device_v2* aDevice);
+  void UpdateStereoOutputs();
+  struct StereoOutputDevice;
+  void RemoveStereoOutputDevice(StereoOutputDevice* aDevice);
 
   wl_pointer* GetPointer() { return mPointer; }
   void SetPointer(wl_pointer* aPointer);
@@ -261,6 +271,8 @@ class nsWaylandDisplay {
 
   bool mIsPrimarySelectionEnabled = false;
   bool mHasStereoContent = false;
+  bool mHasStereoOutput = false;
+  nsTArray<UniquePtr<StereoOutputDevice>> mStereoOutputDevices;
 
   AutoTArray<UniquePtr<MonitorConfig>, 4> mMonitors;
 };

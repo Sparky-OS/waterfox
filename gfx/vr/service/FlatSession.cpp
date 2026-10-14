@@ -8,6 +8,7 @@
 
 #include "gfxVR.h"
 #include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "prthread.h"
 
 namespace mozilla::gfx {
@@ -22,6 +23,10 @@ FlatSession::~FlatSession() { Shutdown(); }
 bool FlatSession::Initialize(mozilla::gfx::VRSystemState& aSystemState,
                              bool aDetectRuntimesOnly) {
   if (!StaticPrefs::dom_vr_enabled() || !StaticPrefs::dom_vr_flat_enabled()) {
+    return false;
+  }
+  // Only while an output shows stereo 3D, or can (nsWaylandDisplay).
+  if (!gfxVars::StereoOutputs()) {
     return false;
   }
   if (aDetectRuntimesOnly) {

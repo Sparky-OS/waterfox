@@ -84,6 +84,7 @@ class MOZ_STACK_CLASS gfxVarsCollectUpdates;
   _(UseDMABuf, bool, false)                                        \
   _(UseDMABufWebGL, bool, true)                                    \
   _(StereoContentDeclaration, bool, false)                         \
+  _(StereoOutputs, bool, false)                                    \
   _(DMABufModifiersXRGB, ArrayOfuint64_t, nsTArray<uint64_t>())    \
   _(DMABufModifiersARGB, ArrayOfuint64_t, nsTArray<uint64_t>())    \
   _(WebRenderRequiresHardwareDriver, bool, false)                  \

@@ -8,6 +8,7 @@
 #include "base/message_loop.h"    // for MessageLoop
 #include "base/task.h"            // for NewRunnableMethod, etc
 #include "mozilla/gfx/Logging.h"  // for gfxCriticalNote
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/StaticMutex.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/StaticPrefs_widget.h"
@@ -776,6 +777,235 @@ void nsWaylandDisplay::RefreshScreens() {
   ScreenHelperGTK::RequestRefreshScreens();
 }
 
+// Outputs that show stereo 3D, or can (Sparky Stereo OS). Every event of a
+// listener needs a function; the ones not looked at do nothing.
+template <typename F>
+struct WaylandIgnore;
+template <typename... A>
+struct WaylandIgnore<void (*)(A...)> {
+  static void Event(A...) {}
+};
+#define WAYLAND_IGNORE(listener, event) \
+  WaylandIgnore<decltype(listener::event)>::Event
+
+// The mode flags of kde_output_device_mode_v2 that say 3D: the display's own
+// HDMI 1.4 3D modes (stereo_side_by_side_half to stereo_side_by_side_full),
+// the virtual 3D modes (anaglyph, rows, columns, checkerboard, virtual_stereo)
+// and frame-sequential ones.
+static constexpr uint32_t kStereoModeFlags =
+    KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_STEREO_SIDE_BY_SIDE_HALF |
+    KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_STEREO_TOP_AND_BOTTOM |
+    KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_STEREO_FRAME_PACKING |
+    KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_STEREO_SIDE_BY_SIDE_FULL |
+    KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_STEREO_ANAGLYPH_MODERN |
+    KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_STEREO_ANAGLYPH_CRT |
+    KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_STEREO_ROWS_LEFT_FIRST |
+    KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_STEREO_ROWS_RIGHT_FIRST |
+    KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_STEREO_COLUMNS_LEFT_FIRST |
+    KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_STEREO_COLUMNS_RIGHT_FIRST |
+    KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_STEREO_CHECKERBOARD_LEFT_FIRST |
+    KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_STEREO_CHECKERBOARD_RIGHT_FIRST |
+    KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_VIRTUAL_STEREO |
+    KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_STEREO_SEQUENTIAL_LEFT_FIRST |
+    KDE_OUTPUT_DEVICE_MODE_V2_FLAGS_STEREO_SEQUENTIAL_RIGHT_FIRST;
+
+struct nsWaylandDisplay::StereoOutputDevice {
+  nsWaylandDisplay* mDisplay = nullptr;
+  kde_output_device_v2* mDevice = nullptr;
+  // Each mode and whether it is a 3D one.
+  nsTArray<std::pair<kde_output_device_mode_v2*, bool>> mModes;
+  bool mEnabled = true;
+  bool mPaired = false;
+
+  bool ShowsStereo() const {
+    if (!mEnabled) {
+      return false;
+    }
+    if (mPaired) {
+      return true;
+    }
+    for (const auto& mode : mModes) {
+      if (mode.second) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  ~StereoOutputDevice() {
+    for (auto& mode : mModes) {
+      wl_proxy_destroy(reinterpret_cast<wl_proxy*>(mode.first));
+    }
+    if (mDevice) {
+      if (wl_proxy_get_version(reinterpret_cast<wl_proxy*>(mDevice)) >=
+          KDE_OUTPUT_DEVICE_V2_RELEASE_SINCE_VERSION) {
+        kde_output_device_v2_release(mDevice);
+      } else {
+        kde_output_device_v2_destroy(mDevice);
+      }
+    }
+  }
+};
+
+static void StereoOutputModeFlags(void* aData, kde_output_device_mode_v2* aMode,
+                                  uint32_t aFlags) {
+  auto* device = static_cast<nsWaylandDisplay::StereoOutputDevice*>(aData);
+  for (auto& mode : device->mModes) {
+    if (mode.first == aMode) {
+      mode.second = !!(aFlags & kStereoModeFlags);
+    }
+  }
+}
+
+static void StereoOutputModeRemoved(void* aData,
+                                    kde_output_device_mode_v2* aMode) {
+  auto* device = static_cast<nsWaylandDisplay::StereoOutputDevice*>(aData);
+  device->mModes.RemoveElementsBy(
+      [&](const auto& mode) { return mode.first == aMode; });
+  wl_proxy_destroy(reinterpret_cast<wl_proxy*>(aMode));
+  device->mDisplay->UpdateStereoOutputs();
+}
+
+static const kde_output_device_mode_v2_listener kStereoOutputModeListener = {
+    .size = WAYLAND_IGNORE(kde_output_device_mode_v2_listener, size),
+    .refresh = WAYLAND_IGNORE(kde_output_device_mode_v2_listener, refresh),
+    .preferred = WAYLAND_IGNORE(kde_output_device_mode_v2_listener, preferred),
+    .removed = StereoOutputModeRemoved,
+    .flags = StereoOutputModeFlags,
+};
+
+static void StereoOutputMode(void* aData, kde_output_device_v2* aDevice,
+                             kde_output_device_mode_v2* aMode) {
+  auto* device = static_cast<nsWaylandDisplay::StereoOutputDevice*>(aData);
+  device->mModes.AppendElement(std::make_pair(aMode, false));
+  kde_output_device_mode_v2_add_listener(aMode, &kStereoOutputModeListener,
+                                         device);
+}
+
+static void StereoOutputDone(void* aData, kde_output_device_v2* aDevice) {
+  static_cast<nsWaylandDisplay::StereoOutputDevice*>(aData)
+      ->mDisplay->UpdateStereoOutputs();
+}
+
+static void StereoOutputEnabled(void* aData, kde_output_device_v2* aDevice,
+                                int32_t aEnabled) {
+  static_cast<nsWaylandDisplay::StereoOutputDevice*>(aData)->mEnabled =
+      !!aEnabled;
+}
+
+static void StereoOutputPair(void* aData, kde_output_device_v2* aDevice,
+                             const char* aPartner, uint32_t aMode,
+                             uint32_t aRole, uint32_t aReflection) {
+  static_cast<nsWaylandDisplay::StereoOutputDevice*>(aData)->mPaired =
+      aPartner && *aPartner;
+}
+
+static void StereoOutputRemoved(void* aData, kde_output_device_v2* aDevice) {
+  auto* device = static_cast<nsWaylandDisplay::StereoOutputDevice*>(aData);
+  device->mDisplay->RemoveStereoOutputDevice(device);
+}
+
+#define IGNORE_OUTPUT(event) WAYLAND_IGNORE(kde_output_device_v2_listener, event)
+static const kde_output_device_v2_listener kStereoOutputListener = {
+    .geometry = IGNORE_OUTPUT(geometry),
+    .current_mode = IGNORE_OUTPUT(current_mode),
+    .mode = StereoOutputMode,
+    .done = StereoOutputDone,
+    .scale = IGNORE_OUTPUT(scale),
+    .edid = IGNORE_OUTPUT(edid),
+    .enabled = StereoOutputEnabled,
+    .uuid = IGNORE_OUTPUT(uuid),
+    .serial_number = IGNORE_OUTPUT(serial_number),
+    .eisa_id = IGNORE_OUTPUT(eisa_id),
+    .capabilities = IGNORE_OUTPUT(capabilities),
+    .overscan = IGNORE_OUTPUT(overscan),
+    .vrr_policy = IGNORE_OUTPUT(vrr_policy),
+    .rgb_range = IGNORE_OUTPUT(rgb_range),
+    .name = IGNORE_OUTPUT(name),
+    .high_dynamic_range = IGNORE_OUTPUT(high_dynamic_range),
+    .sdr_brightness = IGNORE_OUTPUT(sdr_brightness),
+    .wide_color_gamut = IGNORE_OUTPUT(wide_color_gamut),
+    .auto_rotate_policy = IGNORE_OUTPUT(auto_rotate_policy),
+    .icc_profile_path = IGNORE_OUTPUT(icc_profile_path),
+    .brightness_metadata = IGNORE_OUTPUT(brightness_metadata),
+    .brightness_overrides = IGNORE_OUTPUT(brightness_overrides),
+    .sdr_gamut_wideness = IGNORE_OUTPUT(sdr_gamut_wideness),
+    .color_profile_source = IGNORE_OUTPUT(color_profile_source),
+    .brightness = IGNORE_OUTPUT(brightness),
+    .color_power_tradeoff = IGNORE_OUTPUT(color_power_tradeoff),
+    .dimming = IGNORE_OUTPUT(dimming),
+    .replication_source = IGNORE_OUTPUT(replication_source),
+    .ddc_ci_allowed = IGNORE_OUTPUT(ddc_ci_allowed),
+    .max_bits_per_color = IGNORE_OUTPUT(max_bits_per_color),
+    .max_bits_per_color_range = IGNORE_OUTPUT(max_bits_per_color_range),
+    .automatic_max_bits_per_color_limit =
+        IGNORE_OUTPUT(automatic_max_bits_per_color_limit),
+    .edr_policy = IGNORE_OUTPUT(edr_policy),
+    .sharpness = IGNORE_OUTPUT(sharpness),
+    .priority = IGNORE_OUTPUT(priority),
+    .auto_brightness = IGNORE_OUTPUT(auto_brightness),
+    .removed = StereoOutputRemoved,
+    .hdr_icc_profile_path = IGNORE_OUTPUT(hdr_icc_profile_path),
+    .hdr_color_profile_source = IGNORE_OUTPUT(hdr_color_profile_source),
+    .abm_level = IGNORE_OUTPUT(abm_level),
+    .stereo_formats = IGNORE_OUTPUT(stereo_formats),
+    .stereo_pair = StereoOutputPair,
+};
+#undef IGNORE_OUTPUT
+
+static void StereoOutputRegistryOutput(void* aData,
+                                       kde_output_device_registry_v2* aRegistry,
+                                       kde_output_device_v2* aDevice) {
+  static_cast<nsWaylandDisplay*>(aData)->AddStereoOutputDevice(aDevice);
+}
+
+static void StereoOutputRegistryFinished(
+    void* aData, kde_output_device_registry_v2* aRegistry) {
+  kde_output_device_registry_v2_destroy(aRegistry);
+}
+
+static const kde_output_device_registry_v2_listener
+    kStereoOutputRegistryListener = {
+        .finished = StereoOutputRegistryFinished,
+        .output = StereoOutputRegistryOutput,
+};
+
+void nsWaylandDisplay::AddStereoOutputDevice(kde_output_device_v2* aDevice) {
+  if (!aDevice) {
+    return;
+  }
+  auto device = MakeUnique<StereoOutputDevice>();
+  device->mDisplay = this;
+  device->mDevice = aDevice;
+  kde_output_device_v2_add_listener(aDevice, &kStereoOutputListener,
+                                    device.get());
+  mStereoOutputDevices.AppendElement(std::move(device));
+}
+
+void nsWaylandDisplay::RemoveStereoOutputDevice(StereoOutputDevice* aDevice) {
+  mStereoOutputDevices.RemoveElementsBy(
+      [&](const auto& device) { return device.get() == aDevice; });
+  UpdateStereoOutputs();
+}
+
+void nsWaylandDisplay::UpdateStereoOutputs() {
+  bool stereo = false;
+  for (const auto& device : mStereoOutputDevices) {
+    stereo |= device->ShowsStereo();
+  }
+  if (stereo == mHasStereoOutput) {
+    return;
+  }
+  LOG("nsWaylandDisplay::UpdateStereoOutputs() %d", stereo);
+  mHasStereoOutput = stereo;
+  // Once the platform is set up (gfxPlatformGtk takes the first value), and
+  // only where stereo content can be declared at all.
+  if (NS_IsMainThread() && gfx::gfxVars::IsInitialized()) {
+    gfx::gfxVars::SetStereoOutputs(
+        stereo && gfx::gfxVars::StereoContentDeclaration());
+  }
+}
+
 static void global_registry_handler(void* data, wl_registry* registry,
                                     uint32_t id, const char* interface,
                                     uint32_t version) {
@@ -813,6 +1043,17 @@ static void global_registry_handler(void* data, wl_registry* registry,
     display->SetIdleInhibitManager(idle_inhibit_manager);
   } else if (iface.EqualsLiteral("kde_stereo_content_manager_v1")) {
     display->SetHasStereoContent();
+  } else if (iface.EqualsLiteral("kde_output_device_registry_v2")) {
+    // KWin's outputs and their modes, for whether one shows stereo 3D.
+    auto* outputs = WaylandRegistryBind<kde_output_device_registry_v2>(
+        registry, id, &kde_output_device_registry_v2_interface,
+        std::min(version, 24u));
+    kde_output_device_registry_v2_add_listener(
+        outputs, &kStereoOutputRegistryListener, display);
+  } else if (iface.EqualsLiteral("kde_output_device_v2")) {
+    // Before the registry (KWin 6.4 and older), one global per output.
+    display->AddStereoOutputDevice(WaylandRegistryBind<kde_output_device_v2>(
+        registry, id, &kde_output_device_v2_interface, std::min(version, 24u)));
   } else if (iface.EqualsLiteral("zwp_relative_pointer_manager_v1")) {
     auto* relative_pointer_manager =
         WaylandRegistryBind<zwp_relative_pointer_manager_v1>(

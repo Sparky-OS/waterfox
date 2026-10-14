@@ -319,6 +319,11 @@ void gfxPlatformGtk::InitWebRenderConfig() {
   // the browser present two views side by side of its own accord.
   gfxVars::SetStereoContentDeclaration(
       feature.IsEnabled() && widget::WaylandDisplayGet()->HasStereoContent());
+  // An output that shows stereo 3D, or can: the flat WebXR device is offered
+  // only then (the display keeps it current as outputs come and go).
+  gfxVars::SetStereoOutputs(
+      feature.IsEnabled() && widget::WaylandDisplayGet()->HasStereoContent() &&
+      widget::WaylandDisplayGet()->HasStereoOutput());
 #endif
 }
 
