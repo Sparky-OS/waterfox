@@ -73,6 +73,7 @@ class RenderCompositorNative : public RenderCompositor {
   void AttachExternalImage(wr::NativeSurfaceId aId,
                            wr::ExternalImageId aExternalImage) override;
   void SetSurfaceStereo(wr::NativeSurfaceId aId, uint32_t aStereo) override;
+  void SetTileStereo(wr::NativeTileId aId, bool aStereo) override;
   void AddSurface(wr::NativeSurfaceId aId,
                   const wr::CompositorSurfaceTransform& aTransform,
                   wr::DeviceIntRect aClipRect,

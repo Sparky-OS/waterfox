@@ -1267,6 +1267,7 @@ fn pc_target(
                 },
                 size: DeviceIntSize::new(width, height),
             },
+            stereo: false,
         },
         rect: DeviceIntSize::new(width, height).into(),
     }

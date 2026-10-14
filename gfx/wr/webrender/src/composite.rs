@@ -1421,6 +1421,9 @@ pub struct CompositorCapabilities {
     pub supports_surface_for_backdrop: bool,
     /// Whether external compositor surface supports negative scaling.
     pub supports_external_compositor_surface_negative_scaling: bool,
+    /// Whether the compositor shows a tile WebRender draws once per eye
+    /// (Compositor::set_tile_stereo) as two views, left eye first.
+    pub supports_stereo_tiles: bool,
 }
 
 impl Default for CompositorCapabilities {
@@ -1437,6 +1440,7 @@ impl Default for CompositorCapabilities {
             max_update_rects: 1,
             supports_surface_for_backdrop: false,
             supports_external_compositor_surface_negative_scaling: true,
+            supports_stereo_tiles: false,
         }
     }
 }
@@ -1555,6 +1559,19 @@ pub trait Compositor {
         _device: &mut Device,
         _id: NativeSurfaceId,
         _stereo: u32,
+    ) {
+    }
+
+    /// Before a tile is bound: whether WR draws it once per eye (Sparky
+    /// Stereo OS, crate::stereo). Such a tile is drawn into a buffer twice as
+    /// wide as the tile, the left eye's drawing over the valid rect, the right
+    /// eye's beside it, offset by the valid rect's width; the compositor shows
+    /// it as two views side by side, left eye first.
+    fn set_tile_stereo(
+        &mut self,
+        _device: &mut Device,
+        _id: NativeTileId,
+        _stereo: bool,
     ) {
     }
 

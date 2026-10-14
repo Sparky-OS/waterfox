@@ -1306,6 +1306,8 @@ extern "C" {
         id: NativeSurfaceId,
         stereo: u32,
     );
+    fn wr_compositor_set_tile_stereo(compositor: *mut c_void, id: NativeTileId, stereo: bool);
+    fn wr_stereo_policy(mark: u32, width: f32, height: f32) -> u32;
     fn wr_compositor_bind(
         compositor: *mut c_void,
         id: NativeTileId,
@@ -1422,6 +1424,12 @@ impl Compositor for WrCompositor {
     fn set_surface_stereo(&mut self, _device: &mut Device, id: NativeSurfaceId, stereo: u32) {
         unsafe {
             wr_compositor_set_surface_stereo(self.0, id, stereo);
+        }
+    }
+
+    fn set_tile_stereo(&mut self, _device: &mut Device, id: NativeTileId, stereo: bool) {
+        unsafe {
+            wr_compositor_set_tile_stereo(self.0, id, stereo);
         }
     }
 
@@ -1972,6 +1980,12 @@ pub extern "C" fn wr_glyph_raster_thread_delete(thread: *mut WrGlyphRasterThread
 }
 
 // Call MakeCurrent before this.
+/// How a stereo picture drawn into the page's tiles holds its views, from the
+/// browser (wr_stereo_policy in RenderCompositor.cpp).
+extern "C" fn stereo_policy(mark: u32, width: f32, height: f32) -> u32 {
+    unsafe { wr_stereo_policy(mark, width, height) }
+}
+
 #[no_mangle]
 pub extern "C" fn wr_window_new(
     window_id: WrWindowId,
@@ -2180,6 +2194,9 @@ pub extern "C" fn wr_window_new(
         enable_dithering,
         ..Default::default()
     };
+
+    // Stereo pictures drawn into the page's tiles ask the browser's policy.
+    webrender::set_stereo_policy(stereo_policy);
 
     let window_size = DeviceIntSize::new(window_width, window_height);
     let notifier = Box::new(CppNotifier { window_id });

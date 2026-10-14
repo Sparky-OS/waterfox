@@ -85,6 +85,8 @@ pub enum StaticRenderTaskSurface {
     PictureCache {
         /// Describes either a WR texture or a native OS compositor target
         surface: ResolvedSurfaceTexture,
+        /// A native tile drawn once per eye, side by side (crate::stereo).
+        stereo: bool,
     },
 }
 

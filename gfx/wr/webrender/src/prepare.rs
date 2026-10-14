@@ -45,6 +45,7 @@ use crate::render_task_cache::{RenderTaskCacheKey, to_cache_size, RenderTaskPare
 use crate::render_task::{EmptyTask, RenderTask, RenderTaskKind, MAX_BLUR_STD_DEVIATION};
 use crate::segment::SegmentBuilder;
 use crate::space::SpaceSnapper;
+use crate::stereo::{place_shape, StereoDecision};
 use crate::visibility::{DrawState, KindScratchHandle};
 
 
@@ -270,11 +271,25 @@ fn prepare_prim_for_render(
             | PrimitiveKind::RadialGradient { .. }
             | PrimitiveKind::ConicGradient { .. }
             | PrimitiveKind::LinearGradient { .. }
-            | PrimitiveKind::Image { .. }
             | PrimitiveKind::NormalBorder { .. }
             | PrimitiveKind::LineDecoration { .. }
             => {
                 use_legacy_path = false;
+            }
+            PrimitiveKind::Image { data_handle, .. } => {
+                // A stereo picture is drawn by the brush path, which draws
+                // one eye's view of it (crate::stereo).
+                let image = &data_stores.image[*data_handle];
+                let mark = frame_state
+                    .resource_cache
+                    .get_image_properties(image.kind.key)
+                    .map_or(0, |properties| properties.descriptor.flags.stereo());
+                let shape = place_shape(
+                    prim_instance.unsnapped_prim_rect,
+                    frame_context.spatial_tree,
+                    cluster.spatial_node_index,
+                );
+                use_legacy_path = StereoDecision::decide(mark, shape).is_some();
             }
             PrimitiveKind::YuvImage { .. } => {
                 let prim_info = scratch.frame.draws[prim_instance_index];

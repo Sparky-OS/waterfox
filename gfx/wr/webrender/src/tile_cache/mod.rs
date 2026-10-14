@@ -41,6 +41,7 @@ use crate::resource_cache::{ResourceCache, ImageRequest};
 use crate::scene_building::SliceFlags;
 use crate::space::SpaceMapper;
 use crate::spatial_tree::{SpatialNodeIndex, SpatialTree};
+use crate::stereo::{place_shape, StereoDecision};
 use crate::surface::{SubpixelMode, SurfaceInfo};
 use crate::util::{ScaleOffset, MatrixHelpers, MaxRect};
 use crate::visibility::{FrameVisibilityContext, FrameVisibilityState, DrawState, PrimitiveVisibilityFlags};
@@ -2471,6 +2472,16 @@ impl TileCacheInstance {
                     profile.inc(profiler::COMPOSITOR_SURFACE_BLITS);
                 }
 
+                // A stereo picture drawn straight into the tiles: they are
+                // drawn once per eye.
+                if on_picture_surface {
+                    let mark = resource_cache
+                        .get_image_properties(image_data.key)
+                        .map_or(0, |properties| properties.descriptor.flags.stereo());
+                    let shape = place_shape(local_prim_rect, frame_context.spatial_tree, prim_spatial_node_index);
+                    prim_info.stereo |= StereoDecision::decide(mark, shape).is_some();
+                }
+
                 prim_info.images.push(ImageDependency {
                     key: image_data.key,
                     generation: resource_cache.get_image_generation(image_data.key),
@@ -2594,6 +2605,13 @@ impl TileCacheInstance {
                 // Underlay with SliceFlags::IS_ATOMIC adds extra invalidation.
                 // It is for handling cases where underlay is disabled later.
                 let kind = scratch.frame.draws[draw_idx].compositor_surface_kind;
+                if kind == CompositorSurfaceKind::Blit && on_picture_surface {
+                    let mark = resource_cache
+                        .get_image_properties(prim_data.kind.yuv_key[0])
+                        .map_or(0, |properties| properties.descriptor.flags.stereo());
+                    let shape = place_shape(local_prim_rect, frame_context.spatial_tree, prim_spatial_node_index);
+                    prim_info.stereo |= StereoDecision::decide(mark, shape).is_some();
+                }
                 if kind == CompositorSurfaceKind::Blit ||
                     kind == CompositorSurfaceKind::Underlay &&
                     self.slice_flags.contains(SliceFlags::IS_ATOMIC) {

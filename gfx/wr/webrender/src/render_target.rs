@@ -596,6 +596,9 @@ pub struct ResolveOp {
 pub enum PictureCacheTargetKind {
     Draw {
         alpha_batch_container: AlphaBatchContainer,
+        /// A tile drawn once per eye (crate::stereo): the right eye's drawing,
+        /// beside the left eye's, which alpha_batch_container holds.
+        right_eye: Option<AlphaBatchContainer>,
     },
     Blit {
         task_id: RenderTaskId,
@@ -611,6 +614,13 @@ pub struct PictureCacheTarget {
     pub clear_color: Option<ColorF>,
     pub dirty_rect: DeviceIntRect,
     pub valid_rect: DeviceIntRect,
+}
+
+impl PictureCacheTarget {
+    /// Drawn once per eye, side by side (crate::stereo).
+    pub fn is_stereo(&self) -> bool {
+        matches!(self.kind, PictureCacheTargetKind::Draw { right_eye: Some(..), .. })
+    }
 }
 
 fn add_blur_instances(

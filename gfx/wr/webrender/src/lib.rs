@@ -131,6 +131,7 @@ mod scene_building;
 mod screen_capture;
 mod segment;
 mod spatial_node;
+mod stereo;
 mod surface;
 mod texture_pack;
 mod texture_cache;
@@ -178,6 +179,7 @@ extern crate webrender_build;
 
 #[doc(hidden)]
 pub use crate::composite::{LayerCompositor, CompositorInputConfig, CompositorSurfaceUsage, ClipRadius};
+pub use crate::stereo::{set_stereo_policy, StereoPolicyFn};
 pub use crate::composite::{CompositorConfig, Compositor, CompositorCapabilities, CompositorSurfaceTransform};
 pub use crate::composite::{NativeSurfaceId, NativeTileId, NativeSurfaceInfo, PartialPresentCompositor};
 pub use crate::composite::{MappableCompositor, MappedTileInfo, SWGLCompositeSurfaceInfo, WindowVisibility, WindowProperties};

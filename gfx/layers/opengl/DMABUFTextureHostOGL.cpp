@@ -112,6 +112,19 @@ void DMABUFTextureHostOGL::PushResourceUpdates(
   auto imageType =
       wr::ExternalImageType::TextureHandle(wr::ImageBufferKind::Texture2D);
 
+  // The picture's stereo mark on its first plane, for WebRender: a picture
+  // drawn into the page's tiles (not given a surface of its own) has them
+  // drawn once per eye. A surface without a mark that is not a video holds one
+  // picture.
+  const bool isVideo = !!mSurface->GetAsDMABufSurfaceYUV();
+  const uint32_t stereo =
+      isVideo || mSurface->GetStereoMode() != StereoMode::MONO ||
+              mSurface->GetStereoSource() != StereoSource::NONE
+          ? EncodeStereoMark(mSurface->GetStereoMode(),
+                             mSurface->GetStereoSource(), isVideo,
+                             mSurface->GetStereoSwap())
+          : 0;
+
   switch (mSurface->GetFormat()) {
     case gfx::SurfaceFormat::R8G8B8X8:
     case gfx::SurfaceFormat::R8G8B8A8:
@@ -129,6 +142,7 @@ void DMABUFTextureHostOGL::PushResourceUpdates(
       }
       wr::ImageDescriptor descriptor(GetSize(), *format,
                                      wr::ToOpacityType(mSurface->GetFormat()));
+      descriptor.stereo = stereo;
       (aResources.*method)(aImageKeys[0], descriptor, aExtID, imageType, 0,
                            /* aNormalizedUvs */ false);
       break;
@@ -141,6 +155,7 @@ void DMABUFTextureHostOGL::PushResourceUpdates(
       wr::ImageDescriptor descriptor0(
           gfx::IntSize(mSurface->GetWidth(0), mSurface->GetHeight(0)),
           wr::ImageFormat::R8, wr::OpacityType::HasAlphaChannel);
+      descriptor0.stereo = stereo;
       wr::ImageDescriptor descriptor1(
           gfx::IntSize(mSurface->GetWidth(1), mSurface->GetHeight(1)),
           wr::ImageFormat::RG8, wr::OpacityType::Opaque);
@@ -158,6 +173,7 @@ void DMABUFTextureHostOGL::PushResourceUpdates(
       wr::ImageDescriptor descriptor0(
           gfx::IntSize(mSurface->GetWidth(0), mSurface->GetHeight(0)),
           wr::ImageFormat::R8, wr::OpacityType::HasAlphaChannel);
+      descriptor0.stereo = stereo;
       wr::ImageDescriptor descriptor1(
           gfx::IntSize(mSurface->GetWidth(1), mSurface->GetHeight(1)),
           wr::ImageFormat::R8, wr::OpacityType::HasAlphaChannel);
@@ -178,6 +194,7 @@ void DMABUFTextureHostOGL::PushResourceUpdates(
       wr::ImageDescriptor descriptor0(
           gfx::IntSize(mSurface->GetWidth(0), mSurface->GetHeight(0)),
           wr::ImageFormat::R16, wr::OpacityType::HasAlphaChannel);
+      descriptor0.stereo = stereo;
       wr::ImageDescriptor descriptor1(
           gfx::IntSize(mSurface->GetWidth(1), mSurface->GetHeight(1)),
           wr::ImageFormat::RG16, wr::OpacityType::HasAlphaChannel);

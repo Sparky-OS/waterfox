@@ -2859,6 +2859,7 @@ impl Renderer {
         projection: &default::Transform3D<f32>,
         render_tasks: &RenderTaskGraph,
         stats: &mut RendererStats,
+        eye: usize,
     ) {
         profile_scope!("draw_picture_cache_target");
         if let Some(history) = &mut self.command_log {
@@ -2887,9 +2888,12 @@ impl Renderer {
             self.set_blend(false, framebuffer_kind);
 
             let clear_color = target.clear_color.map(|c| c.to_array());
-            let scissor_rect = if self.device.get_capabilities().supports_render_target_partial_update
+            // A tile drawn per eye shares its buffer between the eyes: each
+            // clears only its own part.
+            let scissor_rect = if target.is_stereo() ||
+                (self.device.get_capabilities().supports_render_target_partial_update
                 && (target.dirty_rect != target.valid_rect
-                    || self.device.get_capabilities().prefers_clear_scissor)
+                    || self.device.get_capabilities().prefers_clear_scissor))
             {
                 Some(target.dirty_rect)
             } else {
@@ -2943,7 +2947,11 @@ impl Renderer {
         }
 
         match target.kind {
-            PictureCacheTargetKind::Draw { ref alpha_batch_container } => {
+            PictureCacheTargetKind::Draw { ref alpha_batch_container, ref right_eye } => {
+                let alpha_batch_container = match (eye, right_eye) {
+                    (1, Some(right_eye)) => right_eye,
+                    _ => alpha_batch_container,
+                };
                 self.draw_alpha_batch_container(
                     alpha_batch_container,
                     draw_target,
@@ -3996,6 +4004,11 @@ impl Renderer {
                             let surface_info = match self.current_compositor_kind {
                                 CompositorKind::Native { .. } => {
                                     let compositor = self.compositor_config.compositor().unwrap();
+                                    compositor.set_tile_stereo(
+                                        &mut self.device,
+                                        id,
+                                        picture_target.is_stereo(),
+                                    );
                                     compositor.bind(
                                         &mut self.device,
                                         id,
@@ -4031,7 +4044,28 @@ impl Renderer {
                         &projection,
                         &frame.render_tasks,
                         &mut results.stats,
+                        0,
                     );
+
+                    // A tile drawn once per eye: the right eye beside the
+                    // left, offset by the valid rect's width (crate::stereo).
+                    if picture_target.is_stereo() {
+                        if let DrawTarget::NativeSurface { offset, external_fbo_id, dimensions } = draw_target {
+                            let right = DrawTarget::NativeSurface {
+                                offset: offset + DeviceIntVector2D::new(picture_target.valid_rect.width(), 0),
+                                external_fbo_id,
+                                dimensions,
+                            };
+                            self.draw_picture_cache_target(
+                                picture_target,
+                                right,
+                                &projection,
+                                &frame.render_tasks,
+                                &mut results.stats,
+                                1,
+                            );
+                        }
+                    }
 
                     // Native OS surfaces must be unbound at the end of drawing to them
                     if let ResolvedSurfaceTexture::Native { .. } = picture_target.surface {

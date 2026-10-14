@@ -37,6 +37,7 @@ use smallvec::SmallVec;
 use std::{f32, i32, usize};
 use crate::util::{project_rect, MaxRect, ScaleOffset};
 use crate::segment::EdgeMask;
+use crate::stereo::{place_shape, StereoDecision};
 
 
 // Special sentinel value recognized by the shader. It is considered to be
@@ -730,12 +731,21 @@ pub struct BatchBuilder {
     glyph_fetch_buffer: Vec<GlyphFetchResult>,
 
     batcher: AlphaBatchBuilder,
+
+    /// The eye a stereo tile is batched for (0 left, 1 right), whose part
+    /// of each stereo picture is drawn (crate::stereo).
+    stereo_eye: Option<usize>,
 }
 
 impl BatchBuilder {
+    pub fn set_stereo_eye(&mut self, eye: Option<usize>) {
+        self.stereo_eye = eye;
+    }
+
     pub fn new(batcher: AlphaBatchBuilder) -> Self {
         BatchBuilder {
             glyph_fetch_buffer: Vec::new(),
+            stereo_eye: None,
             batcher,
         }
     }
@@ -2107,6 +2117,45 @@ impl BatchBuilder {
                     yuv_image_data.color_range,
                 );
 
+                // One eye's view of a stereo picture: in a tile drawn per eye,
+                // that eye's; drawn once, the left eye's view of views the
+                // browser drew (crate::stereo).
+                let mark = ctx.resource_cache
+                    .get_image_properties(yuv_image_data.yuv_key[0])
+                    .map_or(0, |properties| properties.descriptor.flags.stereo());
+                let shape = place_shape(prim_rect, ctx.spatial_tree, prim_spatial_node_index);
+                if let Some(decision) = StereoDecision::decide(mark, shape) {
+                    if let Some(eye) = self.stereo_eye.or(decision.flat_eye()) {
+                        let mut writer = gpu_buffer_builder.f32.write_blocks(1 + VECS_PER_SEGMENT);
+                        yuv_image_data.write_prim_gpu_blocks(&mut writer);
+                        self.add_stereo_eye_to_batch(
+                            eye,
+                            decision,
+                            prim_rect,
+                            writer,
+                            BatchKey {
+                                blend_mode,
+                                kind: BatchKind::Brush(kind),
+                                textures: BatchTextures::empty(),
+                            },
+                            textures,
+                            0,
+                            [uv_rect_addresses[0], uv_rect_addresses[1], uv_rect_addresses[2], 0],
+                            &base_prim_header,
+                            batch_features,
+                            brush_flags,
+                            common_data.transformed_aa_edges,
+                            bounding_rect,
+                            z_id,
+                            prim_info.clip_task_index,
+                            ctx,
+                            render_tasks,
+                            prim_headers,
+                        );
+                        return;
+                    }
+                }
+
                 let batch_params = BrushBatchParameters::shared(
                     kind,
                     textures,
@@ -2198,6 +2247,54 @@ impl BatchBuilder {
                             return;
                         }
                     };
+
+                    // One eye's view of a stereo picture: in a tile drawn per
+                    // eye, that eye's; drawn once, the left eye's view of
+                    // views the browser drew (crate::stereo).
+                    let mark = ctx.resource_cache
+                        .get_image_properties(image_data.key)
+                        .map_or(0, |properties| properties.descriptor.flags.stereo());
+                    let shape = place_shape(prim_rect, ctx.spatial_tree, prim_spatial_node_index);
+                    if let Some(decision) = StereoDecision::decide(mark, shape) {
+                        if let Some(eye) = self.stereo_eye.or(decision.flat_eye()) {
+                            let mut writer = gpu_buffer_builder.f32.write_blocks(3 + VECS_PER_SEGMENT);
+                            writer.push_one(image_data.color.premultiplied());
+                            writer.push_one(PremultipliedColorF::WHITE);
+                            // A negative stretch makes the shader take the local size.
+                            writer.push_one([-1.0, 0.0, 0.0, 0.0]);
+                            let mut textures = TextureSet::UNTEXTURED;
+                            textures.colors[0] = texture_source;
+                            let brush_flags = match image_scratch.normalized_uvs {
+                                true => brush_flags | BrushFlags::NORMALIZED_UVS,
+                                false => brush_flags,
+                            };
+                            self.add_stereo_eye_to_batch(
+                                eye,
+                                decision,
+                                image_scratch.adjustment.map_local_rect(&prim_rect),
+                                writer,
+                                BatchKey {
+                                    blend_mode,
+                                    kind: BatchKind::Brush(BrushBatchKind::Image(texture_source.image_buffer_kind())),
+                                    textures: BatchTextures::empty(),
+                                },
+                                textures,
+                                uv_rect_address.as_int(),
+                                prim_user_data,
+                                &base_prim_header,
+                                batch_features,
+                                brush_flags,
+                                common_data.transformed_aa_edges,
+                                bounding_rect,
+                                z_id,
+                                prim_info.clip_task_index,
+                                ctx,
+                                render_tasks,
+                                prim_headers,
+                            );
+                            return;
+                        }
+                    }
 
                     let batch_params = BrushBatchParameters::shared(
                         BrushBatchKind::Image(texture_source.image_buffer_kind()),
@@ -2485,6 +2582,75 @@ impl BatchBuilder {
     /// if the segments enable it.
     /// In other words passing EdgeAaSegmentFlags::all() does not necessarily mean all edges will
     /// be anti-aliased, only that they could be.
+    /// One eye's drawing of a stereo picture in a tile drawn per eye
+    /// (crate::stereo): the eye's part of the picture, as a segment relative
+    /// to the primitive, over the part of the place the eye's view takes.
+    /// `writer` holds the brush's own blocks; the segment is added to it.
+    fn add_stereo_eye_to_batch(
+        &mut self,
+        eye: usize,
+        decision: StereoDecision,
+        local_rect: LayoutRect,
+        mut writer: crate::renderer::GpuBufferWriterF<'_>,
+        batch_key: BatchKey,
+        textures: TextureSet,
+        resource_address: i32,
+        user_data: [i32; 4],
+        base_prim_header: &PrimitiveHeader,
+        features: BatchFeatures,
+        brush_flags: BrushFlags,
+        edge_aa_mask: EdgeMask,
+        bounding_rect: &PictureRect,
+        z_id: ZBufferId,
+        clip_task_index: ClipTaskIndex,
+        ctx: &RenderTargetContext,
+        render_tasks: &RenderTaskGraph,
+        prim_headers: &mut PrimitiveHeaders,
+    ) {
+        let segment = decision.eye_rect(local_rect).translate(-local_rect.min.to_vector());
+        writer.push_one([segment.min.x, segment.min.y, segment.max.x, segment.max.y]);
+        writer.push_one(decision.eye_fraction(eye));
+        let specific_prim_address = writer.finish();
+
+        let prim_header = PrimitiveHeader {
+            local_rect,
+            specific_prim_address: specific_prim_address.as_int(),
+            user_data,
+            ..*base_prim_header
+        };
+        let prim_header_index = prim_headers.push(&prim_header);
+
+        let (clip_task_address, clip_mask) = match ctx.get_prim_clip_task_and_texture(
+            clip_task_index,
+            render_tasks,
+        ) {
+            Some(result) => result,
+            None => return,
+        };
+
+        let batch_key = BatchKey {
+            textures: BatchTextures {
+                input: textures,
+                clip_mask,
+            },
+            ..batch_key
+        };
+
+        self.add_brush_instance_to_batches(
+            batch_key,
+            features,
+            bounding_rect,
+            z_id,
+            0,
+            EdgeMask::all() & edge_aa_mask,
+            clip_task_address,
+            brush_flags | BrushFlags::SEGMENT_RELATIVE | BrushFlags::SEGMENT_TEXEL_RECT |
+                BrushFlags::PERSPECTIVE_INTERPOLATION,
+            prim_header_index,
+            resource_address,
+        );
+    }
+
     fn add_segment_to_batch(
         &mut self,
         segment: &BrushSegment,

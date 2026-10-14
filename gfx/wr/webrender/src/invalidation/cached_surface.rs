@@ -111,6 +111,7 @@ impl CachedSurface {
         // for this tile. This is used to minimize the size of the scissor rect
         // during rasterization and the draw rect during composition of partial tiles.
         self.local_valid_rect = self.local_valid_rect.union(&info.prim_clip_box);
+        self.current_descriptor.stereo |= info.stereo;
 
         // TODO(gw): The prim_clip_rect can be impacted by the clip rect of the display port,
         //           which can cause invalidations when a new display list with changed
@@ -277,6 +278,12 @@ impl CachedSurface {
             self.invalidate(None, InvalidationReason::ValidRectChanged);
             state.composite_state.dirty_rects_are_valid = false;
         }
+        // A tile drawn once per eye, or no longer so: both halves of its
+        // surface are drawn anew.
+        if self.current_descriptor.stereo != self.prev_descriptor.stereo {
+            self.invalidate(None, InvalidationReason::StereoChanged);
+            state.composite_state.dirty_rects_are_valid = false;
+        }
     }
 
     /// Invalidate this tile. If `invalidation_rect` is None, the entire
@@ -371,6 +378,9 @@ pub struct PrimitiveDependencyInfo {
     /// Per-clip data: (clip intern uid, scratch range for clip corners).
     /// The uid covers the clip's shape/mode; position is captured in the scratch range.
     pub clips: SmallVec<[(ItemUid, VertRange); 4]>,
+    /// The primitive is a stereo picture drawn into the tile, which is then
+    /// drawn once per eye (crate::stereo).
+    pub stereo: bool,
 }
 
 impl PrimitiveDependencyInfo {
@@ -384,6 +394,7 @@ impl PrimitiveDependencyInfo {
             prim_scratch: VertRange::INVALID,
             cov_scratch: VertRange::INVALID,
             clips: smallvec::SmallVec::new(),
+            stereo: false,
         }
     }
 }
@@ -436,6 +447,9 @@ pub struct CachedSurfaceDescriptor {
     /// Packed per-prim dependency information
     pub dep_data: Vec<u8>,
 
+    /// A stereo picture is drawn into this surface: it is drawn once per eye.
+    pub stereo: bool,
+
     /// Per-tile quantized raster-space vert data. VertRanges stored in
     /// PrimitiveDescriptor and PrimitiveDependency::Clip index into this buffer.
     pub vert_data: Vec<i32>,
@@ -449,6 +463,7 @@ impl CachedSurfaceDescriptor {
             vert_data: Vec::new(),
             prims: Vec::new(),
             last_updated_frame_id: FrameId::INVALID,
+            stereo: false,
         }
     }
 
@@ -476,6 +491,7 @@ impl CachedSurfaceDescriptor {
     /// are being rebuilt.
     pub fn clear(&mut self) {
         self.local_valid_rect = PictureRect::zero();
+        self.stereo = false;
         self.prims.clear();
         self.dep_data.clear();
         self.vert_data.clear();

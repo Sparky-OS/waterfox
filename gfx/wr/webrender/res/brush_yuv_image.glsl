@@ -46,9 +46,19 @@ void brush_vs(
     mat4 transform,
     PictureTask pic_task,
     int brush_flags,
-    vec4 unused
+    vec4 segment_data
 ) {
-    vec2 f = (vi.local_pos - local_rect.p0) / rect_size(local_rect);
+    // A segment that draws a part of the picture over a part of the
+    // primitive (one eye's view of a stereo picture): segment_data holds the
+    // part, as fractions of the picture.
+    RectWithEndpoint rect = local_rect;
+    vec4 part = vec4(0.0, 0.0, 1.0, 1.0);
+    if ((brush_flags & BRUSH_FLAG_SEGMENT_RELATIVE) != 0 &&
+        (brush_flags & BRUSH_FLAG_TEXEL_RECT) != 0) {
+        rect = segment_rect;
+        part = segment_data;
+    }
+    vec2 f = (vi.local_pos - rect.p0) / rect_size(rect);
 
     YuvPrimitive prim = fetch_yuv_primitive(prim_address);
 
@@ -73,17 +83,29 @@ void brush_vs(
         ImageSource res_y = fetch_image_source(prim_user_data.x);
         ImageSource res_u = fetch_image_source(prim_user_data.y);
         ImageSource res_v = fetch_image_source(prim_user_data.z);
-        write_uv_rect(res_y.uv_rect.p0, res_y.uv_rect.p1, f, TEX_SIZE_YUV(sColor0), vUv_Y, vUvBounds_Y);
-        write_uv_rect(res_u.uv_rect.p0, res_u.uv_rect.p1, f, TEX_SIZE_YUV(sColor1), vUv_U, vUvBounds_U);
-        write_uv_rect(res_v.uv_rect.p0, res_v.uv_rect.p1, f, TEX_SIZE_YUV(sColor2), vUv_V, vUvBounds_V);
+        write_uv_rect(mix(res_y.uv_rect.p0, res_y.uv_rect.p1, part.xy),
+                      mix(res_y.uv_rect.p0, res_y.uv_rect.p1, part.zw),
+                      f, TEX_SIZE_YUV(sColor0), vUv_Y, vUvBounds_Y);
+        write_uv_rect(mix(res_u.uv_rect.p0, res_u.uv_rect.p1, part.xy),
+                      mix(res_u.uv_rect.p0, res_u.uv_rect.p1, part.zw),
+                      f, TEX_SIZE_YUV(sColor1), vUv_U, vUvBounds_U);
+        write_uv_rect(mix(res_v.uv_rect.p0, res_v.uv_rect.p1, part.xy),
+                      mix(res_v.uv_rect.p0, res_v.uv_rect.p1, part.zw),
+                      f, TEX_SIZE_YUV(sColor2), vUv_V, vUvBounds_V);
     } else if (vFormat.x == YUV_FORMAT_NV12 || vFormat.x == YUV_FORMAT_P010) {
         ImageSource res_y = fetch_image_source(prim_user_data.x);
         ImageSource res_u = fetch_image_source(prim_user_data.y);
-        write_uv_rect(res_y.uv_rect.p0, res_y.uv_rect.p1, f, TEX_SIZE_YUV(sColor0), vUv_Y, vUvBounds_Y);
-        write_uv_rect(res_u.uv_rect.p0, res_u.uv_rect.p1, f, TEX_SIZE_YUV(sColor1), vUv_U, vUvBounds_U);
+        write_uv_rect(mix(res_y.uv_rect.p0, res_y.uv_rect.p1, part.xy),
+                      mix(res_y.uv_rect.p0, res_y.uv_rect.p1, part.zw),
+                      f, TEX_SIZE_YUV(sColor0), vUv_Y, vUvBounds_Y);
+        write_uv_rect(mix(res_u.uv_rect.p0, res_u.uv_rect.p1, part.xy),
+                      mix(res_u.uv_rect.p0, res_u.uv_rect.p1, part.zw),
+                      f, TEX_SIZE_YUV(sColor1), vUv_U, vUvBounds_U);
     } else if (vFormat.x == YUV_FORMAT_INTERLEAVED) {
         ImageSource res_y = fetch_image_source(prim_user_data.x);
-        write_uv_rect(res_y.uv_rect.p0, res_y.uv_rect.p1, f, TEX_SIZE_YUV(sColor0), vUv_Y, vUvBounds_Y);
+        write_uv_rect(mix(res_y.uv_rect.p0, res_y.uv_rect.p1, part.xy),
+                      mix(res_y.uv_rect.p0, res_y.uv_rect.p1, part.zw),
+                      f, TEX_SIZE_YUV(sColor0), vUv_Y, vUvBounds_Y);
     }
 }
 #endif

@@ -107,6 +107,8 @@ pub enum InvalidationReason {
     ScaleChanged,
     // The content of the sampling surface changed
     SurfaceContentChanged,
+    // A stereo picture came to be drawn into the tile, or left it
+    StereoChanged,
 }
 
 /// The result of a primitive dependency comparison. Size is a u8

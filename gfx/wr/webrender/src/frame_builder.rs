@@ -1220,7 +1220,7 @@ pub fn build_render_pass(
                     }
                 }
             }
-            SubPassSurface::Persistent { surface: StaticRenderTaskSurface::PictureCache { ref surface, .. }, .. } => {
+            SubPassSurface::Persistent { surface: StaticRenderTaskSurface::PictureCache { ref surface, stereo }, .. } => {
                 assert_eq!(sub_pass.task_ids.len(), 1);
                 let task_id = sub_pass.task_ids[0];
                 let task = &render_tasks[task_id];
@@ -1241,55 +1241,67 @@ pub fn build_render_pass(
                             valid_rect = valid_rect.intersection(&surface_size_rect).unwrap_or_default();
                         }
 
-                        let batcher = AlphaBatchBuilder::new(
-                            screen_size,
-                            ctx.break_advanced_blend_batches,
-                            ctx.batch_lookback_count,
-                            task_id,
-                            task_id.into(),
-                            &ctx.frame_memory,
-                        );
-
-                        let mut batch_builder = BatchBuilder::new(batcher);
-
-                        cmd_buffer.iter_prims(&mut |cmd, spatial_node_index, segments| {
-                            batch_builder.add_prim_to_batch(
-                                cmd,
-                                spatial_node_index,
-                                ctx,
-                                render_tasks,
-                                prim_headers,
-                                transforms,
-                                pic_task.raster_spatial_node_index,
-                                pic_task.surface_spatial_node_index,
-                                z_generator,
-                                prim_instances,
-                                gpu_buffer_builder,
-                                segments,
+                        // A tile that draws a stereo picture is batched once per
+                        // eye: the left eye's drawing, then the right eye's
+                        // (crate::stereo).
+                        let eyes: &[Option<usize>] = if stereo { &[Some(0), Some(1)] } else { &[None] };
+                        let mut containers = Vec::with_capacity(eyes.len());
+                        for eye in eyes {
+                            let batcher = AlphaBatchBuilder::new(
+                                screen_size,
+                                ctx.break_advanced_blend_batches,
+                                ctx.batch_lookback_count,
+                                task_id,
+                                task_id.into(),
+                                &ctx.frame_memory,
                             );
-                        });
 
-                        let batcher = batch_builder.finalize();
+                            let mut batch_builder = BatchBuilder::new(batcher);
+                            batch_builder.set_stereo_eye(*eye);
 
-                        let mut batch_containers = ctx.frame_memory.new_vec();
-                        let mut alpha_batch_container = AlphaBatchContainer::new(
-                            Some(dirty_rect),
-                            &ctx.frame_memory
-                        );
+                            cmd_buffer.iter_prims(&mut |cmd, spatial_node_index, segments| {
+                                batch_builder.add_prim_to_batch(
+                                    cmd,
+                                    spatial_node_index,
+                                    ctx,
+                                    render_tasks,
+                                    prim_headers,
+                                    transforms,
+                                    pic_task.raster_spatial_node_index,
+                                    pic_task.surface_spatial_node_index,
+                                    z_generator,
+                                    prim_instances,
+                                    gpu_buffer_builder,
+                                    segments,
+                                );
+                            });
 
-                        batcher.build(
-                            &mut batch_containers,
-                            &mut alpha_batch_container,
-                            target_rect,
-                            None,
-                        );
-                        debug_assert!(batch_containers.is_empty());
+                            let batcher = batch_builder.finalize();
+
+                            let mut batch_containers = ctx.frame_memory.new_vec();
+                            let mut alpha_batch_container = AlphaBatchContainer::new(
+                                Some(dirty_rect),
+                                &ctx.frame_memory
+                            );
+
+                            batcher.build(
+                                &mut batch_containers,
+                                &mut alpha_batch_container,
+                                target_rect,
+                                None,
+                            );
+                            debug_assert!(batch_containers.is_empty());
+                            containers.push(alpha_batch_container);
+                        }
+                        let right_eye = if containers.len() > 1 { containers.pop() } else { None };
+                        let alpha_batch_container = containers.pop().unwrap();
 
                         let target = PictureCacheTarget {
                             surface: surface.clone(),
                             clear_color: pic_task.clear_color,
                             kind: PictureCacheTargetKind::Draw {
                                 alpha_batch_container,
+                                right_eye,
                             },
                             dirty_rect,
                             valid_rect,

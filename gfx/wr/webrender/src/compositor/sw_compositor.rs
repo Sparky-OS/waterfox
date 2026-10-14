@@ -188,6 +188,8 @@ pub struct SwTile {
     invalid: Cell<bool>,
     /// Graph node for job dependencies of this tile
     graph_node: SwCompositeGraphNodeRef,
+    /// Drawn once per eye into a buffer twice as wide (crate::stereo).
+    stereo: bool,
 }
 
 impl SwTile {
@@ -201,6 +203,7 @@ impl SwTile {
             overlaps: Cell::new(0),
             invalid: Cell::new(false),
             graph_node: SwCompositeGraphNode::new(),
+            stereo: false,
         }
     }
 
@@ -1742,6 +1745,19 @@ impl Compositor for SwCompositor {
         }
     }
 
+    fn set_tile_stereo(&mut self, device: &mut Device, id: NativeTileId, stereo: bool) {
+        // Only the native compositor shows a tile's two views.
+        if !self.use_native_compositor {
+            return;
+        }
+        if let Some(surface) = self.surfaces.get_mut(&id.surface_id) {
+            if let Some(tile) = surface.tiles.iter_mut().find(|t| t.x == id.x && t.y == id.y) {
+                tile.stereo = stereo;
+            }
+        }
+        self.compositor.set_tile_stereo(device, id, stereo);
+    }
+
     fn attach_external_image(&mut self, device: &mut Device, id: NativeSurfaceId, external_image: ExternalImageId) {
         if self.use_native_compositor {
             self.compositor.attach_external_image(device, id, external_image);
@@ -1786,6 +1802,9 @@ impl Compositor for SwCompositor {
 
                 let mut stride = 0;
                 let mut buf = ptr::null_mut();
+                // A tile drawn per eye: the right eye's drawing goes beside the
+                // left eye's, in the same rows of the mapped buffer.
+                let eyes = if tile.stereo { 2 } else { 1 };
                 if self.use_native_compositor {
                     if let Some(tile_info) = self.compositor.map_tile(device, id, dirty_rect, valid_rect) {
                         stride = tile_info.stride;
@@ -1801,11 +1820,11 @@ impl Compositor for SwCompositor {
                 self.gl.set_texture_buffer(
                     tile.color_id,
                     gl::RGBA8,
-                    valid_rect.width(),
+                    valid_rect.width() * eyes,
                     valid_rect.height(),
                     stride,
                     buf,
-                    surface.tile_size.width,
+                    surface.tile_size.width * eyes,
                     surface.tile_size.height,
                 );
                 // Reallocate the shared depth buffer to fit the valid rect, but within
@@ -1820,11 +1839,11 @@ impl Compositor for SwCompositor {
                 self.gl.set_texture_buffer(
                     self.depth_id.expect("depth texture should be initialized"),
                     gl::DEPTH_COMPONENT,
-                    valid_rect.width(),
+                    valid_rect.width() * eyes,
                     valid_rect.height(),
                     0,
                     ptr::null_mut(),
-                    self.max_tile_size.width,
+                    self.max_tile_size.width * eyes,
                     self.max_tile_size.height,
                 );
                 surface_info.fbo_id = tile.fbo_id;

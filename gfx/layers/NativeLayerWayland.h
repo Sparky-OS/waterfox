@@ -374,6 +374,10 @@ class NativeLayerWayland : public NativeLayer {
   // The part of the buffer each eye sees, normalized, top left origin.
   gfx::Rect mStereoEyeRects[2];
   gfx::IntSize mStereoBufferSize;
+  // The front buffer holds a tile WebRender drew once per eye (SetStereoTile):
+  // the left eye's drawing over the display rect, the right eye's beside it,
+  // this many pixels to the right. 0 for a tile drawn once.
+  int mStereoTileOffset = 0;
 
   enum class MainThreadUpdate {
     None,
@@ -406,6 +410,7 @@ class NativeLayerWaylandRender final : public NativeLayerWayland {
   void AttachExternalImage(wr::RenderTextureHost* aExternalImage) override;
   bool IsFrontBufferChanged() override;
   void SetStereoMark(uint32_t aStereoMark) override;
+  void SetStereoTile(bool aStereo) override;
 
   NativeLayerWaylandRender(NativeLayerRootWayland* aRootLayer,
                            const gfx::IntSize& aSize, bool aIsOpaque,
@@ -427,9 +432,19 @@ class NativeLayerWaylandRender final : public NativeLayerWayland {
   bool CommitFrontBufferToScreenLocked(
       const widget::WaylandSurfaceLock& aProofOfLock) override;
 
+  // The buffer the next drawing goes into: twice as wide as the layer for a
+  // tile drawn once per eye, and the right eye's offset in it (0 for none).
+  RefPtr<widget::WaylandBuffer> ObtainInProgressBufferLocked(
+      const widget::WaylandSurfaceLock& aProofOfLock,
+      const gfx::IntRect& aDisplayRect, bool* aReusedFrontBuffer);
+
   const RefPtr<SurfacePoolHandleWayland> mSurfacePoolHandle;
   RefPtr<widget::WaylandBuffer> mInProgressBuffer;
   gfx::IntRegion mDirtyRegion;
+  // WebRender draws the next surface once per eye.
+  bool mStereoTile = false;
+  // mInProgressBuffer's right eye offset, as mStereoTileOffset.
+  int mInProgressStereoOffset = 0;
 };
 
 class NativeLayerWaylandExternal final : public NativeLayerWayland {

@@ -4,6 +4,9 @@
 
 #include "RenderCompositor.h"
 
+#include <cmath>
+#include <iterator>
+
 #include "gfxConfig.h"
 #include "gfxPlatform.h"
 #include "GLContext.h"
@@ -27,6 +30,9 @@
 #endif
 
 #ifdef MOZ_WAYLAND
+#  include "mozilla/StaticMutex.h"
+#  include "mozilla/TimeStamp.h"
+#  include "mozilla/layers/StereoPolicy.h"
 #  include "mozilla/webrender/RenderCompositorNative.h"
 #endif
 
@@ -140,6 +146,82 @@ void wr_compositor_set_surface_stereo(void* aCompositor,
                                       uint32_t aStereo) {
   RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
   compositor->SetSurfaceStereo(aId, aStereo);
+}
+
+void wr_compositor_set_tile_stereo(void* aCompositor, wr::NativeTileId aId,
+                                   bool aStereo) {
+  RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
+  compositor->SetTileStereo(aId, aStereo);
+}
+
+#ifdef MOZ_WAYLAND
+// The last answers, for a second: WebRender asks for every stereo picture in
+// every frame it builds.
+struct StereoPolicyAnswer {
+  uint32_t mMark = 0;
+  gfx::IntSize mShape;
+  uint32_t mAnswer = 0;
+  TimeStamp mTime;
+};
+static StaticMutex sStereoPolicyMutex MOZ_UNANNOTATED;
+static StereoPolicyAnswer sStereoPolicyAnswers[8];
+static size_t sStereoPolicyNext = 0;
+#endif
+
+// How a stereo picture WebRender draws into the page's tiles holds its views
+// (webrender::set_stereo_policy): the decision the compositor's layers take
+// for a picture given a surface of its own (layers::DecideStereo), for the
+// picture's mark and the shape of its place. The answer is 0 for one
+// picture; otherwise bits 0 and 1 hold the layout (1 side by side, 2 top and
+// bottom), bit 2 the right eye first, bits 3 and 4 the fit (1 a full view in
+// the middle of the place's width, 2 of its height), bit 5 views the browser
+// drew itself (WebXR, the camera hack), which show the left eye's view where
+// they are drawn once.
+uint32_t wr_stereo_policy(uint32_t aMark, float aWidth, float aHeight) {
+#ifdef MOZ_WAYLAND
+  mozilla::StereoMode mode = mozilla::StereoMode::MONO;
+  mozilla::StereoSource source = mozilla::StereoSource::NONE;
+  bool isVideo = false;
+  bool swap = false;
+  if (!mozilla::DecodeStereoMark(aMark, &mode, &source, &isVideo, &swap)) {
+    return 0;
+  }
+  const gfx::IntSize shape(int(std::lround(aWidth)), int(std::lround(aHeight)));
+  const TimeStamp now = TimeStamp::Now();
+  StaticMutexAutoLock lock(sStereoPolicyMutex);
+  for (const auto& answer : sStereoPolicyAnswers) {
+    if (!answer.mTime.IsNull() && answer.mMark == aMark &&
+        answer.mShape == shape &&
+        (now - answer.mTime) < TimeDuration::FromSeconds(1)) {
+      return answer.mAnswer;
+    }
+  }
+  const layers::StereoDecision decision =
+      layers::DecideStereo(mode, source, swap, isVideo, shape);
+  uint32_t result = 0;
+  if (decision.mPacking != mozilla::StereoMode::MONO) {
+    result = layers::IsTopAndBottom(decision.mPacking) ? 2 : 1;
+    if (decision.mPacking == mozilla::StereoMode::RIGHT_LEFT ||
+        decision.mPacking == mozilla::StereoMode::BOTTOM_TOP) {
+      result |= 1 << 2;
+    }
+    if (decision.mFit == layers::StereoFit::HalfWidth) {
+      result |= 1 << 3;
+    } else if (decision.mFit == layers::StereoFit::HalfHeight) {
+      result |= 2 << 3;
+    }
+    if (source == mozilla::StereoSource::XR ||
+        source == mozilla::StereoSource::CAMERA) {
+      result |= 1 << 5;
+    }
+  }
+  sStereoPolicyAnswers[sStereoPolicyNext] =
+      StereoPolicyAnswer{aMark, shape, result, now};
+  sStereoPolicyNext = (sStereoPolicyNext + 1) % std::size(sStereoPolicyAnswers);
+  return result;
+#else
+  return 0;
+#endif
 }
 
 void wr_compositor_start_compositing(void* aCompositor, wr::ColorF aClearColor,

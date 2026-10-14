@@ -168,6 +168,10 @@ class RenderCompositor {
   // The picture WebRender draws into the surface carries this stereo mark
   // (EncodeStereoMark), 0 for none.
   virtual void SetSurfaceStereo(wr::NativeSurfaceId aId, uint32_t aStereo) {}
+  // Before the tile is bound: WebRender draws it once per eye, into a buffer
+  // twice as wide (the right eye beside the left one, offset by the valid
+  // rect's width), shown as two views side by side, left eye first.
+  virtual void SetTileStereo(wr::NativeTileId aId, bool aStereo) {}
   virtual void AddSurface(wr::NativeSurfaceId aId,
                           const wr::CompositorSurfaceTransform& aTransform,
                           wr::DeviceIntRect aClipRect,

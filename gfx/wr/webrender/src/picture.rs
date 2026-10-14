@@ -1991,6 +1991,7 @@ fn prepare_tiled_picture_surface(
                                 RenderTaskLocation::Static {
                                     surface: StaticRenderTaskSurface::PictureCache {
                                         surface,
+                                        stereo: false,
                                     },
                                     rect: composite_task_size.into(),
                                 },
@@ -2012,11 +2013,23 @@ fn prepare_tiled_picture_surface(
                             },
                         );
                     } else {
+                        // A tile that draws a stereo picture is drawn once per
+                        // eye, when the compositor shows such tiles
+                        // (crate::stereo).
+                        let stereo = tile.cached_surface.current_descriptor.stereo &&
+                            matches!(surface, ResolvedSurfaceTexture::Native { .. }) &&
+                            match frame_state.composite_state.compositor_kind {
+                                CompositorKind::Native { capabilities, .. } => {
+                                    capabilities.supports_stereo_tiles
+                                }
+                                CompositorKind::Draw { .. } | CompositorKind::Layer { .. } => false,
+                            };
                         let render_task_id = frame_state.rg_builder.add().init(
                             RenderTask::new(
                                 RenderTaskLocation::Static {
                                     surface: StaticRenderTaskSurface::PictureCache {
                                         surface,
+                                        stereo,
                                     },
                                     rect: composite_task_size.into(),
                                 },

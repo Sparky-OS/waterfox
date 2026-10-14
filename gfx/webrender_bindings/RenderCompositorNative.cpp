@@ -131,6 +131,10 @@ void RenderCompositorNative::GetCompositorCapabilities(
 #if defined(XP_DARWIN)
   aCaps->supports_surface_for_backdrop = !gfx::gfxVars::UseSoftwareWebRender();
 #endif
+#if defined(MOZ_WAYLAND)
+  // NativeLayerWaylandRender shows a tile drawn once per eye as two views.
+  aCaps->supports_stereo_tiles = !!mNativeLayerRoot->AsNativeLayerRootWayland();
+#endif
 }
 
 RenderCompositorNative::Surface::~Surface() = default;
@@ -416,6 +420,16 @@ void RenderCompositorNative::SetSurfaceStereo(wr::NativeSurfaceId aId,
   for (auto& [key, layer] : surface.mNativeLayers) {
     layer->SetStereoMark(aStereo);
   }
+}
+
+void RenderCompositorNative::SetTileStereo(wr::NativeTileId aId,
+                                           bool aStereo) {
+  auto surfaceCursor = mSurfaces.find(aId.surface_id);
+  MOZ_RELEASE_ASSERT(surfaceCursor != mSurfaces.end());
+  Surface& surface = surfaceCursor->second;
+  auto layerCursor = surface.mNativeLayers.find(TileKey(aId.x, aId.y));
+  MOZ_RELEASE_ASSERT(layerCursor != surface.mNativeLayers.end());
+  layerCursor->second->SetStereoTile(aStereo);
 }
 
 void RenderCompositorNative::DestroyTile(wr::NativeSurfaceId aId, int aX,

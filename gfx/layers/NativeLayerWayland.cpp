@@ -1042,74 +1042,108 @@ void NativeLayerWayland::UpdateLayerPlacementLocked(
   // view is copied side by side into a buffer of its own (RepackStereoLocked).
   bool stereo = false;
   bool repack = false;
-  DecideStereoLocked(place.Size());
-  if (mStereoPacking != StereoMode::MONO) {
-    Rect view = place;
-    if (mStereoFit == StereoFit::HalfWidth) {
-      view.x += view.width / 4;
-      view.width /= 2;
-    } else if (mStereoFit == StereoFit::HalfHeight) {
-      view.y += view.height / 4;
-      view.height /= 2;
-    }
-    Rect viewClipped = view;
-    if (mClipRect) {
-      viewClipped = viewClipped.Intersect(Rect(mClipRect.value()));
-    }
+  if (mStereoTileOffset > 0) {
+    // A tile WebRender drew once per eye: each eye's drawing lies over the
+    // display rect, the right eye's mStereoTileOffset pixels to the right of
+    // the left eye's. The surface shows the buffer itself when the tile is
+    // visible across the display rect's whole width, so that the two halves
+    // of the source box are the two drawings; otherwise the visible part of
+    // each drawing is copied side by side. A tile flipped sideways is not
+    // declared and shows the left eye's drawing.
     const bool flipX = transform2D._11 < 0.0;
     const bool flipY = transform2D._22 < 0.0;
-    if (!viewClipped.IsEmpty() && !flipX) {
-      // The visible part of a view, as a fraction of the view, in the
-      // buffer's orientation.
-      float x0 = (viewClipped.x - view.x) / view.width;
-      float x1 = (viewClipped.XMost() - view.x) / view.width;
-      float y0 = (viewClipped.y - view.y) / view.height;
-      float y1 = (viewClipped.YMost() - view.y) / view.height;
-      if (flipY) {
-        std::swap(y0, y1);
-        y0 = 1.0f - y0;
-        y1 = 1.0f - y1;
-      }
-      const float pixel = 1.0f / std::max(view.width, 1.0f);
-      const bool wholeWidth = x0 <= pixel && x1 >= 1.0f - pixel;
-      if (mStereoPacking == StereoMode::LEFT_RIGHT && wholeWidth) {
+    const Rect visible = transform2D.Inverse()
+                             .TransformBounds(surfaceRectClipped)
+                             .Intersect(bufferRect);
+    const float offset = float(mStereoTileOffset);
+    if (!visible.IsEmpty() && !flipX) {
+      if (std::abs(visible.width - offset) < 0.5f) {
         stereo = true;
-      } else if (mStereoCanRepack && !flipY) {
-        Rect views[2];
-        switch (mStereoPacking) {
-          case StereoMode::LEFT_RIGHT:
-            views[0] = Rect(0.0f, 0.0f, 0.5f, 1.0f);
-            views[1] = Rect(0.5f, 0.0f, 0.5f, 1.0f);
-            break;
-          case StereoMode::RIGHT_LEFT:
-            views[0] = Rect(0.5f, 0.0f, 0.5f, 1.0f);
-            views[1] = Rect(0.0f, 0.0f, 0.5f, 1.0f);
-            break;
-          case StereoMode::TOP_BOTTOM:
-            views[0] = Rect(0.0f, 0.0f, 1.0f, 0.5f);
-            views[1] = Rect(0.0f, 0.5f, 1.0f, 0.5f);
-            break;
-          default:  // BOTTOM_TOP
-            views[0] = Rect(0.0f, 0.5f, 1.0f, 0.5f);
-            views[1] = Rect(0.0f, 0.0f, 1.0f, 0.5f);
-            break;
-        }
+      } else if (!flipY) {
+        const float frontWidth = 2.0f * float(mSize.width);
+        const float frontHeight = std::max(float(mSize.height), 1.0f);
         for (int eye = 0; eye < 2; eye++) {
-          const Rect& v = views[eye];
           mStereoEyeRects[eye] =
-              Rect(v.x + x0 * v.width, v.y + y0 * v.height,
-                   (x1 - x0) * v.width, (y1 - y0) * v.height);
+              Rect((visible.x + float(eye) * offset) / frontWidth,
+                   visible.y / frontHeight, visible.width / frontWidth,
+                   visible.height / frontHeight);
         }
-        const int width = std::max(
-            1, int(std::lround(mStereoEyeRects[0].width * mSize.width)));
-        const int height = std::max(
-            1, int(std::lround(mStereoEyeRects[0].height * mSize.height)));
-        mStereoBufferSize = IntSize(width * 2, height);
+        mStereoBufferSize =
+            IntSize(2 * std::max(1, int(std::lround(visible.width))),
+                    std::max(1, int(std::lround(visible.height))));
         stereo = repack = true;
       }
     }
-    if (stereo) {
-      surfaceRectClipped = viewClipped;
+  } else {
+    DecideStereoLocked(place.Size());
+    if (mStereoPacking != StereoMode::MONO) {
+      Rect view = place;
+      if (mStereoFit == StereoFit::HalfWidth) {
+        view.x += view.width / 4;
+        view.width /= 2;
+      } else if (mStereoFit == StereoFit::HalfHeight) {
+        view.y += view.height / 4;
+        view.height /= 2;
+      }
+      Rect viewClipped = view;
+      if (mClipRect) {
+        viewClipped = viewClipped.Intersect(Rect(mClipRect.value()));
+      }
+      const bool flipX = transform2D._11 < 0.0;
+      const bool flipY = transform2D._22 < 0.0;
+      if (!viewClipped.IsEmpty() && !flipX) {
+        // The visible part of a view, as a fraction of the view, in the
+        // buffer's orientation.
+        float x0 = (viewClipped.x - view.x) / view.width;
+        float x1 = (viewClipped.XMost() - view.x) / view.width;
+        float y0 = (viewClipped.y - view.y) / view.height;
+        float y1 = (viewClipped.YMost() - view.y) / view.height;
+        if (flipY) {
+          std::swap(y0, y1);
+          y0 = 1.0f - y0;
+          y1 = 1.0f - y1;
+        }
+        const float pixel = 1.0f / std::max(view.width, 1.0f);
+        const bool wholeWidth = x0 <= pixel && x1 >= 1.0f - pixel;
+        if (mStereoPacking == StereoMode::LEFT_RIGHT && wholeWidth) {
+          stereo = true;
+        } else if (mStereoCanRepack && !flipY) {
+          Rect views[2];
+          switch (mStereoPacking) {
+            case StereoMode::LEFT_RIGHT:
+              views[0] = Rect(0.0f, 0.0f, 0.5f, 1.0f);
+              views[1] = Rect(0.5f, 0.0f, 0.5f, 1.0f);
+              break;
+            case StereoMode::RIGHT_LEFT:
+              views[0] = Rect(0.5f, 0.0f, 0.5f, 1.0f);
+              views[1] = Rect(0.0f, 0.0f, 0.5f, 1.0f);
+              break;
+            case StereoMode::TOP_BOTTOM:
+              views[0] = Rect(0.0f, 0.0f, 1.0f, 0.5f);
+              views[1] = Rect(0.0f, 0.5f, 1.0f, 0.5f);
+              break;
+            default:  // BOTTOM_TOP
+              views[0] = Rect(0.0f, 0.5f, 1.0f, 0.5f);
+              views[1] = Rect(0.0f, 0.0f, 1.0f, 0.5f);
+              break;
+          }
+          for (int eye = 0; eye < 2; eye++) {
+            const Rect& v = views[eye];
+            mStereoEyeRects[eye] =
+                Rect(v.x + x0 * v.width, v.y + y0 * v.height,
+                     (x1 - x0) * v.width, (y1 - y0) * v.height);
+          }
+          const int width = std::max(
+              1, int(std::lround(mStereoEyeRects[0].width * mSize.width)));
+          const int height = std::max(
+              1, int(std::lround(mStereoEyeRects[0].height * mSize.height)));
+          mStereoBufferSize = IntSize(width * 2, height);
+          stereo = repack = true;
+        }
+      }
+      if (stereo) {
+        surfaceRectClipped = viewClipped;
+      }
     }
   }
   if (!DeclareStereoLocked(aProofOfLock, stereo)) {
@@ -1150,7 +1184,10 @@ void NativeLayerWayland::UpdateLayerPlacementLocked(
   Rect bufferClip = transform2DInversed.TransformBounds(surfaceRectClipped);
   auto unscaledViewportRect =
       bufferClip.Intersect(Rect(0, 0, mSize.width, mSize.height));
-  if (stereo) {
+  if (stereo && mStereoTileOffset > 0) {
+    // Both eyes' drawings, the right eye's beside the left eye's.
+    unscaledViewportRect.width += float(mStereoTileOffset);
+  } else if (stereo) {
     // Both views, across their whole width.
     unscaledViewportRect.x = 0;
     unscaledViewportRect.width = mSize.width;
@@ -1444,6 +1481,48 @@ void NativeLayerWaylandRender::SetStereoMark(uint32_t aStereoMark) {
   }
 }
 
+// WebRender draws the next surface of this tile once per eye (Sparky Stereo
+// OS), when the tile shows a stereo picture that is not given a surface of its
+// own: into a buffer twice as wide as the tile, the left eye's drawing over
+// the display rect, the right eye's beside it, offset by the display rect's
+// width. The surface is declared full side by side, left eye first, and each
+// eye sees its drawing over the tile's place (UpdateLayerPlacementLocked).
+void NativeLayerWaylandRender::SetStereoTile(bool aStereo) {
+  WaylandSurfaceLock lock(mSurface);
+  if (mStereoTile != aStereo) {
+    LOG("NativeLayerWaylandRender::SetStereoTile() %d", aStereo);
+    mStereoTile = aStereo;
+  }
+}
+
+// The buffer the next drawing goes into: the front buffer when the Wayland
+// compositor released it early and it fits the drawing, one of the pool's
+// otherwise.
+RefPtr<widget::WaylandBuffer>
+NativeLayerWaylandRender::ObtainInProgressBufferLocked(
+    const WaylandSurfaceLock& aProofOfLock, const IntRect& aDisplayRect,
+    bool* aReusedFrontBuffer) {
+  const IntSize size =
+      mStereoTile ? IntSize(mSize.width * 2, mSize.height) : mSize;
+  mInProgressStereoOffset = mStereoTile ? aDisplayRect.width : 0;
+  *aReusedFrontBuffer = false;
+  if (mFrontBuffer && !mFrontBuffer->IsAttached(aProofOfLock) &&
+      mFrontBuffer->IsMatchingSize(LayoutDeviceIntSize::FromUnknownSize(size)) &&
+      mStereoTileOffset == mInProgressStereoOffset) {
+    LOGVERBOSE(
+        "NativeLayerWaylandRender::ObtainInProgressBufferLocked(): use front "
+        "buffer for rendering");
+    *aReusedFrontBuffer = true;
+    return std::move(mFrontBuffer);
+  }
+  LOGVERBOSE(
+      "NativeLayerWaylandRender::ObtainInProgressBufferLocked(): use progress "
+      "buffer for rendering, stereo offset %d",
+      mInProgressStereoOffset);
+  return mSurfacePoolHandle->ObtainBufferFromPool(aProofOfLock, size,
+                                                  mRootLayer->GetDRMFormat());
+}
+
 bool NativeLayerWaylandRender::IsFrontBufferChanged() {
   return mState.mMutatedFrontBuffer && !mDirtyRegion.IsEmpty();
 }
@@ -1462,26 +1541,18 @@ RefPtr<DrawTarget> NativeLayerWaylandRender::NextSurfaceAsDrawTarget(
   mDirtyRegion = aUpdateRegion;
 
   MOZ_DIAGNOSTIC_ASSERT(!mInProgressBuffer);
-  if (mFrontBuffer && !mFrontBuffer->IsAttached(lock)) {
+  bool reusedFrontBuffer = false;
+  mInProgressBuffer =
+      ObtainInProgressBufferLocked(lock, aDisplayRect, &reusedFrontBuffer);
+  if (!reusedFrontBuffer && mFrontBuffer) {
     LOGVERBOSE(
-        "NativeLayerWaylandRender::NextSurfaceAsDrawTarget(): use front buffer "
-        "for rendering");
-    // the Wayland compositor released the buffer early, we can reuse it
-    mInProgressBuffer = std::move(mFrontBuffer);
-  } else {
-    LOGVERBOSE(
-        "NativeLayerWaylandRender::NextSurfaceAsDrawTarget(): use progress "
-        "buffer for rendering");
-    mInProgressBuffer = mSurfacePoolHandle->ObtainBufferFromPool(
-        lock, mSize, mRootLayer->GetDRMFormat());
-    if (mFrontBuffer) {
-      LOGVERBOSE(
-          "NativeLayerWaylandRender::NextSurfaceAsDrawTarget(): read-back from "
-          "front buffer");
+        "NativeLayerWaylandRender::NextSurfaceAsDrawTarget(): read-back from "
+        "front buffer");
+    if (mInProgressBuffer) {
       ReadBackFrontBuffer(lock);
-      mSurfacePoolHandle->ReturnBufferToPool(lock, mFrontBuffer);
-      mFrontBuffer = nullptr;
     }
+    mSurfacePoolHandle->ReturnBufferToPool(lock, mFrontBuffer);
+    mFrontBuffer = nullptr;
   }
   MOZ_DIAGNOSTIC_ASSERT(!mFrontBuffer);
 
@@ -1512,19 +1583,9 @@ Maybe<GLuint> NativeLayerWaylandRender::NextSurfaceAsFramebuffer(
   mDirtyRegion = IntRegion(aUpdateRegion);
 
   MOZ_DIAGNOSTIC_ASSERT(!mInProgressBuffer);
-  if (mFrontBuffer && !mFrontBuffer->IsAttached(lock)) {
-    LOGVERBOSE(
-        "NativeLayerWaylandRender::NextSurfaceAsFramebuffer(): use front "
-        "buffer for rendering");
-    // the Wayland compositor released the buffer early, we can reuse it
-    mInProgressBuffer = std::move(mFrontBuffer);
-  } else {
-    LOGVERBOSE(
-        "NativeLayerWaylandRender::NextSurfaceAsFramebuffer(): use progress "
-        "buffer for rendering");
-    mInProgressBuffer = mSurfacePoolHandle->ObtainBufferFromPool(
-        lock, mSize, mRootLayer->GetDRMFormat());
-  }
+  bool reusedFrontBuffer = false;
+  mInProgressBuffer =
+      ObtainInProgressBufferLocked(lock, aDisplayRect, &reusedFrontBuffer);
 
   MOZ_DIAGNOSTIC_ASSERT(mInProgressBuffer,
                         "NativeLayerWaylandRender: Failed to obtain buffer");
@@ -1566,6 +1627,13 @@ void NativeLayerWaylandRender::ReadBackFrontBuffer(
 
   LOG("NativeLayerWaylandRender::ReadBackFrontBuffer()");
 
+  // Tiles drawn once per eye keep the right eye's drawing too, from its place
+  // in the front buffer to its place in the new one.
+  const bool bothEyes = mStereoTileOffset > 0 && mInProgressStereoOffset > 0;
+  const IntPoint frontRight(mStereoTileOffset, 0);
+  const IntPoint newRight(mInProgressStereoOffset, 0);
+  const IntSize frontSize = mFrontBuffer->GetSize().ToUnknownSize();
+
   if (!copyRegion.IsEmpty()) {
     if (mSurfacePoolHandle->gl()) {
       mSurfacePoolHandle->gl()->MakeCurrent();
@@ -1589,18 +1657,26 @@ void NativeLayerWaylandRender::ReadBackFrontBuffer(
         }
         mSurfacePoolHandle->gl()->BlitHelper()->BlitFramebufferToFramebuffer(
             sourceFB.value(), destFB.value(), r, r, LOCAL_GL_NEAREST);
+        if (bothEyes) {
+          mSurfacePoolHandle->gl()->BlitHelper()->BlitFramebufferToFramebuffer(
+              sourceFB.value(), destFB.value(), r + frontRight, r + newRight,
+              LOCAL_GL_NEAREST);
+        }
       }
     } else {
       RefPtr<gfx::DataSourceSurface> dataSourceSurface =
           gfx::CreateDataSourceSurfaceFromData(
-              mSize, mFrontBuffer->GetSurfaceFormat(),
+              frontSize, mFrontBuffer->GetSurfaceFormat(),
               (const uint8_t*)mFrontBuffer->GetImageData(),
-              mSize.width * BytesPerPixel(mFrontBuffer->GetSurfaceFormat()));
+              frontSize.width * BytesPerPixel(mFrontBuffer->GetSurfaceFormat()));
       RefPtr<DrawTarget> dt = mInProgressBuffer->Lock();
 
       for (auto iter = copyRegion.RectIter(); !iter.Done(); iter.Next()) {
         IntRect r = iter.Get();
         dt->CopySurface(dataSourceSurface, r, IntPoint(r.x, r.y));
+        if (bothEyes) {
+          dt->CopySurface(dataSourceSurface, r + frontRight, r.TopLeft() + newRight);
+        }
       }
     }
   }
@@ -1611,7 +1687,8 @@ bool NativeLayerWaylandRender::CommitFrontBufferToScreenLocked(
   // Don't operate over hidden layers
   LOG("NativeLayerWaylandRender::CommitFrontBufferToScreenLocked()");
 
-  if (mState.mMutatedVisibility) {
+  // A tile drawn once per eye changes both eyes' drawings.
+  if (mState.mMutatedVisibility || mStereoTileOffset > 0) {
     mSurface->InvalidateLocked(aProofOfLock);
   } else {
     mSurface->InvalidateRegionLocked(aProofOfLock, mDirtyRegion);
@@ -1656,16 +1733,19 @@ RefPtr<widget::WaylandBuffer> NativeLayerWaylandRender::RepackStereoLocked(
     return nullptr;
   }
   // WebRender draws these surfaces with the origin at the top left, as the
-  // eyes' rectangles are given: each view is copied at its own size.
+  // eyes' rectangles are given: each view is copied at its own size. The
+  // rectangles are fractions of the front buffer, which is twice as wide as
+  // the layer for a tile drawn once per eye.
+  const IntSize frontSize = mFrontBuffer->GetSize().ToUnknownSize();
   const int width = mStereoBufferSize.width / 2;
   const int height = mStereoBufferSize.height;
   IntRect eyes[2];
   for (int eye = 0; eye < 2; eye++) {
     const Rect& r = mStereoEyeRects[eye];
-    const int x = std::clamp(int(std::lround(r.x * mSize.width)), 0,
-                             std::max(mSize.width - width, 0));
-    const int y = std::clamp(int(std::lround(r.y * mSize.height)), 0,
-                             std::max(mSize.height - height, 0));
+    const int x = std::clamp(int(std::lround(r.x * frontSize.width)), 0,
+                             std::max(frontSize.width - width, 0));
+    const int y = std::clamp(int(std::lround(r.y * frontSize.height)), 0,
+                             std::max(frontSize.height - height, 0));
     eyes[eye] = IntRect(x, y, width, height);
   }
   if (RefPtr<gl::GLContext> gl = mSurfacePoolHandle->gl()) {
@@ -1691,9 +1771,9 @@ RefPtr<widget::WaylandBuffer> NativeLayerWaylandRender::RepackStereoLocked(
     return mStereoBuffer;
   }
   RefPtr<gfx::DataSourceSurface> front = gfx::CreateDataSourceSurfaceFromData(
-      mSize, mFrontBuffer->GetSurfaceFormat(),
+      frontSize, mFrontBuffer->GetSurfaceFormat(),
       (const uint8_t*)mFrontBuffer->GetImageData(),
-      mSize.width * BytesPerPixel(mFrontBuffer->GetSurfaceFormat()));
+      frontSize.width * BytesPerPixel(mFrontBuffer->GetSurfaceFormat()));
   RefPtr<DrawTarget> dt = mStereoBuffer->Lock();
   if (!front || !dt) {
     return nullptr;
@@ -1716,6 +1796,10 @@ void NativeLayerWaylandRender::NotifySurfaceReady() {
 
   MOZ_DIAGNOSTIC_ASSERT(!mFrontBuffer);
   mFrontBuffer = std::move(mInProgressBuffer);
+  if (mStereoTileOffset != mInProgressStereoOffset) {
+    mStereoTileOffset = mInProgressStereoOffset;
+    mState.mMutatedPlacement = true;
+  }
   if (mSurfacePoolHandle->gl()) {
     auto* buffer = mFrontBuffer->AsWaylandBufferDMABUF();
     if (buffer) {

@@ -258,6 +258,13 @@ class NativeLayer {
   // into. Layers of compositors without stereo ignore it.
   virtual void SetStereoMark(uint32_t aStereoMark) {}
 
+  // Before the next surface is drawn: WebRender draws this tile once per eye
+  // (Sparky Stereo OS), into a buffer twice as wide as the layer, the left
+  // eye's drawing over the display rect and the right eye's beside it, offset
+  // by the display rect's width. Layers of compositors without stereo ignore
+  // it, and the right eye's drawing then lands outside their buffer.
+  virtual void SetStereoTile(bool aStereo) {}
+
   virtual GpuFence* GetGpuFence() = 0;
 
  protected:
