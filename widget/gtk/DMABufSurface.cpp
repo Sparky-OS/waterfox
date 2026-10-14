@@ -1641,6 +1641,52 @@ already_AddRefed<DMABufSurfaceYUV> DMABufSurfaceYUV::CopyYUVSurface(
   return surf.forget();
 }
 
+already_AddRefed<DMABufSurfaceYUV> DMABufSurfaceYUV::CreateCopyTarget(
+    GLContext* aGLContext, DMABufSurfaceYUV* aLike, int aWidth, int aHeight) {
+  if (!aGLContext || !aLike || aLike->mBufferPlaneCount != 2 || aWidth <= 0 ||
+      aHeight <= 0) {
+    return nullptr;
+  }
+  auto surf = MakeRefPtr<DMABufSurfaceYUV>();
+  switch (aLike->mFOURCCFormat) {
+    case VA_FOURCC_NV12:
+      surf->mDrmFormats[0] = GBM_FORMAT_R8;
+      surf->mDrmFormats[1] = GBM_FORMAT_GR88;
+      break;
+    case VA_FOURCC_P010:
+    case VA_FOURCC_P016:
+      surf->mDrmFormats[0] = GBM_FORMAT_R16;
+      surf->mDrmFormats[1] = GBM_FORMAT_GR1616;
+      break;
+    default:
+      return nullptr;
+  }
+  LOGDMABUFS("[%p] DMABufSurfaceYUV::CreateCopyTarget() UID %d %d x %d",
+             surf.get(), surf->GetUID(), aWidth, aHeight);
+  surf->mFOURCCFormat = aLike->mFOURCCFormat;
+  surf->mBufferPlaneCount = 2;
+  surf->mWidthAligned[0] = surf->mWidth[0] = aWidth;
+  surf->mHeightAligned[0] = surf->mHeight[0] = aHeight;
+  surf->mWidthAligned[1] = surf->mWidth[1] = (aWidth + 1) >> 1;
+  surf->mHeightAligned[1] = surf->mHeight[1] = (aHeight + 1) >> 1;
+  surf->mGbmBufferFlags = GBM_BO_USE_RENDERING | GBM_BO_USE_SCANOUT;
+  surf->mColorSpace = aLike->mColorSpace;
+  surf->mColorRange = aLike->mColorRange;
+  surf->mColorPrimaries = aLike->mColorPrimaries;
+  surf->mTransferFunction = aLike->mTransferFunction;
+  surf->mWPChromaLocation = aLike->mWPChromaLocation;
+  auto format = GetGlobalDMABufFormats()->GetDRMFormat(surf->mFOURCCFormat);
+  for (int i = 0; i < surf->mBufferPlaneCount; i++) {
+    if (!surf->CreateYUVPlane(aGLContext, i, format) ||
+        !surf->CreateTexture(aGLContext, i)) {
+      return nullptr;
+    }
+  }
+  LogMemoryAddYUV(surf->GetUID(),
+                  GetUsedMemoryYUV(surf->mFOURCCFormat, aWidth, aHeight));
+  return surf.forget();
+}
+
 size_t DMABufSurfaceYUV::GetUsedMemoryYUV(int32_t aFOURCCFormat, int aWidth,
                                           int aHeight) {
   switch (aFOURCCFormat) {

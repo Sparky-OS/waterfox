@@ -356,6 +356,9 @@ class NativeLayerWayland : public NativeLayer {
   // The buffer is a video frame, which can be copied into a buffer of two
   // views full side by side with the left eye first.
   bool mStereoIsVideo = false;
+  // The video's views can be copied in its own two-plane format (NV12, P010),
+  // which keeps HDR video exact.
+  bool mStereoCanCopyYUV = false;
   // The buffer of two views full side by side, left eye first, the surface
   // shows when the picture needs repacking, from the compositor's pool.
   RefPtr<SurfacePoolHandleWayland> mStereoPoolHandle;
@@ -454,6 +457,16 @@ class NativeLayerWaylandExternal final : public NativeLayerWayland {
 
   RefPtr<widget::WaylandBuffer> RepackStereoLocked(
       const widget::WaylandSurfaceLock& aProofOfLock);
+  RefPtr<widget::WaylandBuffer> RepackStereoYUVLocked(
+      const widget::WaylandSurfaceLock& aProofOfLock, DMABufSurfaceYUV* aSource,
+      gl::GLContext* aGL);
+
+  // Surfaces in the video's own format that the views are copied into, side
+  // by side, left eye first; a few, as the compositor holds the one shown.
+  nsTArray<RefPtr<widget::WaylandBufferDMABUF>> mStereoYUVTargets;
+  // The surface shows such a copy, not an RGB one.
+  bool mStereoCopyIsYUV = false;
+  bool mStereoYUVCopyFailed = false;
 
   void DiscardBackbuffersLocked(const widget::WaylandSurfaceLock& aProofOfLock,
                                 bool aForce) override;

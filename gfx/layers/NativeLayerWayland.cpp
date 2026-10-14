@@ -1815,6 +1815,8 @@ void NativeLayerWaylandExternal::AttachExternalImage(
 
   // The picture's stereo mark, decided on with the place's shape.
   const bool isVideo = !!surface->GetAsDMABufSurfaceYUV();
+  mStereoCanCopyYUV = isVideo && !mStereoYUVCopyFailed &&
+                      surface->GetAsDMABufSurfaceYUV()->GetTextureCount() == 2;
   if (surface->GetStereoMode() != mStereoMark ||
       surface->GetStereoSource() != mStereoSource ||
       surface->GetStereoSwap() != mStereoSwap || isVideo != mStereoIsVideo) {
@@ -1866,18 +1868,22 @@ void NativeLayerWayland::DecideStereoLocked(const gfx::Size& aShape) {
   }
   mStereoPacking = packing;
   mStereoFit = fit;
-  // Copies are 8 bit RGB: HDR video is not repacked yet. A layer WebRender
-  // draws a video into is copied when its buffer holds just the picture.
+  // RGB copies are 8 bit: HDR video is copied only in its own format. A layer
+  // WebRender draws a video into is copied when its buffer holds just the
+  // picture.
   const bool wholeBuffer =
       AsNativeLayerWaylandExternal() ||
       (AsNativeLayerWaylandRender() &&
        mDisplayRect.Contains(IntRect(IntPoint(), mSize)));
-  mStereoCanRepack =
-      wholeBuffer && mStereoIsVideo && !mIsHDR && !mStereoRepackFailed;
+  mStereoCanRepack = wholeBuffer && mStereoIsVideo &&
+                     (!mIsHDR || mStereoCanCopyYUV) && !mStereoRepackFailed;
 }
 
-// Copies the visible part of each view into its half of a buffer from the
-// compositor's pool, left eye first, converting the video to RGB.
+// Copies the visible part of each view into its half of a buffer, left eye
+// first: plane by plane into a surface of the video's own format when it has
+// two planes (NV12, P010), so colours stay exact, HDR is kept and the surface
+// never changes between YUV and RGB buffers; otherwise into an RGB buffer from
+// the compositor's pool.
 RefPtr<widget::WaylandBuffer> NativeLayerWaylandExternal::RepackStereoLocked(
     const WaylandSurfaceLock& aProofOfLock) {
   RefPtr<DMABufSurface> surface = GetSurface();
@@ -1895,6 +1901,21 @@ RefPtr<widget::WaylandBuffer> NativeLayerWaylandExternal::RepackStereoLocked(
     return nullptr;
   }
   ReleaseStereoBufferLocked(aProofOfLock);
+  if (mStereoCanCopyYUV) {
+    if (RefPtr<widget::WaylandBuffer> buffer = RepackStereoYUVLocked(
+            aProofOfLock, surface->GetAsDMABufSurfaceYUV(), gl)) {
+      mStereoCopyIsYUV = true;
+      return buffer;
+    }
+    gfxCriticalNoteOnce << "NativeLayerWaylandExternal: YUV stereo copy failed";
+    mStereoYUVCopyFailed = true;
+    mStereoCanCopyYUV = false;
+    if (mIsHDR) {
+      // An RGB copy would lose the HDR picture: shown flat instead.
+      return nullptr;
+    }
+  }
+  mStereoCopyIsYUV = false;
   mStereoBuffer = mStereoPoolHandle->ObtainBufferFromPool(
       aProofOfLock, mStereoBufferSize, mRootLayer->GetDRMFormat());
   if (!mStereoBuffer) {
@@ -1925,6 +1946,107 @@ RefPtr<widget::WaylandBuffer> NativeLayerWaylandExternal::RepackStereoLocked(
   return mStereoBuffer;
 }
 
+RefPtr<widget::WaylandBuffer> NativeLayerWaylandExternal::RepackStereoYUVLocked(
+    const WaylandSurfaceLock& aProofOfLock, DMABufSurfaceYUV* aSource,
+    gl::GLContext* aGL) {
+  if (!aSource || aSource->GetTextureCount() != 2) {
+    return nullptr;
+  }
+  // Whole chroma samples (4:2:0): even sizes and places.
+  const int width = (mStereoBufferSize.width / 2) & ~1;
+  const int height = mStereoBufferSize.height & ~1;
+  if (width <= 0 || height <= 0) {
+    return nullptr;
+  }
+  const IntSize size(2 * width, height);
+  RefPtr<widget::WaylandBufferDMABUF> target;
+  mStereoYUVTargets.RemoveElementsBy([&](const auto& buffer) {
+    return !buffer->IsAttached(aProofOfLock) &&
+           (buffer->GetSurface()->GetWidth() != size.width ||
+            buffer->GetSurface()->GetHeight() != size.height);
+  });
+  for (const auto& buffer : mStereoYUVTargets) {
+    if (!buffer->IsAttached(aProofOfLock)) {
+      target = buffer;
+      break;
+    }
+  }
+  if (!target) {
+    RefPtr<DMABufSurfaceYUV> surface = DMABufSurfaceYUV::CreateCopyTarget(
+        aGL, aSource, size.width, size.height);
+    if (!surface) {
+      return nullptr;
+    }
+    target = widget::WaylandBufferDMABUF::CreateExternal(surface);
+    if (!target) {
+      return nullptr;
+    }
+    mStereoYUVTargets.AppendElement(target);
+  }
+  auto* dest = target->GetSurface()->GetAsDMABufSurfaceYUV();
+  if (!dest) {
+    return nullptr;
+  }
+  // The copy's textures live only for the copy, on this thread: the copy may
+  // be dropped on another one (the layer's last reference, at shutdown on
+  // the main thread), where its GL context is not current.
+  for (int plane = 0; plane < 2; plane++) {
+    if (!dest->GetTexture(plane) && !dest->CreateTexture(aGL, plane)) {
+      dest->ReleaseTextures();
+      return nullptr;
+    }
+  }
+  auto releaseDestTextures = MakeScopeExit([&] { dest->ReleaseTextures(); });
+
+  bool createdTextures = false;
+  for (int plane = 0; plane < 2; plane++) {
+    if (!aSource->GetTexture(plane)) {
+      if (!aSource->CreateTexture(aGL, plane)) {
+        aSource->ReleaseTextures();
+        return nullptr;
+      }
+      createdTextures = true;
+    }
+  }
+  auto releaseTextures = MakeScopeExit([&] {
+    if (createdTextures) {
+      aSource->ReleaseTextures();
+    }
+  });
+
+  const gl::ScopedGLState scissor(aGL, LOCAL_GL_SCISSOR_TEST, false);
+  for (int plane = 0; plane < 2; plane++) {
+    // The second plane holds the chroma at half the width and height.
+    const int shift = plane;
+    const gl::ScopedFramebufferForTexture source(aGL,
+                                                 aSource->GetTexture(plane));
+    const gl::ScopedFramebufferForTexture copy(aGL, dest->GetTexture(plane));
+    if (!source.IsComplete() || !copy.IsComplete()) {
+      return nullptr;
+    }
+    const int planeWidth = width >> shift;
+    const int planeHeight = height >> shift;
+    for (int eye = 0; eye < 2; eye++) {
+      // Both are top left: the copy keeps the picture upright.
+      const Rect& r = mStereoEyeRects[eye];
+      const int x = std::clamp(int(std::lround(r.x * mSize.width)), 0,
+                               std::max(mSize.width - width, 0)) &
+                    ~1;
+      const int y = std::clamp(int(std::lround(r.y * mSize.height)), 0,
+                               std::max(mSize.height - height, 0)) &
+                    ~1;
+      aGL->BlitHelper()->BlitFramebufferToFramebuffer(
+          source.FB(), copy.FB(),
+          IntRect(x >> shift, y >> shift, planeWidth, planeHeight),
+          IntRect(eye * planeWidth, 0, planeWidth, planeHeight),
+          LOCAL_GL_NEAREST);
+    }
+  }
+  dest->FenceSet();
+  dest->FenceWait();
+  return target;
+}
+
 void NativeLayerWayland::ReleaseStereoBufferLocked(
     const WaylandSurfaceLock& aProofOfLock) {
   if (mStereoBuffer && mStereoPoolHandle) {
@@ -1942,6 +2064,7 @@ void NativeLayerWaylandExternal::DiscardBackbuffersLocked(
   mTextureHost = nullptr;
   mFrontBuffer = nullptr;
   ReleaseStereoBufferLocked(aProofOfLock);
+  mStereoYUVTargets.Clear();
 }
 
 RefPtr<DrawTarget> NativeLayerWaylandExternal::NextSurfaceAsDrawTarget(
@@ -1986,7 +2109,7 @@ bool NativeLayerWaylandExternal::CommitFrontBufferToScreenLocked(
   // to it (wp_color_representation_v1).
   RefPtr<DMABufSurface> surface = GetSurface();
   auto* surfaceYUV = surface ? surface->GetAsDMABufSurfaceYUV() : nullptr;
-  const bool rgb = buffer != mFrontBuffer || !surfaceYUV;
+  const bool rgb = !surfaceYUV || (buffer != mFrontBuffer && !mStereoCopyIsYUV);
   if (rgb) {
     mSurface->ClearColorRepresentationLocked(aProofOfLock);
   } else if (!mSurface->HasColorRepresentationLocked(aProofOfLock)) {

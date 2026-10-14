@@ -462,6 +462,14 @@ class DMABufSurfaceYUV final : public DMABufSurface {
       const VADRMPRIMESurfaceDescriptor& aDesc, int aWidth, int aHeight);
   static already_AddRefed<DMABufSurfaceYUV> CopyYUVSurface(
       const VADRMPRIMESurfaceDescriptor& aVaDesc, int aWidth, int aHeight);
+  // An empty surface of aWidth x aHeight in aLike's two-plane format (NV12,
+  // P010 or P016) and colours, whose planes aGLContext can draw into: the
+  // target of copies of aLike's planes (Sparky Stereo OS: the views of a
+  // stereo picture put side by side, left eye first, in the picture's own
+  // format). Null for any other format.
+  static already_AddRefed<DMABufSurfaceYUV> CreateCopyTarget(
+      mozilla::gl::GLContext* aGLContext, DMABufSurfaceYUV* aLike, int aWidth,
+      int aHeight);
   static void ReleaseVADRMPRIMESurfaceDescriptor(
       VADRMPRIMESurfaceDescriptor& aDesc);
 
