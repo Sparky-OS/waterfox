@@ -1,5 +1,45 @@
 sparky-stereo-browser (@DEBVERSION@) unstable; urgency=medium
 
+  * WebGL pages without WebXR are drawn in stereo by the browser (the
+    camera hack, webgl.stereo-camera.enabled, on in this package). The
+    page's camera, a perspective projection or a view-projection product
+    uploaded as a plain uniform or in a uniform block, is recognised when
+    the page uploads it. Each draw into the page's canvas is made twice,
+    once per eye, with two parallel cameras whose frustums meet at five
+    times the near distance (off-axis, never toed in). 2D drawn with an
+    orthographic camera stays at the screen's depth. Shadow maps and other
+    passes into the page's own framebuffers are drawn once. The canvas is
+    declared full side by side, left eye first.
+  * Video that WebRender draws into a surface of its own (software
+    WebRender, and video decoded into plain buffers, such as VP9 through
+    libvpx) carries its stereo mark to that surface and is declared like
+    DMABuf video. Views in another order or on top of each other are copied
+    side by side, on the GPU or in memory.
+  * Frames decoded in software take the stream's frame packing SEI.
+  * The 3D Video menu gets Swap Eyes: each eye sees the other view, over
+    the file's mark, the user's choice and the picture's shape, so a video
+    marked the wrong way round is corrected by its viewer. In the edition's
+    eight languages.
+  * The user's choice in the 3D Video menu also applies to video in plain
+    buffers.
+  * The browser decides how a video holds its views through
+    libstereo-policy, the edition's shared stereo policy in plain C (the
+    stream's or the file's mark, the user's choice, the frame's shape, Swap
+    Eyes over them, and full or half views), as Dolphin, the thumbnailers
+    and the players do. It depends on libstereo-policy1 instead of
+    libstereo-layer1, so no Qt library is loaded into the browser.
+  * The screen is offered as a WebXR immersive device whenever an output
+    shows stereo 3D, or can (a 3D mode of the display's own, the virtual
+    3D modes, a pair of outputs), even beside 2D outputs; KWin shows each
+    output what it can. Where no output does, the device is not offered
+    and pages take their own 2D path.
+  * The camera hack presents both eyes only where the compositor takes
+    declared stereo content; elsewhere, X11 included, pages draw as before.
+
+ -- Daniel Ramos (Capitain Jack) <Capitain_Jack@yahoo.com>  @DATE@
+
+sparky-stereo-browser (6.7.5-0+stereo3d3) unstable; urgency=medium
+
   * Pages declare stereo only through WebXR: the stereolayout canvas
     attribute is gone.
   * The screen is a WebXR immersive device (dom.vr.flat.enabled): an
@@ -24,7 +64,7 @@ sparky-stereo-browser (@DEBVERSION@) unstable; urgency=medium
   * The 3D Video menu is translated into Polish, Brazilian Portuguese,
     French, Japanese, Korean and Chinese (simplified and traditional).
 
- -- Daniel Ramos (Capitain Jack) <Capitain_Jack@yahoo.com>  @DATE@
+ -- Daniel Ramos (Capitain Jack) <Capitain_Jack@yahoo.com>  Wed, 14 Oct 2026 01:04:08 +0000
 
 sparky-stereo-browser (6.7.5-0+stereo3d2) unstable; urgency=medium
 

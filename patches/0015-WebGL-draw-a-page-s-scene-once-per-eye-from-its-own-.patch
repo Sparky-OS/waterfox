@@ -1,0 +1,1046 @@
+From 453858e23e85f8e222e9189d1b86646d308a9f8f Mon Sep 17 00:00:00 2001
+From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
+Date: Wed, 14 Oct 2026 02:49:49 -0300
+Subject: [PATCH 15/18] WebGL: draw a page's scene once per eye from its own
+ camera
+
+The camera hack (webgl.stereo-camera.enabled, off by default; the
+edition's package turns it on): a page that draws a 3D scene with WebGL
+and no WebXR is shown in stereo, one world seen by two cameras, without
+any change to the page.
+
+The camera is recognised when the page uploads it (WebGLStereoCamera.h):
+a mat4, a plain uniform or a member of a uniform block, that is a
+perspective projection (its last row (0, 0, -1, 0), or (0, 0, 1, 0) for
+a left-handed one) or a view-projection product (its last row a unit
+vector), with a positive near distance. Matrices whose names say they
+belong to a light or a shadow are left alone. An orthographic camera
+(2D, a HUD) has no such row and stays at the screen's depth.
+
+Each draw into the canvas's own framebuffer is then made twice, the left
+eye into the canvas and the right eye into a second framebuffer of the
+same size, each with its eye's camera: parallel axes, frustums shifted
+off-axis to share one window at the zero-parallax distance C (5 times
+the near distance, webgl.stereo-camera.convergence), never toed in. In
+clip space that is x' = x + s(w - C), s = -/+ half the separation (2 %
+of the view's width, webgl.stereo-camera.separation). Clears go to both
+eyes. Draws into the page's own framebuffers (shadow maps, render
+targets) and with transform feedback are made once. A uniform block
+holding the camera is rewritten for each eye from a copy of the page's
+data (buffers up to 64 KiB) and restored.
+
+The canvas then presents both eyes full side by side, left eye first,
+twice its width (StereoSource::CAMERA: the place shows one view, as for
+WebXR), and is declared on its own surface. It does so only where the
+two views can be declared: on Wayland, with WebRender's native
+compositor (pictures on surfaces of their own), and a compositor that
+takes declared stereo content (kde_stereo_content_manager_v1 among the
+globals; gfxVars::StereoContentDeclaration). Anywhere else the canvas
+stays as the page drew it. A canvas in a WebXR session keeps its
+session's views. MOZ_LOG=WebGLStereo:4 logs each present's draws per eye
+and into the page's framebuffers.
+
+A scene drawn into the page's own render target and then copied to the
+canvas (post-processing) is drawn once and stays flat.
+
+Assisted-by: Claude Opus 5.5 via Claude Code
+---
+ dom/canvas/ClientWebGLContext.cpp             |  72 ++++++-
+ dom/canvas/ClientWebGLContext.h               |   6 +
+ dom/canvas/WebGL2ContextBuffers.cpp           |   2 +
+ dom/canvas/WebGLBuffer.cpp                    |  16 ++
+ dom/canvas/WebGLBuffer.h                      |   5 +
+ dom/canvas/WebGLContext.cpp                   | 201 +++++++++++++++++-
+ dom/canvas/WebGLContext.h                     |  20 ++
+ dom/canvas/WebGLContextDraw.cpp               |  59 +++--
+ .../WebGLContextFramebufferOperations.cpp     |   6 +
+ dom/canvas/WebGLContextGL.cpp                 |  18 ++
+ dom/canvas/WebGLProgram.h                     |   4 +
+ dom/canvas/WebGLStereoCamera.h                | 103 +++++++++
+ dom/canvas/WebGLTypes.h                       |   8 +-
+ gfx/config/gfxVars.h                          |   1 +
+ gfx/layers/ImageTypes.h                       |   3 +
+ gfx/layers/NativeLayerWayland.cpp             |   1 +
+ gfx/thebes/gfxPlatformGtk.cpp                 |   7 +
+ modules/libpref/init/StaticPrefList.yaml      |  21 ++
+ widget/gtk/nsWaylandDisplay.cpp               |   2 +
+ widget/gtk/nsWaylandDisplay.h                 |   6 +
+ 20 files changed, 541 insertions(+), 20 deletions(-)
+ create mode 100644 dom/canvas/WebGLStereoCamera.h
+
+diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.cpp
+index 6a31e67d80..d78b4bcec0 100644
+--- a/dom/canvas/ClientWebGLContext.cpp
++++ b/dom/canvas/ClientWebGLContext.cpp
+@@ -4,6 +4,8 @@
+ 
+ #include "ClientWebGLContext.h"
+ 
++#include "WebGLStereoCamera.h"
++
+ #include <fmt/format.h>
+ 
+ #include <bitset>
+@@ -543,6 +545,10 @@ void ClientWebGLContext::Present(WebGLFramebufferJS* const xrFb,
+     asyncOptions.stereoMode = uint8_t(StereoMode::LEFT_RIGHT);
+   } else if (!xrFb && mInlineStereo) {
+     asyncOptions.stereoMode = uint8_t(StereoMode::LEFT_RIGHT);
++  } else if (!xrFb && StereoCameraPresents()) {
++    // The camera hack: both eyes, full side by side, left eye first.
++    asyncOptions.stereoCamera = true;
++    asyncOptions.stereoMode = uint8_t(StereoMode::LEFT_RIGHT);
+   }
+   Run<RPROC(Present)>(xrFb ? xrFb->mId : 0, type, webvr, asyncOptions);
+ }
+@@ -566,7 +572,50 @@ uvec2 ClientWebGLContext::PresentedSize() {
+   if (mFlatXR && mFlatXRSize.x && mFlatXRSize.y) {
+     return mFlatXRSize;
+   }
+-  return DrawingBufferSize();
++  auto size = DrawingBufferSize();
++  if (StereoCameraPresents()) {
++    size.x *= 2;
++  }
++  return size;
++}
++
++// The camera hack: a uniform buffer that holds a camera (WebGL 2 engines
++// keep the scene's matrices there) starts it too. Any 16-byte aligned mat4
++// is looked at, as the block's layout is the program's.
++void ClientWebGLContext::LookForStereoCamera(const GLenum target,
++                                             const Span<const uint8_t>& aData) {
++  if (mStereoCamera || target != LOCAL_GL_UNIFORM_BUFFER ||
++      aData.size() > 64 * 1024 || !StaticPrefs::webgl_stereo_camera_enabled()) {
++    return;
++  }
++  const float factor = StaticPrefs::webgl_stereo_camera_convergence();
++  for (size_t offset = 0; offset + 64 <= aData.size(); offset += 16) {
++    std::array<float, 16> m;
++    memcpy(m.data(), aData.data() + offset, 64);
++    if (webgl::ClassifyStereoCamera(m.data(), {}, factor)) {
++      mStereoCamera = true;
++      OnStereoCameraStarted();
++      return;
++    }
++  }
++}
++
++void ClientWebGLContext::OnStereoCameraStarted() {
++  // The canvas's frames change size: a new canvas renderer, which only a full
++  // paint of the canvas's frame makes.
++  mResetLayer = true;
++  if (mCanvasElement) {
++    if (nsIFrame* frame = mCanvasElement->GetPrimaryFrame()) {
++      frame->InvalidateFrame();
++    }
++  }
++}
++
++// Only where the two views are declared on a surface of their own: anywhere
++// else the canvas stays as the page drew it.
++bool ClientWebGLContext::StereoCameraPresents() const {
++  return mStereoCamera && !mFlatXR && !mInlineStereo &&
++         gfx::gfxVars::StereoContentDeclaration();
+ }
+ 
+ void ClientWebGLContext::SetInlineStereo(const bool inlineStereo) {
+@@ -3595,6 +3644,7 @@ void ClientWebGLContext::BufferData(
+   const auto& src = maybeSrc.Value();
+ 
+   src.ProcessFixedData<true>([&](const Span<const uint8_t>& aData) {
++    LookForStereoCamera(target, aData);
+     Run<RPROC(BufferData)>(target, aData, usage);
+   });
+ }
+@@ -3612,6 +3662,7 @@ void ClientWebGLContext::BufferData(GLenum target,
+     if (!range) {
+       return;
+     }
++    LookForStereoCamera(target, *range);
+     Run<RPROC(BufferData)>(target, *range, usage);
+   });
+ }
+@@ -3623,6 +3674,7 @@ void ClientWebGLContext::BufferSubData(GLenum target,
+                                        const dom::ArrayBuffer& src) {
+   const FuncScope funcScope(*this, "bufferSubData");
+   src.ProcessFixedData<true>([&](const Span<const uint8_t>& aData) {
++    LookForStereoCamera(target, aData);
+     Run<RPROC(BufferSubData)>(target, dstByteOffset, aData,
+                               /* unsynchronized */ false);
+   });
+@@ -3642,6 +3694,7 @@ void ClientWebGLContext::BufferSubData(GLenum target,
+     if (!range) {
+       return;
+     }
++    LookForStereoCamera(target, *range);
+     Run<RPROC(BufferSubData)>(target, dstByteOffset, *range,
+                               /* unsynchronized */ false);
+   });
+@@ -5033,6 +5086,23 @@ void ClientWebGLContext::UniformData(const GLenum funcElemType,
+       reinterpret_cast<const webgl::UniformDataVal*>(bytes.begin().get()) +
+       elemOffset;
+   const auto range = Span{begin, availCount};
++
++  // The camera hack: a page that uploads a camera has a 3D scene; from the
++  // next frame on the canvas presents both eyes.
++  if (!mStereoCamera && funcElemType == LOCAL_GL_FLOAT_MAT4 &&
++      availCount == 16 && StaticPrefs::webgl_stereo_camera_enabled()) {
++    std::array<float, 16> m;
++    const auto* f = reinterpret_cast<const float*>(begin);
++    for (int i = 0; i < 16; i++) {
++      m[i] = transpose ? f[(i % 4) * 4 + i / 4] : f[i];
++    }
++    if (webgl::ClassifyStereoCamera(
++            m.data(), {}, StaticPrefs::webgl_stereo_camera_convergence())) {
++      mStereoCamera = true;
++      const_cast<ClientWebGLContext*>(this)->OnStereoCameraStarted();
++    }
++  }
++
+   RunWithGCData<RPROC(UniformData)>(std::move(nogc), locId, transpose, range);
+ }
+ 
+diff --git a/dom/canvas/ClientWebGLContext.h b/dom/canvas/ClientWebGLContext.h
+index 21330352ab..a192fd91fc 100644
+--- a/dom/canvas/ClientWebGLContext.h
++++ b/dom/canvas/ClientWebGLContext.h
+@@ -767,6 +767,9 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
+   // framebuffer, both eyes side by side.
+   uvec2 mFlatXRSize = {};
+   bool mInlineStereo = false;
++  // The camera hack (WebGLStereoCamera.h): the page uploaded a camera, so
++  // the canvas presents both eyes, full side by side.
++  mutable bool mStereoCamera = false;
+   uvec2 mRequestedSize = {};
+ 
+  public:
+@@ -1108,6 +1111,9 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
+   // The size of the frames the canvas shows.
+   uvec2 PresentedSize();
+   bool IsPresentingFlatXR() const { return mFlatXR; }
++  bool StereoCameraPresents() const;
++  void OnStereoCameraStarted();
++  void LookForStereoCamera(GLenum target, const Span<const uint8_t>& aData);
+   // An inline-stereo session draws its left view into the left half of the
+   // canvas and its right view into the right half.
+   void SetInlineStereo(bool inlineStereo);
+diff --git a/dom/canvas/WebGL2ContextBuffers.cpp b/dom/canvas/WebGL2ContextBuffers.cpp
+index 27b7bf2385..8687e49095 100644
+--- a/dom/canvas/WebGL2ContextBuffers.cpp
++++ b/dom/canvas/WebGL2ContextBuffers.cpp
+@@ -72,6 +72,8 @@ void WebGL2Context::CopyBufferSubData(GLenum readTarget, GLenum writeTarget,
+   const ScopedLazyBind writeBind(gl, writeTarget, writeBuffer);
+   gl->fCopyBufferSubData(readTarget, writeTarget, readOffset, writeOffset,
+                          size);
++  // The camera hack's copy of the destination no longer matches it.
++  writeBuffer->mStereoShadow.clear();
+ 
+   // Update the destination index cache if needed.
+   if (writeBuffer->mIndexCache) {
+diff --git a/dom/canvas/WebGLBuffer.cpp b/dom/canvas/WebGLBuffer.cpp
+index c26ae2f027..c8380caeb4 100644
+--- a/dom/canvas/WebGLBuffer.cpp
++++ b/dom/canvas/WebGLBuffer.cpp
+@@ -4,6 +4,8 @@
+ 
+ #include "WebGLBuffer.h"
+ 
++#include "mozilla/StaticPrefs_webgl.h"
++
+ #include "GLContext.h"
+ #include "WebGLContext.h"
+ #include "mozilla/dom/WebGLRenderingContextBinding.h"
+@@ -152,6 +154,15 @@ void WebGLBuffer::BufferData(const GLenum target, const uint64_t size,
+   mFetchInvalidator.InvalidateCaches();
+   mIndexCache = std::move(newIndexCache);
+ 
++  mStereoShadow.clear();
++  if (target == LOCAL_GL_UNIFORM_BUFFER && size <= 64 * 1024 &&
++      StaticPrefs::webgl_stereo_camera_enabled()) {
++    mStereoShadow.assign(size, 0);
++    if (uploadData) {
++      memcpy(mStereoShadow.data(), uploadData, size);
++    }
++  }
++
+   if (mIndexCache) {
+     if (!mIndexRanges.empty()) {
+       mContext->GeneratePerfWarning("[%p] Invalidating %u ranges.", this,
+@@ -178,6 +189,11 @@ void WebGLBuffer::BufferSubData(GLenum target, uint64_t rawDstByteOffset,
+ 
+   if (!rawDataLen) return;  // With validation successful, nothing else to do.
+ 
++  if (!mStereoShadow.empty() &&
++      rawDstByteOffset + rawDataLen <= mStereoShadow.size()) {
++    memcpy(mStereoShadow.data() + rawDstByteOffset, data, rawDataLen);
++  }
++
+   const void* uploadData = data;
+   if (mIndexCache) {
+     auto* const cachedDataBegin =
+diff --git a/dom/canvas/WebGLBuffer.h b/dom/canvas/WebGLBuffer.h
+index dfcb703a1b..c4e5422ccb 100644
+--- a/dom/canvas/WebGLBuffer.h
++++ b/dom/canvas/WebGLBuffer.h
+@@ -5,6 +5,7 @@
+ #ifndef WEBGL_BUFFER_H_
+ #define WEBGL_BUFFER_H_
+ 
++#include <vector>
+ #include <map>
+ 
+ #include "CacheInvalidator.h"
+@@ -35,6 +36,10 @@ class WebGLBuffer final : public WebGLContextBoundObject {
+   GLenum Usage() const { return mUsage; }
+   size_t ByteLength() const { return mByteLength; }
+ 
++  // The camera hack (WebGLStereoCamera.h): a copy of a small uniform buffer's
++  // data, where a page's camera may live (uniform blocks).
++  mutable std::vector<uint8_t> mStereoShadow;
++
+   Maybe<uint32_t> GetIndexedFetchMaxVert(GLenum type, uint64_t byteOffset,
+                                          uint32_t indexCount) const;
+   bool ValidateRange(size_t byteOffset, size_t byteLen) const;
+diff --git a/dom/canvas/WebGLContext.cpp b/dom/canvas/WebGLContext.cpp
+index f6ffa72221..16dfd5f4aa 100644
+--- a/dom/canvas/WebGLContext.cpp
++++ b/dom/canvas/WebGLContext.cpp
+@@ -36,6 +36,7 @@
+ #include "mozilla/ScopeExit.h"
+ #include "mozilla/Services.h"
+ #include "mozilla/StaticPrefs_webgl.h"
++#include "mozilla/Logging.h"
+ #include "mozilla/dom/BindingUtils.h"
+ #include "mozilla/dom/ContentChild.h"
+ #include "mozilla/dom/Document.h"
+@@ -97,6 +98,10 @@
+ 
+ namespace mozilla {
+ 
++// The camera hack's per-frame draw counts (WebGLStereoCamera.h).
++static LazyLogModule gWebGLStereoLog("WebGLStereo");
++
++
+ WebGLContextOptions::WebGLContextOptions() {
+   // Set default alpha state based on preference.
+   alpha = !StaticPrefs::webgl_default_no_alpha();
+@@ -512,9 +517,161 @@ void WebGLContext::Resize(uvec2 requestedSize) {
+   mRequestedSize = requestedSize;
+   mDefaultFB = nullptr;
+   mResolvedDefaultFB = nullptr;
++  mStereoRightFB = nullptr;
++  mStereoRightResolvedFB = nullptr;
+   mResetLayer = true;  // New size means new Layer.
+ }
+ 
++// -
++
++bool WebGLContext::StereoCameraDraws() const {
++  return mStereoCamera && !mBoundDrawFramebuffer && mDefaultFB &&
++         const_cast<WebGLContext*>(this)->EnsureStereoRightFB();
++}
++
++bool WebGLContext::EnsureStereoRightFB() {
++  if (mStereoRightFB) {
++    return true;
++  }
++  if (!mDefaultFB) {
++    return false;
++  }
++  const bool depthStencil = mOptions.depth || mOptions.stencil;
++  mStereoRightFB = gl::MozFramebuffer::Create(gl, mDefaultFB->mSize,
++                                              mDefaultFB->mSamples,
++                                              depthStencil);
++  if (!mStereoRightFB) {
++    GenerateWarning("Stereo camera: the right eye's framebuffer failed.");
++    mStereoCamera = false;
++    return false;
++  }
++  // The right eye starts from what the left eye has so far.
++  gl->fBindFramebuffer(LOCAL_GL_READ_FRAMEBUFFER, mDefaultFB->mFB);
++  gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mStereoRightFB->mFB);
++  const auto& size = mDefaultFB->mSize;
++  if (mScissorTestEnabled) {
++    gl->fDisable(LOCAL_GL_SCISSOR_TEST);
++  }
++  gl->fBlitFramebuffer(0, 0, size.width, size.height, 0, 0, size.width,
++                       size.height, LOCAL_GL_COLOR_BUFFER_BIT,
++                       LOCAL_GL_NEAREST);
++  if (mScissorTestEnabled) {
++    gl->fEnable(LOCAL_GL_SCISSOR_TEST);
++  }
++  DoBindFB(mBoundReadFramebuffer, LOCAL_GL_READ_FRAMEBUFFER);
++  DoBindFB(mBoundDrawFramebuffer, LOCAL_GL_DRAW_FRAMEBUFFER);
++  return true;
++}
++
++void WebGLContext::UploadStereoCameras(const float aShift) const {
++  if (!mActiveProgramLinkInfo) {
++    return;
++  }
++  const auto& link = *mActiveProgramLinkInfo;
++  for (const auto& [loc, camera] : link.stereoCameras) {
++    const auto m = webgl::StereoCameraEye(camera, aShift);
++    gl->fUniformMatrix4fv(static_cast<GLint>(loc), 1, false, m.data());
++  }
++
++  // Cameras in uniform blocks (WebGL 2 engines keep the scene's matrices in
++  // a uniform buffer): read from the buffer's copy, written back per eye.
++  bool rebound = false;
++  for (const auto& block : link.uniformBlocks) {
++    const auto* binding = block.binding;
++    if (!binding || !binding->mBufferBinding ||
++        binding->mBufferBinding->mStereoShadow.empty()) {
++      continue;
++    }
++    const auto& buffer = *binding->mBufferBinding;
++    const auto& shadow = buffer.mStereoShadow;
++    for (const auto index : block.info.activeUniformIndices) {
++      if (index >= link.active.activeUniforms.size()) {
++        continue;
++      }
++      const auto& uniform = link.active.activeUniforms[index];
++      if (uniform.elemType != LOCAL_GL_FLOAT_MAT4 || uniform.elemCount != 1 ||
++          uniform.block_offset < 0) {
++        continue;
++      }
++      const uint64_t stride =
++          uniform.block_matrixStride > 0 ? uniform.block_matrixStride : 16;
++      const uint64_t offset = binding->mRangeStart + uniform.block_offset;
++      const uint64_t length = 3 * stride + 16;
++      if (offset + length > shadow.size()) {
++        continue;
++      }
++      // Column-major, whatever the block's layout.
++      std::array<float, 16> m;
++      for (int i = 0; i < 16; i++) {
++        const int major = uniform.block_isRowMajor ? i % 4 : i / 4;
++        const int minor = uniform.block_isRowMajor ? i / 4 : i % 4;
++        memcpy(&m[i], shadow.data() + offset + major * stride + minor * 4, 4);
++      }
++      const auto camera = webgl::ClassifyStereoCamera(
++          m.data(), uniform.name, StaticPrefs::webgl_stereo_camera_convergence());
++      if (!camera) {
++        continue;
++      }
++      std::vector<uint8_t> bytes(shadow.begin() + offset,
++                                 shadow.begin() + offset + length);
++      if (aShift != 0.0f) {
++        const auto eye = webgl::StereoCameraEye(*camera, aShift);
++        for (int i = 0; i < 16; i++) {
++          const int major = uniform.block_isRowMajor ? i % 4 : i / 4;
++          const int minor = uniform.block_isRowMajor ? i / 4 : i % 4;
++          memcpy(bytes.data() + major * stride + minor * 4, &eye[i], 4);
++        }
++      }
++      gl->fBindBuffer(LOCAL_GL_UNIFORM_BUFFER, buffer.mGLName);
++      gl->fBufferSubData(LOCAL_GL_UNIFORM_BUFFER, offset, length, bytes.data());
++      rebound = true;
++    }
++  }
++  if (rebound) {
++    gl->fBindBuffer(LOCAL_GL_UNIFORM_BUFFER,
++                    mBoundUniformBuffer ? mBoundUniformBuffer->mGLName : 0);
++  }
++}
++
++// The right eye, into the right half of the bound draw framebuffer.
++void WebGLContext::BlitStereoRightToCurDriverFB(const gfx::IntSize& aEyeSize) {
++  // Blits are scissored: the page's scissor box must not cut the right eye
++  // (as in BlitBackbufferToCurDriverFB).
++  if (mScissorTestEnabled) {
++    gl->fDisable(LOCAL_GL_SCISSOR_TEST);
++  }
++  const auto cleanup = MakeScopeExit([&]() {
++    if (mScissorTestEnabled) {
++      gl->fEnable(LOCAL_GL_SCISSOR_TEST);
++    }
++  });
++  GLuint readFb = mStereoRightFB->mFB;
++  if (mStereoRightFB->mSamples) {
++    // A multisampled framebuffer resolves only into the same rectangle.
++    if (!mStereoRightResolvedFB) {
++      mStereoRightResolvedFB =
++          gl::MozFramebuffer::Create(gl, aEyeSize, 0, false);
++    }
++    if (!mStereoRightResolvedFB) {
++      return;
++    }
++    GLint drawFb = 0;
++    gl->fGetIntegerv(LOCAL_GL_DRAW_FRAMEBUFFER_BINDING, &drawFb);
++    gl->fBindFramebuffer(LOCAL_GL_READ_FRAMEBUFFER, mStereoRightFB->mFB);
++    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER,
++                         mStereoRightResolvedFB->mFB);
++    gl->fBlitFramebuffer(0, 0, aEyeSize.width, aEyeSize.height, 0, 0,
++                         aEyeSize.width, aEyeSize.height,
++                         LOCAL_GL_COLOR_BUFFER_BIT, LOCAL_GL_NEAREST);
++    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, drawFb);
++    readFb = mStereoRightResolvedFB->mFB;
++  }
++  gl->fBindFramebuffer(LOCAL_GL_READ_FRAMEBUFFER, readFb);
++  gl->fBlitFramebuffer(0, 0, aEyeSize.width, aEyeSize.height, aEyeSize.width,
++                       0, 2 * aEyeSize.width, aEyeSize.height,
++                       LOCAL_GL_COLOR_BUFFER_BIT, LOCAL_GL_NEAREST);
++}
++
+ std::unique_ptr<webgl::FormatUsageAuthority> WebGLContext::CreateFormatUsage(
+     gl::GLContext* gl) const {
+   return webgl::FormatUsageAuthority::CreateForWebGL1(gl);
+@@ -1062,7 +1219,7 @@ GLuint GLNameOrZero(const T& t) {
+ // The front buffer carries the canvas's stereo mode to the compositor, which
+ // declares it on the canvas's own surface.
+ static void SetStereoMode(gl::SharedSurface* const surf,
+-                          const uint8_t stereoMode) {
++                          const uint8_t stereoMode, const bool camera) {
+   if (!surf || surf->mDesc.type != gl::SharedSurfaceType::EGLSurfaceDMABUF) {
+     return;
+   }
+@@ -1070,7 +1227,9 @@ static void SetStereoMode(gl::SharedSurface* const surf,
+                         ? StereoMode(stereoMode)
+                         : StereoMode::MONO;
+   static_cast<gl::SharedSurface_DMABUF*>(surf)->mSurface->SetStereoMode(
+-      mode, mode == StereoMode::MONO ? StereoSource::NONE : StereoSource::XR);
++      mode, mode == StereoMode::MONO ? StereoSource::NONE
++            : camera                 ? StereoSource::CAMERA
++                                     : StereoSource::XR);
+ }
+ #endif
+ 
+@@ -1082,11 +1241,21 @@ bool WebGLContext::PresentInto(gl::SwapChain& swapChain) {
+   if (!ValidateAndInitFB(nullptr)) return false;
+ 
+   const auto size = mDefaultFB->mSize;
++  // The camera hack presents both eyes, full side by side, left eye first.
++  const bool stereo = mStereoCamera && EnsureStereoRightFB();
++  const auto presentedSize =
++      stereo ? gfx::IntSize(2 * size.width, size.height) : size;
++  MOZ_LOG(gWebGLStereoLog, LogLevel::Debug,
++          ("present %s: %u draws per eye, %u into the page's framebuffers",
++           stereo ? "two eyes" : "one view", mStereoEyeDraws,
++           mStereoOffscreenDraws));
++  mStereoEyeDraws = 0;
++  mStereoOffscreenDraws = 0;
+ 
+   const auto error = [&]() -> std::optional<std::string> {
+     const auto canvasCspace = ToColorSpace2ForOutput(mDrawingBufferColorSpace);
+     const auto canvasTF = gfx::TransferFunction::SRGB;
+-    auto presenter = swapChain.Acquire(size, canvasCspace, canvasTF);
++    auto presenter = swapChain.Acquire(presentedSize, canvasCspace, canvasTF);
+     if (!presenter) {
+       return "Swap chain surface creation failed.";
+     }
+@@ -1118,9 +1287,18 @@ bool WebGLContext::PresentInto(gl::SwapChain& swapChain) {
+       }
+     }
+ 
++    if (stereo) {
++      // Each eye as it is; colour management of stereo canvases is not
++      // done yet.
++      colorManage = false;
++    }
++
+     if (!colorManage) {
+       gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, destFb);
+       BlitBackbufferToCurDriverFB();
++      if (stereo) {
++        BlitStereoRightToCurDriverFB(size);
++      }
+       return {};
+     }
+ 
+@@ -1258,6 +1436,15 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
+   bool useAsync = options.remoteTextureOwnerId.IsValid() &&
+                   options.remoteTextureId.IsValid();
+ 
++  // The camera hack: the canvas presents both eyes from now on.
++  if (!xrFb && !webvr && options.stereoCamera != mStereoCamera) {
++    mStereoCamera = options.stereoCamera;
++    if (!mStereoCamera) {
++      mStereoRightFB = nullptr;
++      mStereoRightResolvedFB = nullptr;
++    }
++  }
++
+   // The canvas of an immersive session on the flat stereo display shows the
+   // session's last frame, copied when it was submitted.
+   if (!xrFb && !webvr) {
+@@ -1285,7 +1472,8 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
+   }
+ #ifdef MOZ_WIDGET_GTK
+   if (!maybeFB) {
+-    SetStereoMode(swapChain->FrontBuffer().get(), options.stereoMode);
++    SetStereoMode(swapChain->FrontBuffer().get(), options.stereoMode,
++                  options.stereoCamera);
+   }
+ #endif
+ 
+@@ -1966,6 +2154,11 @@ bool WebGLContext::ValidateAndInitFB(const WebGLFramebuffer* const fb,
+                             LOCAL_GL_DEPTH_BUFFER_BIT |
+                             LOCAL_GL_STENCIL_BUFFER_BIT;
+     gl->fClear(bits);
++    if (mStereoRightFB) {
++      gl->fBindFramebuffer(LOCAL_GL_FRAMEBUFFER, mStereoRightFB->mFB);
++      gl->fClear(bits);
++      gl->fBindFramebuffer(LOCAL_GL_FRAMEBUFFER, mDefaultFB->mFB);
++    }
+ 
+     mDefaultFB_IsInvalid = false;
+   }
+diff --git a/dom/canvas/WebGLContext.h b/dom/canvas/WebGLContext.h
+index 090a9cc9a7..29c7f83621 100644
+--- a/dom/canvas/WebGLContext.h
++++ b/dom/canvas/WebGLContext.h
+@@ -5,6 +5,7 @@
+ #ifndef WEBGLCONTEXT_H_
+ #define WEBGLCONTEXT_H_
+ 
++#include <functional>
+ #include <bitset>
+ #include <memory>
+ 
+@@ -506,6 +507,17 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
+   void PresentFlatXR(const gl::MozFramebuffer& xrFb,
+                      layers::TextureType consumerType);
+ 
++  // The camera hack (WebGLStereoCamera.h): while the canvas presents two
++  // eyes, each draw into the default framebuffer is drawn once per eye, the
++  // left into the default framebuffer and the right into mStereoRightFB, with
++  // the page's camera uniforms replaced by each eye's camera.
++  bool StereoCameraDraws() const;
++  bool EnsureStereoRightFB();
++  void UploadStereoCameras(float aShift) const;
++  void BlitStereoRightToCurDriverFB(const gfx::IntSize& aEyeSize);
++
++  void DrawPerEye(const std::function<void()>& aDraw);
++
+  public:
+   // Present swaps the front and back buffers of the swap chain for compositing.
+   // This assumes the framebuffer may directly alias with the back buffer,
+@@ -1316,6 +1328,14 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
+   // by the session's canvas.
+   gl::SwapChain mFlatXRSwapChain;
+   bool mFlatXRPresenting = false;
++  // The camera hack: the canvas presents two eyes, full side by side.
++  bool mStereoCamera = false;
++  UniquePtr<gl::MozFramebuffer> mStereoRightFB;
++  UniquePtr<gl::MozFramebuffer> mStereoRightResolvedFB;
++  // Draws since the last present: per eye into the default framebuffer, and
++  // once into the page's own framebuffers.
++  uint32_t mStereoEyeDraws = 0;
++  uint32_t mStereoOffscreenDraws = 0;
+   gl::SwapChain mSnapshotSwapChain;
+ 
+   RefPtr<layers::RemoteTextureOwnerClient> mRemoteTextureOwner;
+diff --git a/dom/canvas/WebGLContextDraw.cpp b/dom/canvas/WebGLContextDraw.cpp
+index 94cc7b31d4..6a434342db 100644
+--- a/dom/canvas/WebGLContextDraw.cpp
++++ b/dom/canvas/WebGLContextDraw.cpp
+@@ -679,6 +679,28 @@ static bool HasInstancedDrawing(const WebGLContext& webgl) {
+ 
+ ////////////////////////////////////////
+ 
++// The camera hack (WebGLStereoCamera.h): a draw into the default framebuffer
++// is drawn once per eye; draws into the page's own framebuffers (shadow maps,
++// render targets) once.
++void WebGLContext::DrawPerEye(const std::function<void()>& aDraw) {
++  if (!StereoCameraDraws()) {
++    aDraw();
++    if (mBoundDrawFramebuffer) {
++      mStereoOffscreenDraws++;
++    }
++    return;
++  }
++  const float s = StaticPrefs::webgl_stereo_camera_separation() / 100.0f;
++  UploadStereoCameras(-s);
++  aDraw();
++  gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mStereoRightFB->mFB);
++  UploadStereoCameras(s);
++  aDraw();
++  gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mDefaultFB->mFB);
++  UploadStereoCameras(0.0f);
++  mStereoEyeDraws++;
++}
++
+ void WebGLContext::DrawArraysInstanced(const GLenum mode, const GLint first,
+                                        const GLsizei iVertCount,
+                                        const GLsizei instanceCount) {
+@@ -841,11 +863,20 @@ void WebGLContext::DrawArraysInstanced(const GLenum mode, const GLint first,
+     ScopedDrawCallWrapper wrapper(*this);
+ 
+     if (vertCount && instanceCount) {
+-      if (HasInstancedDrawing(*this)) {
+-        gl->fDrawArraysInstanced(mode, driverFirst, vertCount, instanceCount);
++      // Transform feedback records the draw once.
++      const auto draw = [&]() {
++        if (HasInstancedDrawing(*this)) {
++          gl->fDrawArraysInstanced(mode, driverFirst, vertCount,
++                                   instanceCount);
++        } else {
++          MOZ_ASSERT(instanceCount == 1);
++          gl->fDrawArrays(mode, driverFirst, vertCount);
++        }
++      };
++      if (mBoundTransformFeedback && mBoundTransformFeedback->mIsActive) {
++        draw();
+       } else {
+-        MOZ_ASSERT(instanceCount == 1);
+-        gl->fDrawArrays(mode, driverFirst, vertCount);
++        DrawPerEye(draw);
+       }
+     }
+   }
+@@ -1069,15 +1100,17 @@ void WebGLContext::DrawElementsInstanced(const GLenum mode,
+       }
+ 
+       if (indexCount && instanceCount) {
+-        if (HasInstancedDrawing(*this)) {
+-          gl->fDrawElementsInstanced(mode, indexCount, type,
+-                                     reinterpret_cast<GLvoid*>(byteOffset),
+-                                     instanceCount);
+-        } else {
+-          MOZ_ASSERT(instanceCount == 1);
+-          gl->fDrawElements(mode, indexCount, type,
+-                            reinterpret_cast<GLvoid*>(byteOffset));
+-        }
++        DrawPerEye([&]() {
++          if (HasInstancedDrawing(*this)) {
++            gl->fDrawElementsInstanced(mode, indexCount, type,
++                                       reinterpret_cast<GLvoid*>(byteOffset),
++                                       instanceCount);
++          } else {
++            MOZ_ASSERT(instanceCount == 1);
++            gl->fDrawElements(mode, indexCount, type,
++                              reinterpret_cast<GLvoid*>(byteOffset));
++          }
++        });
+       }
+ 
+       if (errorScope) {
+diff --git a/dom/canvas/WebGLContextFramebufferOperations.cpp b/dom/canvas/WebGLContextFramebufferOperations.cpp
+index 2c4bc437ec..4506f37347 100644
+--- a/dom/canvas/WebGLContextFramebufferOperations.cpp
++++ b/dom/canvas/WebGLContextFramebufferOperations.cpp
+@@ -56,6 +56,12 @@ void WebGLContext::Clear(GLbitfield mask) {
+ 
+   const ScopedDrawCallWrapper wrapper(*this);
+   gl->fClear(driverMask);
++  // The camera hack: the right eye's framebuffer is cleared alike.
++  if (StereoCameraDraws()) {
++    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mStereoRightFB->mFB);
++    gl->fClear(driverMask);
++    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mDefaultFB->mFB);
++  }
+ }
+ 
+ static GLfloat GLClampFloat(GLfloat val) {
+diff --git a/dom/canvas/WebGLContextGL.cpp b/dom/canvas/WebGLContextGL.cpp
+index 8becab9d84..6ba02285c5 100644
+--- a/dom/canvas/WebGLContextGL.cpp
++++ b/dom/canvas/WebGLContextGL.cpp
+@@ -1394,6 +1394,24 @@ void WebGLContext::UniformData(
+   const auto ptr = static_cast<const void*>(data.data());
+   (*pfn)(*gl, static_cast<GLint>(loc), elemCount, transpose, ptr);
+ 
++  // The camera hack: remember the camera the page hands the GPU.
++  if (activeInfo.elemType == LOCAL_GL_FLOAT_MAT4 && !validationInfo.isArray &&
++      elemCount == 1 && StaticPrefs::webgl_stereo_camera_enabled()) {
++    std::array<float, 16> m;
++    const auto* f = reinterpret_cast<const float*>(data.data());
++    for (int i = 0; i < 16; i++) {
++      m[i] = transpose ? f[(i % 4) * 4 + i / 4] : f[i];
++    }
++    const auto camera = webgl::ClassifyStereoCamera(
++        m.data(), activeInfo.name,
++        StaticPrefs::webgl_stereo_camera_convergence());
++    if (camera) {
++      link->stereoCameras[loc] = *camera;
++    } else {
++      link->stereoCameras.erase(loc);
++    }
++  }
++
+   // -
+ 
+   if (samplerInfo) {
+diff --git a/dom/canvas/WebGLProgram.h b/dom/canvas/WebGLProgram.h
+index 51126fa240..a4387bc510 100644
+--- a/dom/canvas/WebGLProgram.h
++++ b/dom/canvas/WebGLProgram.h
+@@ -12,6 +12,7 @@
+ 
+ #include "CacheInvalidator.h"
+ #include "WebGLObjectModel.h"
++#include "WebGLStereoCamera.h"
+ #include "WebGLTypes.h"
+ #include "mozilla/RefPtr.h"
+ #include "mozilla/Vector.h"
+@@ -128,6 +129,9 @@ struct LinkedProgramInfo final : public RefCounted<LinkedProgramInfo>,
+   std::vector<std::unique_ptr<SamplerUniformInfo>> samplerUniforms;
+   std::unordered_map<uint32_t, LocationInfo> locationMap;
+ 
++  // The camera uniforms the page uploaded, by location (WebGLStereoCamera.h).
++  mutable std::unordered_map<uint32_t, StereoCamera> stereoCameras;
++
+   mutable std::vector<UniformBlockInfo> uniformBlocks;
+ 
+   //////
+diff --git a/dom/canvas/WebGLStereoCamera.h b/dom/canvas/WebGLStereoCamera.h
+new file mode 100644
+index 0000000000..d405a574d6
+--- /dev/null
++++ b/dom/canvas/WebGLStereoCamera.h
+@@ -0,0 +1,103 @@
++/* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef WEBGL_STEREO_CAMERA_H_
++#define WEBGL_STEREO_CAMERA_H_
++
++#include <array>
++#include <cmath>
++#include <cstdint>
++#include <string_view>
++
++#include "mozilla/Maybe.h"
++
++namespace mozilla::webgl {
++
++// The camera hack (Sparky Stereo OS): a page that draws a 3D scene with
++// WebGL and no WebXR hands its camera to the GPU as a mat4 uniform, the
++// projection or the view-projection product. The browser recognises that
++// camera and draws the page's view of the scene once per eye with two
++// cameras: parallel axes, frustums shifted (off-axis) so that they share one
++// window at the zero-parallax distance C, never toed in. In clip space that
++// is x' = x + s * (w - C) for each eye, with s = -/+ half the separation, a
++// fraction of the view's width (a point at infinity moves by s, a point at
++// distance C stays). Everything else (the other uniforms, the shaders, the
++// passes into the page's own framebuffers) stays as the page made it.
++
++struct StereoCamera {
++  // The page's own value, column-major.
++  std::array<float, 16> mono = {};
++  // The zero-parallax distance, in the camera's units of depth.
++  float convergence = 0.0f;
++};
++
++inline bool StereoCameraFinite(const float* aM) {
++  for (int i = 0; i < 16; i++) {
++    if (!std::isfinite(aM[i])) {
++      return false;
++    }
++  }
++  return true;
++}
++
++// The camera in a column-major mat4, if it is one: a perspective projection
++// (the last row is (0, 0, -1, 0) for WebGL's right-handed convention, or
++// (0, 0, 1, 0) for a left-handed one), or a view-projection product (the last
++// row is plus or minus the view's third row, a unit vector). The
++// zero-parallax distance is aNearFactor times the camera's near distance.
++// Lights' matrices (shadow lookups) are left alone by name.
++inline Maybe<StereoCamera> ClassifyStereoCamera(const float* aM,
++                                                std::string_view aName,
++                                                float aNearFactor) {
++  if (!StereoCameraFinite(aM)) {
++    return Nothing();
++  }
++  for (const char* skip : {"light", "Light", "shadow", "Shadow"}) {
++    if (aName.find(skip) != std::string_view::npos) {
++      return Nothing();
++    }
++  }
++  float near = 0.0f;
++  if (aM[3] == 0.0f && aM[7] == 0.0f &&
++      std::fabs(std::fabs(aM[11]) - 1.0f) < 1e-4f && aM[15] == 0.0f &&
++      aM[0] > 0.0f && aM[5] > 0.0f) {
++    // z_clip = m10 z + m14 and w = -m11 z: the near plane is where
++    // z_clip = -w.
++    near = aM[14] / (-aM[11] * aM[10] - 1.0f);
++  } else {
++    const float norm2 = aM[3] * aM[3] + aM[7] * aM[7] + aM[11] * aM[11];
++    if (std::fabs(norm2 - 1.0f) > 2e-3f) {
++      return Nothing();
++    }
++    // Rows 2 and 3 of the product are P22 V2 + P23 V3 and -/+ V2: the same
++    // near distance either way.
++    const float a = aM[2] * aM[3] + aM[6] * aM[7] + aM[10] * aM[11];
++    near = (aM[14] - a * aM[15]) / (-1.0f - a);
++  }
++  if (!(near > 0.0f) || !std::isfinite(near)) {
++    return Nothing();
++  }
++  StereoCamera camera;
++  for (int i = 0; i < 16; i++) {
++    camera.mono[i] = aM[i];
++  }
++  camera.convergence = near * aNearFactor;
++  return Some(camera);
++}
++
++// One eye's camera: aShift is -s for the left eye, +s for the right eye.
++inline std::array<float, 16> StereoCameraEye(const StereoCamera& aCamera,
++                                             float aShift) {
++  std::array<float, 16> m = aCamera.mono;
++  for (int column = 0; column < 4; column++) {
++    m[4 * column] += aShift * aCamera.mono[4 * column + 3];
++  }
++  m[12] -= aShift * aCamera.convergence;
++  return m;
++}
++
++}  // namespace mozilla::webgl
++
++#endif  // WEBGL_STEREO_CAMERA_H_
+diff --git a/dom/canvas/WebGLTypes.h b/dom/canvas/WebGLTypes.h
+index d0377104d6..a3a580980a 100644
+--- a/dom/canvas/WebGLTypes.h
++++ b/dom/canvas/WebGLTypes.h
+@@ -834,12 +834,16 @@ struct SwapChainOptions final {
+   // The canvas presents the frames of an immersive session on the flat
+   // stereo display (gfx/vr/service/FlatSession).
+   bool flatXR = false;
++  // The camera hack (WebGLStereoCamera.h): the canvas presents both eyes.
++  bool stereoCamera = false;
+   // Pad to sizeof(u64):
+-  uint32_t padding2 = 0;
++  uint8_t padding2 = 0;
++  uint16_t padding3 = 0;
+ 
+   auto MutTiedFields() {
+     return std::tie(remoteTextureId, remoteTextureOwnerId, bgra,
+-                    forceAsyncPresent, stereoMode, flatXR, padding2);
++                    forceAsyncPresent, stereoMode, flatXR, stereoCamera,
++                    padding2, padding3);
+   }
+ };
+ 
+diff --git a/gfx/config/gfxVars.h b/gfx/config/gfxVars.h
+index 98ed6a26aa..5dcd0f06c5 100644
+--- a/gfx/config/gfxVars.h
++++ b/gfx/config/gfxVars.h
+@@ -83,6 +83,7 @@ class MOZ_STACK_CLASS gfxVarsCollectUpdates;
+   _(DrmRenderDevice, nsCString, nsCString())                       \
+   _(UseDMABuf, bool, false)                                        \
+   _(UseDMABufWebGL, bool, true)                                    \
++  _(StereoContentDeclaration, bool, false)                         \
+   _(DMABufModifiersXRGB, ArrayOfuint64_t, nsTArray<uint64_t>())    \
+   _(DMABufModifiersARGB, ArrayOfuint64_t, nsTArray<uint64_t>())    \
+   _(WebRenderRequiresHardwareDriver, bool, false)                  \
+diff --git a/gfx/layers/ImageTypes.h b/gfx/layers/ImageTypes.h
+index 5ff5124887..0a6e9bb781 100644
+--- a/gfx/layers/ImageTypes.h
++++ b/gfx/layers/ImageTypes.h
+@@ -147,6 +147,9 @@ enum class StereoSource : uint8_t {
+   // A WebXR session's frames: an immersive session on the flat stereo
+   // display, or an inline-stereo session's canvas.
+   XR,
++  // A WebGL canvas the browser draws once per eye from the page's own camera
++  // (the camera hack, dom/canvas/WebGLStereoCamera.h).
++  CAMERA,
+   MAX,
+ };
+ 
+diff --git a/gfx/layers/NativeLayerWayland.cpp b/gfx/layers/NativeLayerWayland.cpp
+index b841531ae1..f28f84c27e 100644
+--- a/gfx/layers/NativeLayerWayland.cpp
++++ b/gfx/layers/NativeLayerWayland.cpp
+@@ -1819,6 +1819,7 @@ void NativeLayerWayland::DecideStereoLocked(const gfx::Size& aShape) {
+   StereoFit fit = StereoFit::None;
+   switch (mStereoSource) {
+     case StereoSource::XR:
++    case StereoSource::CAMERA:
+     case StereoSource::CONTAINER_SIZED:
+       // The place has the size of one view.
+       break;
+diff --git a/gfx/thebes/gfxPlatformGtk.cpp b/gfx/thebes/gfxPlatformGtk.cpp
+index 4cf3991472..3f8e43703f 100644
+--- a/gfx/thebes/gfxPlatformGtk.cpp
++++ b/gfx/thebes/gfxPlatformGtk.cpp
+@@ -313,6 +313,13 @@ void gfxPlatformGtk::InitWebRenderConfig() {
+ #endif
+ 
+   gfxVars::SetUseWebRenderCompositor(feature.IsEnabled());
++#if defined(MOZ_WAYLAND)
++  // Sparky Stereo OS: pictures get Wayland surfaces of their own and the
++  // compositor takes stereo content declared on a surface; only then may
++  // the browser present two views side by side of its own accord.
++  gfxVars::SetStereoContentDeclaration(
++      feature.IsEnabled() && widget::WaylandDisplayGet()->HasStereoContent());
++#endif
+ }
+ 
+ void gfxPlatformGtk::InitPlatformGPUProcessPrefs() {
+diff --git a/modules/libpref/init/StaticPrefList.yaml b/modules/libpref/init/StaticPrefList.yaml
+index 308323ef41..aa9ab4ea6f 100644
+--- a/modules/libpref/init/StaticPrefList.yaml
++++ b/modules/libpref/init/StaticPrefList.yaml
+@@ -20040,6 +20040,27 @@
+   value: 30*1000*1000
+   mirror: always
+ 
++# The camera hack (Sparky Stereo OS, dom/canvas/WebGLStereoCamera.h): a WebGL
++# canvas that draws a 3D scene through a camera uniform is presented in
++# stereo, the scene drawn once per eye, full side by side.
++- name: webgl.stereo-camera.enabled
++  type: RelaxedAtomicBool
++  value: false
++  mirror: always
++
++# The separation of the two eyes' views, in percent of the view's width,
++# which a point at infinity shows.
++- name: webgl.stereo-camera.separation
++  type: AtomicFloat
++  value: 2.0f
++  mirror: always
++
++# The zero-parallax distance, as a multiple of the camera's near distance.
++- name: webgl.stereo-camera.convergence
++  type: AtomicFloat
++  value: 5.0f
++  mirror: always
++
+ - name: webgl.max-warnings-per-context
+   type: RelaxedAtomicUint32
+   value: 32
+diff --git a/widget/gtk/nsWaylandDisplay.cpp b/widget/gtk/nsWaylandDisplay.cpp
+index 2e90d2fb32..292df0f77b 100644
+--- a/widget/gtk/nsWaylandDisplay.cpp
++++ b/widget/gtk/nsWaylandDisplay.cpp
+@@ -811,6 +811,8 @@ static void global_registry_handler(void* data, wl_registry* registry,
+         WaylandRegistryBind<zwp_idle_inhibit_manager_v1>(
+             registry, id, &zwp_idle_inhibit_manager_v1_interface, 1);
+     display->SetIdleInhibitManager(idle_inhibit_manager);
++  } else if (iface.EqualsLiteral("kde_stereo_content_manager_v1")) {
++    display->SetHasStereoContent();
+   } else if (iface.EqualsLiteral("zwp_relative_pointer_manager_v1")) {
+     auto* relative_pointer_manager =
+         WaylandRegistryBind<zwp_relative_pointer_manager_v1>(
+diff --git a/widget/gtk/nsWaylandDisplay.h b/widget/gtk/nsWaylandDisplay.h
+index 714f247ac6..c37a04d487 100644
+--- a/widget/gtk/nsWaylandDisplay.h
++++ b/widget/gtk/nsWaylandDisplay.h
+@@ -88,6 +88,11 @@ class nsWaylandDisplay {
+     return mFractionalScaleManagerV2;
+   }
+   bool IsPrimarySelectionEnabled() { return mIsPrimarySelectionEnabled; }
++  // The compositor takes stereo content declared on a surface (KWin's
++  // kde_stereo_content_v1, Sparky Stereo OS), which libstereo-declare binds
++  // on its own.
++  bool HasStereoContent() const { return mHasStereoContent; }
++  void SetHasStereoContent() { mHasStereoContent = true; }
+ 
+   wl_pointer* GetPointer() { return mPointer; }
+   void SetPointer(wl_pointer* aPointer);
+@@ -255,6 +260,7 @@ class nsWaylandDisplay {
+   uint32_t mSupportedRanges[sSupportedRangesNum] = {};
+ 
+   bool mIsPrimarySelectionEnabled = false;
++  bool mHasStereoContent = false;
+ 
+   AutoTArray<UniquePtr<MonitorConfig>, 4> mMonitors;
+ };
+-- 
+2.53.0
+

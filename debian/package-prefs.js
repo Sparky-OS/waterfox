@@ -24,3 +24,8 @@ pref("gfx.webrender.compositor.force-enabled", true);
 pref("dom.vr.enabled", true);
 pref("dom.vr.webxr.enabled", true);
 pref("dom.vr.flat.enabled", true);
+
+// The camera hack (Sparky Stereo OS): a WebGL page that draws a 3D scene
+// through its own camera, without WebXR, is drawn once per eye and shown in
+// stereo.
+pref("webgl.stereo-camera.enabled", true);

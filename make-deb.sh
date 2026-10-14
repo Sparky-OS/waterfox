@@ -7,7 +7,7 @@ set -euo pipefail
 src=$1 out=$2 version=$3
 here=$(cd "$(dirname "$0")" && pwd)
 pkg=sparky-stereo-browser
-revision=${REVISION:-0+stereo3d3}
+revision=${REVISION:-0+stereo3d4}
 debversion=$version-$revision
 gecko=$(tail -n 1 "$src/config/milestone.txt")
 dist=$src/obj-x86_64-pc-linux-gnu/dist

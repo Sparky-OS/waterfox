@@ -32,7 +32,7 @@ Homepage: https://sparkylinux.org
 
 Package: sparky-stereo-browser
 Architecture: amd64
-Depends: ${misc:Depends}, ${shlibs:Depends}, libstereo-declare1, libstereo-layer1 (>= 1.1.0)
+Depends: ${misc:Depends}, ${shlibs:Depends}, libstereo-declare1, libstereo-policy1 (>= 1.4.0)
 Provides: gnome-www-browser, www-browser
 Description: Sparky Stereo OS's build of Waterfox
  A web browser built from the Waterfox release by BrowserWorks, which is

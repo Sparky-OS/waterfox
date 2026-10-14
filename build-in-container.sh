@@ -31,12 +31,15 @@ for step in $steps; do
 		;;
 	prepare)
 		# The edition's changes to Gecko and Waterfox, in order; a patch
-		# already in the tree is left as it is.
+		# already in the tree is left as it is. The log is read once: a
+		# grep -q that stops early would end git log with SIGPIPE, which
+		# pipefail takes for "not found".
+		subjects=$(git log --format=%s)
 		for patch in "$here"/patches/*.patch; do
 			[ -e "$patch" ] || continue
 			# A tree that holds the commits (the stereo3d branch) has them.
 			subject=$(sed -n 's/^Subject: \[PATCH[^]]*\] //p' "$patch" | head -n 1)
-			if [ -n "$subject" ] && git log --format=%s | grep -qF -- "$subject"; then
+			if [ -n "$subject" ] && grep -qF -- "$subject" <<<"$subjects"; then
 				continue
 			fi
 			if git apply --check "$patch" 2>/dev/null; then

@@ -1,0 +1,856 @@
+From 055f8428fd521de48efda7bccd8c67c5196a9dae Mon Sep 17 00:00:00 2001
+From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
+Date: Wed, 14 Oct 2026 02:49:50 -0300
+Subject: [PATCH 16/18] Video: Swap Eyes in the 3D Video menu, over every mark
+
+The 3D Video menu gets Swap Eyes, a check box: each eye sees the other
+eye's view, whatever decided the picture's arrangement (the stream's
+frame packing SEI, the container's mark, the user's choice or, last, the
+picture's shape), so a video marked the wrong way round is corrected by
+its viewer. The choice is kept on the element (stereoSwap, for the
+browser's own UI only; pages do not see it) and travels with each frame
+to the compositor: on a DMABuf surface (SurfaceDescriptorDMABuf), with a
+frame decoded in the media process (SurfaceDescriptorRemoteDecoder,
+applied in the compositor through TextureHost::ApplyStereoSwap), and in
+the stereo mark WebRender carries to its own surfaces (bit 9).
+NativeLayerWayland swaps the eyes last (SwapStereoEyes).
+
+YCbCr buffer textures also take the user's choice of arrangement, which
+until now reached DMABuf pictures only.
+
+A layer WebRender draws a video into now copies views in another order
+or on top of each other side by side, left eye first, as an external
+layer does: on the GPU (a framebuffer blit) with hardware WebRender, in
+memory with software WebRender.
+
+Assisted-by: Claude Opus 5.5 via Claude Code
+---
+ browser/actors/ContextMenuChild.sys.mjs       |   4 +
+ .../base/content/browser-context.inc.xhtml    |   5 +
+ browser/base/content/browser-context.js       |   3 +
+ browser/base/content/nsContextMenu.sys.mjs    |   9 +-
+ .../locales/en-US/browser/browserContext.ftl  |   6 +-
+ dom/media/VideoFrameContainer.cpp             |   9 +-
+ dom/media/VideoFrameContainer.h               |   7 +
+ dom/media/mediaelement/HTMLMediaElement.cpp   |   8 ++
+ dom/media/mediaelement/HTMLMediaElement.h     |   5 +
+ dom/webidl/HTMLVideoElement.webidl            |   6 +
+ gfx/layers/GPUVideoImage.h                    |  10 +-
+ gfx/layers/ImageTypes.h                       |  28 +++-
+ gfx/layers/NativeLayerWayland.cpp             | 128 +++++++++++++++---
+ gfx/layers/NativeLayerWayland.h               |  19 ++-
+ gfx/layers/client/GPUVideoTextureClient.cpp   |   4 +-
+ gfx/layers/client/GPUVideoTextureClient.h     |   5 +-
+ gfx/layers/client/TextureClient.cpp           |   3 +-
+ gfx/layers/composite/GPUVideoTextureHost.cpp  |   1 +
+ gfx/layers/composite/TextureHost.cpp          |  16 ++-
+ gfx/layers/composite/TextureHost.h            |  12 +-
+ gfx/layers/ipc/LayersSurfaces.ipdlh           |   6 +-
+ gfx/layers/opengl/DMABUFTextureHostOGL.cpp    |   7 +
+ gfx/layers/opengl/DMABUFTextureHostOGL.h      |   1 +
+ widget/gtk/DMABufSurface.cpp                  |   6 +-
+ widget/gtk/DMABufSurface.h                    |   5 +
+ 25 files changed, 261 insertions(+), 52 deletions(-)
+
+diff --git a/browser/actors/ContextMenuChild.sys.mjs b/browser/actors/ContextMenuChild.sys.mjs
+index 2680ec2976..1ee95e7044 100644
+--- a/browser/actors/ContextMenuChild.sys.mjs
++++ b/browser/actors/ContextMenuChild.sys.mjs
+@@ -111,6 +111,9 @@ export class ContextMenuChild extends JSWindowActorChild {
+               case "stereoChoice":
+                 media.stereoChoice = message.data.data;
+                 break;
++              case "stereoSwap":
++                media.stereoSwap = !media.stereoSwap;
++                break;
+               case "hidecontrols":
+                 media.removeAttribute("controls");
+                 break;
+@@ -793,6 +796,7 @@ export class ContextMenuChild extends JSWindowActorChild {
+           readyState: context.target.readyState,
+           HAVE_CURRENT_DATA: context.target.HAVE_CURRENT_DATA,
+           stereoChoice: context.target.stereoChoice,
++          stereoSwap: context.target.stereoSwap,
+         });
+       }
+     }
+diff --git a/browser/base/content/browser-context.inc.xhtml b/browser/base/content/browser-context.inc.xhtml
+index a133d823fe..f60e8189b0 100644
+--- a/browser/base/content/browser-context.inc.xhtml
++++ b/browser/base/content/browser-context.inc.xhtml
+@@ -222,6 +222,11 @@
+                     type="radio"
+                     name="videostereo"
+                     />
++          <menuseparator/>
++          <menuitem id="context-video-stereo-swap"
++                    data-l10n-id="main-context-menu-video-stereo-swap"
++                    type="checkbox"
++                    />
+         </menupopup>
+       </menu>
+       <menuitem id="context-leave-dom-fullscreen"
+diff --git a/browser/base/content/browser-context.js b/browser/base/content/browser-context.js
+index 29e6b6bd4e..14cfde7d9e 100644
+--- a/browser/base/content/browser-context.js
++++ b/browser/base/content/browser-context.js
+@@ -119,6 +119,9 @@ document.addEventListener(
+             event.target.id.slice("context-video-stereo-".length)
+           );
+           break;
++        case "context-video-stereo-swap":
++          gContextMenu.mediaCommand("stereoSwap");
++          break;
+         case "context-leave-dom-fullscreen":
+           gContextMenu.leaveDOMFullScreen();
+           break;
+diff --git a/browser/base/content/nsContextMenu.sys.mjs b/browser/base/content/nsContextMenu.sys.mjs
+index f421d807c6..6488d1d8e5 100644
+--- a/browser/base/content/nsContextMenu.sys.mjs
++++ b/browser/base/content/nsContextMenu.sys.mjs
+@@ -1081,8 +1081,8 @@ export class nsContextMenu {
+       onMedia && this.target.duration != Number.POSITIVE_INFINITY
+     );
+     this.showItem("context-media-loop", onMedia);
+-    // The user's choice for a video without a stereo mark of its own
+-    // (Sparky Stereo OS).
++    // The user's choice for a video without a stereo mark of its own, and
++    // "Swap Eyes" over any mark (Sparky Stereo OS).
+     this.showItem(
+       "context-video-stereo",
+       this.onVideo && this.target.stereoChoice !== undefined
+@@ -1156,6 +1156,11 @@ export class nsContextMenu {
+             choice == stereoChoice
+           );
+         }
++        this.setItemAttr(
++          "context-video-stereo-swap",
++          "checked",
++          !!this.target.stereoSwap
++        );
+       }
+       var hasError =
+         this.target.error != null ||
+diff --git a/browser/locales/en-US/browser/browserContext.ftl b/browser/locales/en-US/browser/browserContext.ftl
+index c023fb1546..cf872ce092 100644
+--- a/browser/locales/en-US/browser/browserContext.ftl
++++ b/browser/locales/en-US/browser/browserContext.ftl
+@@ -243,7 +243,8 @@ main-context-menu-media-loop =
+ 
+ ## How a video that carries no 3D mark of its own holds the two views of a
+ ## stereo 3D picture (Sparky Stereo OS). A mark in the video itself always
+-## comes first.
++## comes first. "Swap Eyes" shows each eye the other eye's view, whatever
++## decided the arrangement: it corrects a video marked the wrong way round.
+ 
+ main-context-menu-video-stereo =
+     .label = 3D Video
+@@ -267,6 +268,9 @@ main-context-menu-video-stereo-top-bottom =
+ main-context-menu-video-stereo-top-bottom-right-first =
+     .label = Top and Bottom, Right Eye First
+ 
++main-context-menu-video-stereo-swap =
++    .label = Swap Eyes
++
+ ## The access keys for "Show Controls" and "Hide Controls" are the same
+ ## because the two context-menu items are mutually exclusive.
+ 
+diff --git a/dom/media/VideoFrameContainer.cpp b/dom/media/VideoFrameContainer.cpp
+index 47367ee321..a1f4e45407 100644
+--- a/dom/media/VideoFrameContainer.cpp
++++ b/dom/media/VideoFrameContainer.cpp
+@@ -145,12 +145,12 @@ void VideoFrameContainer::SetCurrentFramesLocked(
+ 
+ #ifdef MOZ_WIDGET_GTK
+   // The user's choice comes after the stream's and the container's marks and
+-  // before the picture's shape, which the compositor side looks at last. A
+-  // frame decoded in another process takes it to the compositor, which knows
+-  // the frame's marks.
++  // before the picture's shape, which the compositor side looks at last; the
++  // user's "Swap eyes" goes over all of them. A frame decoded in another
++  // process takes them to the compositor, which knows the frame's marks.
+   for (const auto& image : aImages) {
+     if (auto* gpuImage = image.mImage->AsGPUVideoImage()) {
+-      gpuImage->SetStereoChoice(mStereoChoice);
++      gpuImage->SetStereoChoice(mStereoChoice, mStereoSwap);
+       continue;
+     }
+     auto* dmabufImage = image.mImage->AsDMABUFSurfaceImage();
+@@ -158,6 +158,7 @@ void VideoFrameContainer::SetCurrentFramesLocked(
+     if (!surface) {
+       continue;
+     }
++    surface->SetStereoSwap(mStereoSwap);
+     const StereoSource source = surface->GetStereoSource();
+     if (source != StereoSource::NONE && source != StereoSource::USER) {
+       continue;
+diff --git a/dom/media/VideoFrameContainer.h b/dom/media/VideoFrameContainer.h
+index 1038579488..86318c5011 100644
+--- a/dom/media/VideoFrameContainer.h
++++ b/dom/media/VideoFrameContainer.h
+@@ -103,6 +103,12 @@ class VideoFrameContainer {
+     MutexAutoLock lock(mMutex);
+     mStereoChoice = aChoice;
+   }
++  // The user's "Swap eyes", over every mark and the picture's shape. Any
++  // thread.
++  void SetStereoSwap(bool aSwap) {
++    MutexAutoLock lock(mMutex);
++    mStereoSwap = aSwap;
++  }
+ 
+  protected:
+   void SetCurrentFramesLocked(
+@@ -139,6 +145,7 @@ class VideoFrameContainer {
+   // ratio.
+   Maybe<gfx::IntSize> mIntrinsicSize MOZ_GUARDED_BY(mMutex);
+   Maybe<StereoMode> mStereoChoice MOZ_GUARDED_BY(mMutex);
++  bool mStereoSwap MOZ_GUARDED_BY(mMutex) = false;
+   // We maintain our own mFrameID which is auto-incremented at every
+   // SetCurrentFrame() or NewFrameID() call.
+   ImageContainer::FrameID mFrameID;
+diff --git a/dom/media/mediaelement/HTMLMediaElement.cpp b/dom/media/mediaelement/HTMLMediaElement.cpp
+index f6103830c6..df54920e8b 100644
+--- a/dom/media/mediaelement/HTMLMediaElement.cpp
++++ b/dom/media/mediaelement/HTMLMediaElement.cpp
+@@ -7033,6 +7033,7 @@ VideoFrameContainer* HTMLMediaElement::GetVideoFrameContainer() {
+       this, MakeAndAddRef<ImageContainer>(ImageUsageType::VideoFrameContainer,
+                                           ImageContainer::ASYNCHRONOUS));
+   mVideoFrameContainer->SetStereoChoice(mStereoChoice);
++  mVideoFrameContainer->SetStereoSwap(mStereoSwap);
+ 
+   return mVideoFrameContainer;
+ }
+@@ -7044,6 +7045,13 @@ void HTMLMediaElement::SetStereoChoice(const Maybe<StereoMode>& aChoice) {
+   }
+ }
+ 
++void HTMLMediaElement::SetStereoSwap(bool aSwap) {
++  mStereoSwap = aSwap;
++  if (mVideoFrameContainer) {
++    mVideoFrameContainer->SetStereoSwap(aSwap);
++  }
++}
++
+ void HTMLMediaElement::PrincipalChanged(MediaStreamTrack* aTrack) {
+   if (aTrack != mSelectedVideoStreamTrack) {
+     return;
+diff --git a/dom/media/mediaelement/HTMLMediaElement.h b/dom/media/mediaelement/HTMLMediaElement.h
+index a076feb7b4..55df55a269 100644
+--- a/dom/media/mediaelement/HTMLMediaElement.h
++++ b/dom/media/mediaelement/HTMLMediaElement.h
+@@ -317,6 +317,10 @@ class HTMLMediaElement : public nsGenericHTMLElement,
+   // its views (Sparky Stereo OS); Nothing() for none.
+   void SetStereoChoice(const Maybe<StereoMode>& aChoice);
+   const Maybe<StereoMode>& StereoChoice() const { return mStereoChoice; }
++  // The user's "Swap eyes": the views are shown the other way round, over
++  // any mark and over the picture's shape (Sparky Stereo OS).
++  void SetStereoSwap(bool aSwap);
++  bool StereoSwap() const { return mStereoSwap; }
+ 
+   /**
+    * Call this to reevaluate whether we should start/stop due to our owner
+@@ -1495,6 +1499,7 @@ class HTMLMediaElement : public nsGenericHTMLElement,
+   RefPtr<VideoFrameContainer> mVideoFrameContainer;
+ 
+   Maybe<StereoMode> mStereoChoice;
++  bool mStereoSwap = false;
+ 
+   // Holds a reference to the MediaStream that has been set in the src
+   // attribute.
+diff --git a/dom/webidl/HTMLVideoElement.webidl b/dom/webidl/HTMLVideoElement.webidl
+index 0289c0c9e4..1c175c96be 100644
+--- a/dom/webidl/HTMLVideoElement.webidl
++++ b/dom/webidl/HTMLVideoElement.webidl
+@@ -100,9 +100,15 @@ partial interface HTMLVideoElement {
+ // picture's shape decides, last), "mono", "side-by-side",
+ // "side-by-side-right-first", "top-bottom" or "top-bottom-right-first".
+ // Pages do not see it.
++//
++// stereoSwap is the user's "Swap eyes": the views are shown the other way
++// round, over any mark and over the picture's shape (a file marked wrongly
++// is corrected by its viewer). Pages do not see it either.
+ partial interface HTMLVideoElement {
+   [Func="IsChromeOrUAWidget"]
+   attribute DOMString stereoChoice;
++  [Func="IsChromeOrUAWidget"]
++  attribute boolean stereoSwap;
+ };
+ 
+ // https://w3c.github.io/picture-in-picture/#htmlvideoelement-extensions
+diff --git a/gfx/layers/GPUVideoImage.h b/gfx/layers/GPUVideoImage.h
+index 0b8e4ee17c..877472d72f 100644
+--- a/gfx/layers/GPUVideoImage.h
++++ b/gfx/layers/GPUVideoImage.h
+@@ -89,14 +89,16 @@ class GPUVideoImage final : public Image {
+ 
+   const SurfaceDescriptorGPUVideo& SD() const { return mSD; }
+ 
+-  // The user's choice of stereo mode for a frame without a mark of its own
+-  // (Sparky Stereo OS): the compositor applies it to the decoded picture.
+-  void SetStereoChoice(const Maybe<StereoMode>& aChoice) {
++  // The user's choice of stereo mode for a frame without a mark of its own,
++  // and the user's "Swap eyes" (Sparky Stereo OS): the compositor applies
++  // them to the decoded picture.
++  void SetStereoChoice(const Maybe<StereoMode>& aChoice, bool aSwap) {
+     mSD.get_SurfaceDescriptorRemoteDecoder().stereoChoice() = aChoice;
++    mSD.get_SurfaceDescriptorRemoteDecoder().stereoSwap() = aSwap;
+     if (TextureData* data =
+             mTextureClient ? mTextureClient->GetInternalData() : nullptr) {
+       if (GPUVideoTextureData* video = data->AsGPUVideoTextureData()) {
+-        video->SetStereoChoice(aChoice);
++        video->SetStereoChoice(aChoice, aSwap);
+       }
+     }
+   }
+diff --git a/gfx/layers/ImageTypes.h b/gfx/layers/ImageTypes.h
+index 0a6e9bb781..af3618ceeb 100644
+--- a/gfx/layers/ImageTypes.h
++++ b/gfx/layers/ImageTypes.h
+@@ -153,18 +153,37 @@ enum class StereoSource : uint8_t {
+   MAX,
+ };
+ 
++// The same two views with the eyes the other way round: the user's "Swap
++// eyes", over any mark (a file marked wrongly is corrected by its viewer).
++inline StereoMode SwapStereoEyes(StereoMode aMode) {
++  switch (aMode) {
++    case StereoMode::LEFT_RIGHT:
++      return StereoMode::RIGHT_LEFT;
++    case StereoMode::RIGHT_LEFT:
++      return StereoMode::LEFT_RIGHT;
++    case StereoMode::TOP_BOTTOM:
++      return StereoMode::BOTTOM_TOP;
++    case StereoMode::BOTTOM_TOP:
++      return StereoMode::TOP_BOTTOM;
++    default:
++      return aMode;
++  }
++}
++
+ // A picture's stereo mark as WebRender carries it with an image to the
+ // compositor surface it draws the image into (ImageDescriptorFlags::STEREO):
+ // bit 15 says there is a mark, bits 0 to 4 hold the StereoMode, bits 5 to 7
+-// the StereoSource and bit 8 whether the picture is video. 0 means none.
++// the StereoSource, bit 8 whether the picture is video and bit 9 whether its
++// viewer swapped the eyes. 0 means none.
+ inline uint32_t EncodeStereoMark(StereoMode aMode, StereoSource aSource,
+-                                 bool aIsVideo) {
++                                 bool aIsVideo, bool aSwap = false) {
+   return (1u << 15) | uint32_t(aMode) | (uint32_t(aSource) << 5) |
+-         (aIsVideo ? 1u << 8 : 0u);
++         (aIsVideo ? 1u << 8 : 0u) | (aSwap ? 1u << 9 : 0u);
+ }
+ 
+ inline bool DecodeStereoMark(uint32_t aMark, StereoMode* aMode,
+-                             StereoSource* aSource, bool* aIsVideo) {
++                             StereoSource* aSource, bool* aIsVideo,
++                             bool* aSwap) {
+   const uint32_t mode = aMark & 0x1f;
+   const uint32_t source = (aMark >> 5) & 0x7;
+   if (!(aMark & (1u << 15)) || mode >= uint32_t(StereoMode::MAX) ||
+@@ -174,6 +193,7 @@ inline bool DecodeStereoMark(uint32_t aMark, StereoMode* aMode,
+   *aMode = StereoMode(mode);
+   *aSource = StereoSource(source);
+   *aIsVideo = !!(aMark & (1u << 8));
++  *aSwap = !!(aMark & (1u << 9));
+   return true;
+ }
+ 
+diff --git a/gfx/layers/NativeLayerWayland.cpp b/gfx/layers/NativeLayerWayland.cpp
+index f28f84c27e..b0f9bf905c 100644
+--- a/gfx/layers/NativeLayerWayland.cpp
++++ b/gfx/layers/NativeLayerWayland.cpp
+@@ -1475,24 +1475,30 @@ void NativeLayerWaylandRender::AttachExternalImage(
+ 
+ // WebRender draws a promoted image into this layer (a video that is not a
+ // DMABuf, or any video with software WebRender): the layer shows the
+-// picture's views as the picture holds them, and is declared the same way.
++// picture's views as the picture holds them, and is declared the same way;
++// views in another order or on top of each other are copied side by side
++// (RepackStereoLocked), as for a DMABuf.
+ void NativeLayerWaylandRender::SetStereoMark(uint32_t aStereoMark) {
+   WaylandSurfaceLock lock(mSurface);
+   StereoMode mode = StereoMode::MONO;
+   StereoSource source = StereoSource::NONE;
+   bool isVideo = false;
+-  if (!DecodeStereoMark(aStereoMark, &mode, &source, &isVideo)) {
++  bool swap = false;
++  if (!DecodeStereoMark(aStereoMark, &mode, &source, &isVideo, &swap)) {
+     mode = StereoMode::MONO;
+     source = StereoSource::NONE;
+     isVideo = false;
++    swap = false;
+   }
+   if (mode != mStereoMark || source != mStereoSource ||
+-      isVideo != mStereoIsVideo) {
+-    LOG("NativeLayerWaylandRender::SetStereoMark() mode %d source %d video %d",
+-        int(mode), int(source), isVideo);
++      isVideo != mStereoIsVideo || swap != mStereoSwap) {
++    LOG("NativeLayerWaylandRender::SetStereoMark() mode %d source %d video %d "
++        "swap %d",
++        int(mode), int(source), isVideo, swap);
+     mStereoMark = mode;
+     mStereoSource = source;
+     mStereoIsVideo = isVideo;
++    mStereoSwap = swap;
+     mState.mMutatedPlacement = true;
+   }
+ }
+@@ -1676,10 +1682,87 @@ bool NativeLayerWaylandRender::CommitFrontBufferToScreenLocked(
+     buffer->GetSurface()->FenceWait();
+   }
+ 
+-  mSurface->AttachLocked(aProofOfLock, mFrontBuffer);
++  RefPtr<widget::WaylandBuffer> shown = mFrontBuffer;
++  if (mStereoRepack) {
++    shown = RepackStereoLocked(aProofOfLock);
++    if (shown) {
++      mSurface->InvalidateLocked(aProofOfLock);
++    } else {
++      // Shown flat from the next frame on.
++      gfxCriticalNoteOnce << "NativeLayerWaylandRender: stereo copy failed";
++      mStereoRepackFailed = true;
++      mState.mMutatedPlacement = true;
++      shown = mFrontBuffer;
++    }
++  } else {
++    ReleaseStereoBufferLocked(aProofOfLock);
++  }
++
++  mSurface->AttachLocked(aProofOfLock, shown);
+   return true;
+ }
+ 
++RefPtr<widget::WaylandBuffer> NativeLayerWaylandRender::RepackStereoLocked(
++    const WaylandSurfaceLock& aProofOfLock) {
++  if (!mFrontBuffer) {
++    return nullptr;
++  }
++  ReleaseStereoBufferLocked(aProofOfLock);
++  mStereoPoolHandle = mSurfacePoolHandle;
++  mStereoBuffer = mSurfacePoolHandle->ObtainBufferFromPool(
++      aProofOfLock, mStereoBufferSize, mRootLayer->GetDRMFormat());
++  if (!mStereoBuffer) {
++    return nullptr;
++  }
++  // WebRender draws these surfaces with the origin at the top left, as the
++  // eyes' rectangles are given: each view is copied at its own size.
++  const int width = mStereoBufferSize.width / 2;
++  const int height = mStereoBufferSize.height;
++  IntRect eyes[2];
++  for (int eye = 0; eye < 2; eye++) {
++    const Rect& r = mStereoEyeRects[eye];
++    const int x = std::clamp(int(std::lround(r.x * mSize.width)), 0,
++                             std::max(mSize.width - width, 0));
++    const int y = std::clamp(int(std::lround(r.y * mSize.height)), 0,
++                             std::max(mSize.height - height, 0));
++    eyes[eye] = IntRect(x, y, width, height);
++  }
++  if (RefPtr<gl::GLContext> gl = mSurfacePoolHandle->gl()) {
++    if (!gl->MakeCurrent()) {
++      return nullptr;
++    }
++    Maybe<GLuint> source =
++        mSurfacePoolHandle->GetFramebufferForBuffer(mFrontBuffer, false);
++    Maybe<GLuint> dest =
++        mSurfacePoolHandle->GetFramebufferForBuffer(mStereoBuffer, false);
++    if (!source || !dest) {
++      return nullptr;
++    }
++    for (int eye = 0; eye < 2; eye++) {
++      gl->BlitHelper()->BlitFramebufferToFramebuffer(
++          *source, *dest, eyes[eye], IntRect(eye * width, 0, width, height),
++          LOCAL_GL_NEAREST);
++    }
++    if (auto* buffer = mStereoBuffer->AsWaylandBufferDMABUF()) {
++      buffer->GetSurface()->FenceSet();
++      buffer->GetSurface()->FenceWait();
++    }
++    return mStereoBuffer;
++  }
++  RefPtr<gfx::DataSourceSurface> front = gfx::CreateDataSourceSurfaceFromData(
++      mSize, mFrontBuffer->GetSurfaceFormat(),
++      (const uint8_t*)mFrontBuffer->GetImageData(),
++      mSize.width * BytesPerPixel(mFrontBuffer->GetSurfaceFormat()));
++  RefPtr<DrawTarget> dt = mStereoBuffer->Lock();
++  if (!front || !dt) {
++    return nullptr;
++  }
++  for (int eye = 0; eye < 2; eye++) {
++    dt->CopySurface(front, eyes[eye], IntPoint(eye * width, 0));
++  }
++  return mStereoBuffer;
++}
++
+ void NativeLayerWaylandRender::NotifySurfaceReady() {
+   LOG("NativeLayerWaylandRender::NotifySurfaceReady()");
+ 
+@@ -1741,6 +1824,9 @@ void NativeLayerWaylandRender::DiscardBackbuffersLocked(
+     mSurfacePoolHandle->ReturnBufferToPool(aProofOfLock, mFrontBuffer);
+     mFrontBuffer = nullptr;
+   }
++  if (mStereoBuffer && (!mStereoBuffer->IsAttached(aProofOfLock) || aForce)) {
++    ReleaseStereoBufferLocked(aProofOfLock);
++  }
+ }
+ 
+ NativeLayerWaylandRender::~NativeLayerWaylandRender() {
+@@ -1790,9 +1876,10 @@ void NativeLayerWaylandExternal::AttachExternalImage(
+   const bool isVideo = !!surface->GetAsDMABufSurfaceYUV();
+   if (surface->GetStereoMode() != mStereoMark ||
+       surface->GetStereoSource() != mStereoSource ||
+-      isVideo != mStereoIsVideo) {
++      surface->GetStereoSwap() != mStereoSwap || isVideo != mStereoIsVideo) {
+     mStereoMark = surface->GetStereoMode();
+     mStereoSource = surface->GetStereoSource();
++    mStereoSwap = surface->GetStereoSwap();
+     mStereoIsVideo = isVideo;
+     mState.mMutatedPlacement = true;
+   }
+@@ -1812,8 +1899,9 @@ void NativeLayerWaylandExternal::AttachExternalImage(
+ // The order in which a picture says it holds two views (Sparky Stereo OS,
+ // the same everywhere): the stream's frame packing SEI, then the container's
+ // mark, then the user's choice, all read by the browser; for a video without
+-// any of them, libstereo-layer's picture policy, last. A WebXR session's
+-// canvas holds two views full side by side with the left eye first.
++// any of them, libstereo-layer's picture policy, last. The user's "Swap
++// eyes" goes over whichever of them decided. A WebXR session's canvas holds
++// two views full side by side with the left eye first.
+ void NativeLayerWayland::DecideStereoLocked(const gfx::Size& aShape) {
+   StereoMode packing = mStereoMark;
+   StereoFit fit = StereoFit::None;
+@@ -1879,17 +1967,25 @@ void NativeLayerWayland::DecideStereoLocked(const gfx::Size& aShape) {
+     packing = StereoMode::MONO;
+     fit = StereoFit::None;
+   }
++  if (mStereoSwap) {
++    packing = SwapStereoEyes(packing);
++  }
+   if (packing != mStereoPacking || fit != mStereoFit) {
+-    LOG("NativeLayerWayland::DecideStereoLocked() mark %d source %d "
++    LOG("NativeLayerWayland::DecideStereoLocked() mark %d source %d swap %d "
+         "-> packing %d fit %d",
+-        int(mStereoMark), int(mStereoSource), int(packing), int(fit));
++        int(mStereoMark), int(mStereoSource), mStereoSwap, int(packing),
++        int(fit));
+   }
+   mStereoPacking = packing;
+   mStereoFit = fit;
+-  // Copies are 8 bit RGB: HDR video is not repacked yet. Only layers that
+-  // show a decoded picture as it is (external layers) can copy it.
+-  mStereoCanRepack = AsNativeLayerWaylandExternal() && mStereoIsVideo &&
+-                     !mIsHDR && !mStereoRepackFailed;
++  // Copies are 8 bit RGB: HDR video is not repacked yet. A layer WebRender
++  // draws a video into is copied when its buffer holds just the picture.
++  const bool wholeBuffer =
++      AsNativeLayerWaylandExternal() ||
++      (AsNativeLayerWaylandRender() &&
++       mDisplayRect.Contains(IntRect(IntPoint(), mSize)));
++  mStereoCanRepack =
++      wholeBuffer && mStereoIsVideo && !mIsHDR && !mStereoRepackFailed;
+ }
+ 
+ // Copies the visible part of each view into its half of a buffer from the
+@@ -1941,7 +2037,7 @@ RefPtr<widget::WaylandBuffer> NativeLayerWaylandExternal::RepackStereoLocked(
+   return mStereoBuffer;
+ }
+ 
+-void NativeLayerWaylandExternal::ReleaseStereoBufferLocked(
++void NativeLayerWayland::ReleaseStereoBufferLocked(
+     const WaylandSurfaceLock& aProofOfLock) {
+   if (mStereoBuffer && mStereoPoolHandle) {
+     mStereoPoolHandle->ReturnBufferToPool(aProofOfLock, mStereoBuffer);
+diff --git a/gfx/layers/NativeLayerWayland.h b/gfx/layers/NativeLayerWayland.h
+index 9ba1c340e5..84d255d5d7 100644
+--- a/gfx/layers/NativeLayerWayland.h
++++ b/gfx/layers/NativeLayerWayland.h
+@@ -346,6 +346,8 @@ class NativeLayerWayland : public NativeLayer {
+   // The picture's stereo mark and where it comes from.
+   StereoMode mStereoMark = StereoMode::MONO;
+   StereoSource mStereoSource = StereoSource::NONE;
++  // The user's "Swap eyes", over the mark and the picture's shape.
++  bool mStereoSwap = false;
+   // The last answer of libstereo-layer for a picture without a mark.
+   gfx::IntSize mStereoLayerShape;
+   StereoMode mStereoLayerPacking = StereoMode::MONO;
+@@ -360,6 +362,12 @@ class NativeLayerWayland : public NativeLayer {
+   // The buffer is a video frame, which can be copied into a buffer of two
+   // views full side by side with the left eye first.
+   bool mStereoIsVideo = false;
++  // The buffer of two views full side by side, left eye first, the surface
++  // shows when the picture needs repacking, from the compositor's pool.
++  RefPtr<SurfacePoolHandleWayland> mStereoPoolHandle;
++  RefPtr<widget::WaylandBuffer> mStereoBuffer;
++  void ReleaseStereoBufferLocked(
++      const widget::WaylandSurfaceLock& aProofOfLock);
+   bool mStereoCanRepack = false;
+   // The surface is declared stereo.
+   bool mStereoDeclared = false;
+@@ -415,6 +423,10 @@ class NativeLayerWaylandRender final : public NativeLayerWayland {
+   void DiscardBackbuffersLocked(const widget::WaylandSurfaceLock& aProofOfLock,
+                                 bool aForce) override;
+   void ReadBackFrontBuffer(const widget::WaylandSurfaceLock& aProofOfLock);
++  // Copies the visible part of each view of the front buffer side by side,
++  // left eye first, into mStereoBuffer.
++  RefPtr<widget::WaylandBuffer> RepackStereoLocked(
++      const widget::WaylandSurfaceLock& aProofOfLock);
+   bool CommitFrontBufferToScreenLocked(
+       const widget::WaylandSurfaceLock& aProofOfLock) override;
+ 
+@@ -448,13 +460,6 @@ class NativeLayerWaylandExternal final : public NativeLayerWayland {
+ 
+   RefPtr<widget::WaylandBuffer> RepackStereoLocked(
+       const widget::WaylandSurfaceLock& aProofOfLock);
+-  void ReleaseStereoBufferLocked(
+-      const widget::WaylandSurfaceLock& aProofOfLock);
+-
+-  // The buffer of two views full side by side, left eye first, the surface
+-  // shows when the picture needs repacking, from the compositor's pool.
+-  RefPtr<SurfacePoolHandleWayland> mStereoPoolHandle;
+-  RefPtr<widget::WaylandBuffer> mStereoBuffer;
+ 
+   void DiscardBackbuffersLocked(const widget::WaylandSurfaceLock& aProofOfLock,
+                                 bool aForce) override;
+diff --git a/gfx/layers/client/GPUVideoTextureClient.cpp b/gfx/layers/client/GPUVideoTextureClient.cpp
+index 215722945b..358d7de51b 100644
+--- a/gfx/layers/client/GPUVideoTextureClient.cpp
++++ b/gfx/layers/client/GPUVideoTextureClient.cpp
+@@ -18,8 +18,10 @@ GPUVideoTextureData::GPUVideoTextureData(IGPUVideoSurfaceManager* aManager,
+ 
+ GPUVideoTextureData::~GPUVideoTextureData() = default;
+ 
+-void GPUVideoTextureData::SetStereoChoice(const Maybe<StereoMode>& aChoice) {
++void GPUVideoTextureData::SetStereoChoice(const Maybe<StereoMode>& aChoice,
++                                          bool aSwap) {
+   mSD.get_SurfaceDescriptorRemoteDecoder().stereoChoice() = aChoice;
++  mSD.get_SurfaceDescriptorRemoteDecoder().stereoSwap() = aSwap;
+ }
+ 
+ bool GPUVideoTextureData::Serialize(SurfaceDescriptor& aOutDescriptor) {
+diff --git a/gfx/layers/client/GPUVideoTextureClient.h b/gfx/layers/client/GPUVideoTextureClient.h
+index 32369d381c..40a0485bff 100644
+--- a/gfx/layers/client/GPUVideoTextureClient.h
++++ b/gfx/layers/client/GPUVideoTextureClient.h
+@@ -38,8 +38,9 @@ class GPUVideoTextureData : public TextureData {
+ 
+   void OnSetCurrent();
+ 
+-  // The user's choice of stereo mode, sent with the descriptor.
+-  void SetStereoChoice(const Maybe<StereoMode>& aChoice);
++  // The user's choice of stereo mode and "Swap eyes", sent with the
++  // descriptor.
++  void SetStereoChoice(const Maybe<StereoMode>& aChoice, bool aSwap);
+ 
+   GPUVideoTextureData* AsGPUVideoTextureData() override { return this; }
+ 
+diff --git a/gfx/layers/client/TextureClient.cpp b/gfx/layers/client/TextureClient.cpp
+index 4b575e187d..bce02edc29 100644
+--- a/gfx/layers/client/TextureClient.cpp
++++ b/gfx/layers/client/TextureClient.cpp
+@@ -1526,7 +1526,8 @@ void TextureClient::GetSurfaceDescriptorRemoteDecoder(
+ 
+   *aOutDesc = SurfaceDescriptorRemoteDecoder(
+       handle, std::move(subDesc), Nothing(),
+-      SurfaceDescriptorRemoteDecoderId::GetNext(), Nothing());
++      SurfaceDescriptorRemoteDecoderId::GetNext(), Nothing(),
++      /* stereoSwap */ false);
+ }
+ 
+ class MemoryTextureReadLock : public NonBlockingTextureReadLock {
+diff --git a/gfx/layers/composite/GPUVideoTextureHost.cpp b/gfx/layers/composite/GPUVideoTextureHost.cpp
+index 37e8771004..69f6aa3423 100644
+--- a/gfx/layers/composite/GPUVideoTextureHost.cpp
++++ b/gfx/layers/composite/GPUVideoTextureHost.cpp
+@@ -62,6 +62,7 @@ TextureHost* GPUVideoTextureHost::EnsureWrappedTextureHost() {
+   if (sd.stereoChoice()) {
+     mWrappedTextureHost->ApplyStereoChoice(*sd.stereoChoice());
+   }
++  mWrappedTextureHost->ApplyStereoSwap(sd.stereoSwap());
+ 
+   if (mExternalImageId.isSome()) {
+     // External image id is allocated by mWrappedTextureHost.
+diff --git a/gfx/layers/composite/TextureHost.cpp b/gfx/layers/composite/TextureHost.cpp
+index 75764562f2..97b7ce66c2 100644
+--- a/gfx/layers/composite/TextureHost.cpp
++++ b/gfx/layers/composite/TextureHost.cpp
+@@ -601,12 +601,16 @@ void BufferTextureHost::PushResourceUpdates(
+     wr::ImageDescriptor yDescriptor(ySize, desc.yStride(), *format, opacity);
+     // The picture's stereo mark, for the compositor surface WebRender may draw
+     // it into. A YCbCr buffer says only the arrangement: whether it comes from
+-    // the stream or the container, the size of a view is unknown.
+-    yDescriptor.stereo = EncodeStereoMark(
+-        desc.stereoMode(),
+-        desc.stereoMode() == StereoMode::MONO ? StereoSource::NONE
+-                                              : StereoSource::CONTAINER,
+-        /* aIsVideo */ true);
++    // the stream or the container, the size of a view is unknown. The user's
++    // choice comes after the picture's own mark; "Swap eyes" goes over both.
++    StereoMode stereoMode = desc.stereoMode();
++    StereoSource stereoSource = StereoSource::CONTAINER;
++    if (stereoMode == StereoMode::MONO) {
++      stereoMode = mStereoChoice.valueOr(StereoMode::MONO);
++      stereoSource = mStereoChoice ? StereoSource::USER : StereoSource::NONE;
++    }
++    yDescriptor.stereo = EncodeStereoMark(stereoMode, stereoSource,
++                                          /* aIsVideo */ true, mStereoSwap);
+     wr::ImageDescriptor cbcrDescriptor(cbcrSize, desc.cbCrStride(), *format,
+                                        opacity);
+     (aResources.*method)(aImageKeys[0], yDescriptor, aExtID, imageType, 0,
+diff --git a/gfx/layers/composite/TextureHost.h b/gfx/layers/composite/TextureHost.h
+index 651dcb5511..290bb15224 100644
+--- a/gfx/layers/composite/TextureHost.h
++++ b/gfx/layers/composite/TextureHost.h
+@@ -613,8 +613,10 @@ class TextureHost : public AtomicRefCountedWithFinalize<TextureHost> {
+   TextureReadLock* GetReadLock() { return mReadLock; }
+ 
+   // The user's choice of stereo mode for a picture without a mark of its
+-  // own (Sparky Stereo OS); only DMABuf pictures carry stereo modes.
++  // own (Sparky Stereo OS), and the user's "Swap eyes", over any mark; only
++  // video pictures (DMABuf and YCbCr buffers) carry stereo modes.
+   virtual void ApplyStereoChoice(StereoMode aChoice) {}
++  virtual void ApplyStereoSwap(bool aSwap) {}
+ 
+   virtual BufferTextureHost* AsBufferTextureHost() { return nullptr; }
+   virtual ShmemTextureHost* AsShmemTextureHost() { return nullptr; }
+@@ -864,6 +866,11 @@ class BufferTextureHost : public TextureHost {
+ 
+   bool IsYCbCr() const;
+ 
++  void ApplyStereoChoice(StereoMode aChoice) override {
++    mStereoChoice = Some(aChoice);
++  }
++  void ApplyStereoSwap(bool aSwap) override { mStereoSwap = aSwap; }
++
+   uint8_t* GetYChannel();
+   uint8_t* GetCbChannel();
+   uint8_t* GetCrChannel();
+@@ -882,6 +889,9 @@ class BufferTextureHost : public TextureHost {
+   gfx::SurfaceFormat mFormat;
+   bool mLocked;
+   bool mUseExternalTextures;
++  // The user's choice for a picture without a mark, and "Swap eyes".
++  Maybe<StereoMode> mStereoChoice;
++  bool mStereoSwap = false;
+ 
+   class DataTextureSourceYCbCrBasic;
+ };
+diff --git a/gfx/layers/ipc/LayersSurfaces.ipdlh b/gfx/layers/ipc/LayersSurfaces.ipdlh
+index bec3b30666..5e91ec4e00 100644
+--- a/gfx/layers/ipc/LayersSurfaces.ipdlh
++++ b/gfx/layers/ipc/LayersSurfaces.ipdlh
+@@ -103,6 +103,8 @@ namespace layers {
+   bool semaphoreFdIsSyncFd;
+   StereoMode stereoMode;
+   StereoSource stereoSource;
++  // The user's "Swap eyes", over any mark (Sparky Stereo OS).
++  bool stereoSwap;
+ };
+ 
+ [Comparable] struct SurfaceTextureDescriptor {
+@@ -156,8 +158,10 @@ namespace layers {
+   MaybeVideoBridgeSource source;
+   SurfaceDescriptorRemoteDecoderId id;
+   // The user's choice of the picture's stereo mode, for a frame without a
+-  // mark of its own (Sparky Stereo OS).
++  // mark of its own, and the user's "Swap eyes", over any mark (Sparky
++  // Stereo OS).
+   StereoMode? stereoChoice;
++  bool stereoSwap;
+ };
+ 
+ [Comparable] union SurfaceDescriptorGPUVideo {
+diff --git a/gfx/layers/opengl/DMABUFTextureHostOGL.cpp b/gfx/layers/opengl/DMABUFTextureHostOGL.cpp
+index c34caa4ad6..56ed687a86 100644
+--- a/gfx/layers/opengl/DMABUFTextureHostOGL.cpp
++++ b/gfx/layers/opengl/DMABUFTextureHostOGL.cpp
+@@ -60,6 +60,13 @@ void DMABUFTextureHostOGL::ApplyStereoChoice(StereoMode aChoice) {
+   }
+ }
+ 
++// "Swap eyes" goes over every mark and over the picture's shape, last.
++void DMABUFTextureHostOGL::ApplyStereoSwap(bool aSwap) {
++  if (mSurface) {
++    mSurface->SetStereoSwap(aSwap);
++  }
++}
++
+ gfx::TransferFunction DMABUFTextureHostOGL::GetTransferFunction() const {
+   if (!mSurface) {
+     return gfx::TransferFunction::BT709;
+diff --git a/gfx/layers/opengl/DMABUFTextureHostOGL.h b/gfx/layers/opengl/DMABUFTextureHostOGL.h
+index 0a01408497..6d95838c53 100644
+--- a/gfx/layers/opengl/DMABUFTextureHostOGL.h
++++ b/gfx/layers/opengl/DMABUFTextureHostOGL.h
+@@ -48,6 +48,7 @@ class DMABUFTextureHostOGL : public TextureHost {
+       const wr::ExternalImageId& aExternalImageId) override;
+ 
+   void ApplyStereoChoice(StereoMode aChoice) override;
++  void ApplyStereoSwap(bool aSwap) override;
+ 
+   void PushResourceUpdates(wr::TransactionBuilder& aResources,
+                            ResourceUpdateOp aOp,
+diff --git a/widget/gtk/DMABufSurface.cpp b/widget/gtk/DMABufSurface.cpp
+index 0b363ce17e..fb16cc72e8 100644
+--- a/widget/gtk/DMABufSurface.cpp
++++ b/widget/gtk/DMABufSurface.cpp
+@@ -1133,6 +1133,7 @@ bool DMABufSurfaceRGBA::ImportSurfaceDescriptor(
+   mPID = desc.pid();
+   mStereoMode = desc.stereoMode();
+   mStereoSource = desc.stereoSource();
++  mStereoSwap = desc.stereoSwap();
+ 
+   LOGDMABUF(
+       "DMABufSurfaceRGBA::ImportSurfaceDescriptor() UID %d size %d x %d\n",
+@@ -1208,7 +1209,7 @@ bool DMABufSurfaceRGBA::Serialize(
+       mozilla::gfx::TransferFunction::Default, 0, fenceFDs, mUID,
+       mCanRecycle ? getpid() : 0, refCountFDs,
+       /* semaphoreFd */ nullptr, /* semaphoreFdIsSyncFd */ false, mStereoMode,
+-      mStereoSource);
++      mStereoSource, mStereoSwap);
+   return true;
+ }
+ 
+@@ -2086,6 +2087,7 @@ bool DMABufSurfaceYUV::ImportSurfaceDescriptor(
+   mPID = aDesc.pid();
+   mStereoMode = aDesc.stereoMode();
+   mStereoSource = aDesc.stereoSource();
++  mStereoSwap = aDesc.stereoSwap();
+ 
+   LOGDMABUF("DMABufSurfaceYUV::ImportSurfaceDescriptor() UID %d", mUID);
+ 
+@@ -2164,7 +2166,7 @@ bool DMABufSurfaceYUV::Serialize(
+       GetYUVColorSpace(), mColorRange, mColorPrimaries, mTransferFunction,
+       mWPChromaLocation, fenceFDs, mUID, mCanRecycle ? getpid() : 0,
+       refCountFDs, mSemaphoreFd, mSemaphoreFdIsSyncFd, mStereoMode,
+-      mStereoSource);
++      mStereoSource, mStereoSwap);
+   return true;
+ }
+ 
+diff --git a/widget/gtk/DMABufSurface.h b/widget/gtk/DMABufSurface.h
+index 25cc0181a9..9cfe962658 100644
+--- a/widget/gtk/DMABufSurface.h
++++ b/widget/gtk/DMABufSurface.h
+@@ -177,6 +177,10 @@ class DMABufSurface {
+   }
+   mozilla::StereoMode GetStereoMode() const { return mStereoMode; }
+   mozilla::StereoSource GetStereoSource() const { return mStereoSource; }
++  // The user's "Swap eyes": the views are shown the other way round, over
++  // any mark (a file marked wrongly is corrected by its viewer).
++  void SetStereoSwap(bool aSwap) { mStereoSwap = aSwap; }
++  bool GetStereoSwap() const { return mStereoSwap; }
+ 
+   void FenceSet();
+   void FenceWait();
+@@ -349,6 +353,7 @@ class DMABufSurface {
+ 
+   mozilla::StereoMode mStereoMode = mozilla::StereoMode::MONO;
+   mozilla::StereoSource mStereoSource = mozilla::StereoSource::NONE;
++  bool mStereoSwap = false;
+ 
+   mozilla::gfx::YUVColorSpace mColorSpace =
+       mozilla::gfx::YUVColorSpace::Default;
+-- 
+2.53.0
+

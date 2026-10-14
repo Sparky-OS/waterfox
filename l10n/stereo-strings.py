@@ -5,7 +5,8 @@ Usage: python3 stereo-strings.py L10N_BASE LOCALE...
 L10N_BASE is Waterfox's l10n tree (waterfox/browser/locales). The messages
 go after "Loop" in <locale>/browser/browser/browserContext.ftl, where the
 video context menu's other strings are; en-US has them in the browser's own
-tree. A locale not listed here falls back to English. Idempotent.
+tree. A locale not listed here falls back to English. Idempotent: messages a file
+already has stay as they are, missing ones go after the last of them.
 """
 import os
 import sys
@@ -18,10 +19,11 @@ IDS = (
     "main-context-menu-video-stereo-side-by-side-right-first",
     "main-context-menu-video-stereo-top-bottom",
     "main-context-menu-video-stereo-top-bottom-right-first",
+    "main-context-menu-video-stereo-swap",
 )
 
 # 3D Video, Automatic, Not 3D, Side by Side, Side by Side Right Eye First,
-# Top and Bottom, Top and Bottom Right Eye First
+# Top and Bottom, Top and Bottom Right Eye First, Swap Eyes
 LABELS = {
     "pl": (
         "Wideo 3D",
@@ -31,6 +33,7 @@ LABELS = {
         "Obok siebie, najpierw prawe oko",
         "Góra i dół",
         "Góra i dół, najpierw prawe oko",
+        "Zamień oczy",
     ),
     "pt-BR": (
         "Vídeo 3D",
@@ -40,6 +43,7 @@ LABELS = {
         "Lado a lado, olho direito primeiro",
         "Em cima e embaixo",
         "Em cima e embaixo, olho direito primeiro",
+        "Inverter os olhos",
     ),
     "fr": (
         "Vidéo 3D",
@@ -49,6 +53,7 @@ LABELS = {
         "Côte à côte, œil droit en premier",
         "Haut et bas",
         "Haut et bas, œil droit en premier",
+        "Inverser les yeux",
     ),
     "ja": (
         "3D 動画",
@@ -58,6 +63,7 @@ LABELS = {
         "サイドバイサイド (右目が先)",
         "トップアンドボトム",
         "トップアンドボトム (右目が先)",
+        "左右の目を入れ替え",
     ),
     "ko": (
         "3D 동영상",
@@ -67,6 +73,7 @@ LABELS = {
         "좌우 배치, 오른쪽 눈 먼저",
         "상하 배치",
         "상하 배치, 오른쪽 눈 먼저",
+        "좌우 눈 바꾸기",
     ),
     "zh-CN": (
         "3D 视频",
@@ -76,6 +83,7 @@ LABELS = {
         "左右并排，右眼在前",
         "上下排列",
         "上下排列，右眼在前",
+        "交换左右眼",
     ),
     "zh-TW": (
         "3D 影片",
@@ -85,26 +93,32 @@ LABELS = {
         "左右並排，右眼在前",
         "上下排列",
         "上下排列，右眼在前",
+        "交換左右眼",
     ),
 }
 
 
-def messages(labels):
+def messages(text, labels):
     out = []
     for i, (msg, label) in enumerate(zip(IDS, labels)):
+        if f"\n{msg} =" in text:
+            continue
         out.append(f"{msg} =\n    .label = {label}\n")
         if i == 0:
             out[-1] += "    .accesskey = 3\n"
-    return "\n" + "\n".join(out)
+    return "\n" + "\n".join(out) if out else ""
 
 
 def add(path, labels):
     with open(path, encoding="utf-8") as f:
         text = f.read()
-    if IDS[0] + " =" in text:
+    block = messages(text, labels)
+    if not block:
         return False
-    block = messages(labels)
     anchor = "main-context-menu-media-loop ="
+    for msg in IDS:
+        if f"\n{msg} =" in text:
+            anchor = f"\n{msg} ="
     at = text.find(anchor)
     if at < 0:
         text = text.rstrip("\n") + "\n" + block

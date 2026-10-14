@@ -1,0 +1,564 @@
+From 41fb18411c85644e7c3eb0b9da7cd28e87a7ac69 Mon Sep 17 00:00:00 2001
+From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
+Date: Wed, 14 Oct 2026 02:49:47 -0300
+Subject: [PATCH 13/18] WebRender: give a promoted video's stereo mark to its
+ compositor surface
+
+A video WebRender cannot hand to the compositor as it is (any video with
+software WebRender, or a picture in plain YCbCr buffers, such as VP9
+decoded by libvpx) is drawn by WebRender into a native compositor surface
+of its own. Such a surface now carries the picture's stereo mark, so
+that it is decided on and declared like a DMABuf video.
+
+The mark travels with the image: ImageDescriptorFlags::STEREO (bits 8 to
+23 of the descriptor's flags; WrImageDescriptor.stereo from Gecko) holds
+the picture's StereoMode, where it comes from and whether it is video
+(EncodeStereoMark in ImageTypes.h). A YCbCr buffer texture sets it from
+its descriptor. When the tile cache draws such an image into a native
+surface it tells the compositor once per change
+(NativeSurfaceOperationDetails::SetSurfaceStereo,
+Compositor::set_surface_stereo, wr_compositor_set_surface_stereo), and
+RenderCompositorNative gives it to the surface's layers
+(NativeLayer::SetStereoMark).
+
+NativeLayerWayland decides on every layer the way it did on external
+layers (DecideStereoLocked moves to the base class). A layer WebRender
+draws into is declared when the picture holds its views side by side
+with the left eye first, visible across their whole width.
+
+Video with opacity or a rotation is not promoted by WebRender and stays
+flat: it is drawn into the page's own tiles.
+
+Assisted-by: Claude Opus 5.5 via Claude Code
+---
+ gfx/layers/ImageTypes.h                       | 24 +++++++++++++
+ gfx/layers/NativeLayer.h                      |  5 +++
+ gfx/layers/NativeLayerWayland.cpp             | 36 ++++++++++++++++---
+ gfx/layers/NativeLayerWayland.h               | 20 +++++------
+ gfx/layers/composite/TextureHost.cpp          |  8 +++++
+ gfx/webrender_bindings/RenderCompositor.cpp   |  7 ++++
+ gfx/webrender_bindings/RenderCompositor.h     |  3 ++
+ .../RenderCompositorNative.cpp                | 14 ++++++++
+ .../RenderCompositorNative.h                  |  3 ++
+ gfx/webrender_bindings/WebRenderTypes.h       |  2 ++
+ gfx/webrender_bindings/src/bindings.rs        | 15 ++++++++
+ gfx/wr/webrender/src/composite.rs             | 16 ++++++++-
+ .../webrender/src/compositor/sw_compositor.rs |  6 ++++
+ gfx/wr/webrender/src/renderer/mod.rs          |  3 ++
+ gfx/wr/webrender/src/resource_cache.rs        | 15 ++++++++
+ gfx/wr/webrender/src/tile_cache/mod.rs        | 19 ++++++++++
+ gfx/wr/webrender_api/src/image.rs             | 17 +++++++++
+ 17 files changed, 197 insertions(+), 16 deletions(-)
+
+diff --git a/gfx/layers/ImageTypes.h b/gfx/layers/ImageTypes.h
+index 4b48fca33b..5ff5124887 100644
+--- a/gfx/layers/ImageTypes.h
++++ b/gfx/layers/ImageTypes.h
+@@ -150,6 +150,30 @@ enum class StereoSource : uint8_t {
+   MAX,
+ };
+ 
++// A picture's stereo mark as WebRender carries it with an image to the
++// compositor surface it draws the image into (ImageDescriptorFlags::STEREO):
++// bit 15 says there is a mark, bits 0 to 4 hold the StereoMode, bits 5 to 7
++// the StereoSource and bit 8 whether the picture is video. 0 means none.
++inline uint32_t EncodeStereoMark(StereoMode aMode, StereoSource aSource,
++                                 bool aIsVideo) {
++  return (1u << 15) | uint32_t(aMode) | (uint32_t(aSource) << 5) |
++         (aIsVideo ? 1u << 8 : 0u);
++}
++
++inline bool DecodeStereoMark(uint32_t aMark, StereoMode* aMode,
++                             StereoSource* aSource, bool* aIsVideo) {
++  const uint32_t mode = aMark & 0x1f;
++  const uint32_t source = (aMark >> 5) & 0x7;
++  if (!(aMark & (1u << 15)) || mode >= uint32_t(StereoMode::MAX) ||
++      source >= uint32_t(StereoSource::MAX)) {
++    return false;
++  }
++  *aMode = StereoMode(mode);
++  *aSource = StereoSource(source);
++  *aIsVideo = !!(aMark & (1u << 8));
++  return true;
++}
++
+ namespace layers {
+ 
+ using ContainerFrameID = uint32_t;
+diff --git a/gfx/layers/NativeLayer.h b/gfx/layers/NativeLayer.h
+index b9db9ffe55..c79c661a3f 100644
+--- a/gfx/layers/NativeLayer.h
++++ b/gfx/layers/NativeLayer.h
+@@ -253,6 +253,11 @@ class NativeLayer {
+ 
+   virtual void AttachExternalImage(wr::RenderTextureHost* aExternalImage) = 0;
+ 
++  // The picture this layer shows carries a stereo mark (EncodeStereoMark in
++  // ImageTypes.h), 0 for none: set on layers WebRender draws a promoted image
++  // into. Layers of compositors without stereo ignore it.
++  virtual void SetStereoMark(uint32_t aStereoMark) {}
++
+   virtual GpuFence* GetGpuFence() = 0;
+ 
+  protected:
+diff --git a/gfx/layers/NativeLayerWayland.cpp b/gfx/layers/NativeLayerWayland.cpp
+index 9c1516cfd0..b841531ae1 100644
+--- a/gfx/layers/NativeLayerWayland.cpp
++++ b/gfx/layers/NativeLayerWayland.cpp
+@@ -1473,6 +1473,30 @@ void NativeLayerWaylandRender::AttachExternalImage(
+   MOZ_CRASH("NativeLayerWaylandRender::AttachExternalImage() not implemented.");
+ }
+ 
++// WebRender draws a promoted image into this layer (a video that is not a
++// DMABuf, or any video with software WebRender): the layer shows the
++// picture's views as the picture holds them, and is declared the same way.
++void NativeLayerWaylandRender::SetStereoMark(uint32_t aStereoMark) {
++  WaylandSurfaceLock lock(mSurface);
++  StereoMode mode = StereoMode::MONO;
++  StereoSource source = StereoSource::NONE;
++  bool isVideo = false;
++  if (!DecodeStereoMark(aStereoMark, &mode, &source, &isVideo)) {
++    mode = StereoMode::MONO;
++    source = StereoSource::NONE;
++    isVideo = false;
++  }
++  if (mode != mStereoMark || source != mStereoSource ||
++      isVideo != mStereoIsVideo) {
++    LOG("NativeLayerWaylandRender::SetStereoMark() mode %d source %d video %d",
++        int(mode), int(source), isVideo);
++    mStereoMark = mode;
++    mStereoSource = source;
++    mStereoIsVideo = isVideo;
++    mState.mMutatedPlacement = true;
++  }
++}
++
+ bool NativeLayerWaylandRender::IsFrontBufferChanged() {
+   return mState.mMutatedFrontBuffer && !mDirtyRegion.IsEmpty();
+ }
+@@ -1790,7 +1814,7 @@ void NativeLayerWaylandExternal::AttachExternalImage(
+ // mark, then the user's choice, all read by the browser; for a video without
+ // any of them, libstereo-layer's picture policy, last. A WebXR session's
+ // canvas holds two views full side by side with the left eye first.
+-void NativeLayerWaylandExternal::DecideStereoLocked(const gfx::Size& aShape) {
++void NativeLayerWayland::DecideStereoLocked(const gfx::Size& aShape) {
+   StereoMode packing = mStereoMark;
+   StereoFit fit = StereoFit::None;
+   switch (mStereoSource) {
+@@ -1839,7 +1863,7 @@ void NativeLayerWaylandExternal::DecideStereoLocked(const gfx::Size& aShape) {
+                                   : StereoFit::HalfHeight;
+           }
+         }
+-        LOG("NativeLayerWaylandExternal::DecideStereoLocked() [%d x %d] "
++        LOG("NativeLayerWayland::DecideStereoLocked() [%d x %d] "
+             "stereo-layer layout %d order %d source %d",
+             shape.width, shape.height, layout, order, source);
+       }
+@@ -1855,14 +1879,16 @@ void NativeLayerWaylandExternal::DecideStereoLocked(const gfx::Size& aShape) {
+     fit = StereoFit::None;
+   }
+   if (packing != mStereoPacking || fit != mStereoFit) {
+-    LOG("NativeLayerWaylandExternal::DecideStereoLocked() mark %d source %d "
++    LOG("NativeLayerWayland::DecideStereoLocked() mark %d source %d "
+         "-> packing %d fit %d",
+         int(mStereoMark), int(mStereoSource), int(packing), int(fit));
+   }
+   mStereoPacking = packing;
+   mStereoFit = fit;
+-  // Copies are 8 bit RGB: HDR video is not repacked yet.
+-  mStereoCanRepack = mStereoIsVideo && !mIsHDR && !mStereoRepackFailed;
++  // Copies are 8 bit RGB: HDR video is not repacked yet. Only layers that
++  // show a decoded picture as it is (external layers) can copy it.
++  mStereoCanRepack = AsNativeLayerWaylandExternal() && mStereoIsVideo &&
++                     !mIsHDR && !mStereoRepackFailed;
+ }
+ 
+ // Copies the visible part of each view into its half of a buffer from the
+diff --git a/gfx/layers/NativeLayerWayland.h b/gfx/layers/NativeLayerWayland.h
+index ed33cea757..9ba1c340e5 100644
+--- a/gfx/layers/NativeLayerWayland.h
++++ b/gfx/layers/NativeLayerWayland.h
+@@ -342,7 +342,15 @@ class NativeLayerWayland : public NativeLayer {
+     HalfHeight,
+   };
+   // Decides mStereoPacking and mStereoFit for a place of the given shape.
+-  virtual void DecideStereoLocked(const gfx::Size& aShape) {}
++  void DecideStereoLocked(const gfx::Size& aShape);
++  // The picture's stereo mark and where it comes from.
++  StereoMode mStereoMark = StereoMode::MONO;
++  StereoSource mStereoSource = StereoSource::NONE;
++  // The last answer of libstereo-layer for a picture without a mark.
++  gfx::IntSize mStereoLayerShape;
++  StereoMode mStereoLayerPacking = StereoMode::MONO;
++  StereoFit mStereoLayerFit = StereoFit::None;
++  bool mStereoRepackFailed = false;
+   bool DeclareStereoLocked(const widget::WaylandSurfaceLock& aProofOfLock,
+                            bool aDeclare);
+   // The arrangement of the two views in the buffer: LEFT_RIGHT, RIGHT_LEFT,
+@@ -392,6 +400,7 @@ class NativeLayerWaylandRender final : public NativeLayerWayland {
+   void NotifySurfaceReady() override;
+   void AttachExternalImage(wr::RenderTextureHost* aExternalImage) override;
+   bool IsFrontBufferChanged() override;
++  void SetStereoMark(uint32_t aStereoMark) override;
+ 
+   NativeLayerWaylandRender(NativeLayerRootWayland* aRootLayer,
+                            const gfx::IntSize& aSize, bool aIsOpaque,
+@@ -437,24 +446,15 @@ class NativeLayerWaylandExternal final : public NativeLayerWayland {
+  private:
+   ~NativeLayerWaylandExternal() override;
+ 
+-  void DecideStereoLocked(const gfx::Size& aShape) override;
+   RefPtr<widget::WaylandBuffer> RepackStereoLocked(
+       const widget::WaylandSurfaceLock& aProofOfLock);
+   void ReleaseStereoBufferLocked(
+       const widget::WaylandSurfaceLock& aProofOfLock);
+ 
+-  // The picture's stereo mark and where it comes from.
+-  StereoMode mStereoMark = StereoMode::MONO;
+-  StereoSource mStereoSource = StereoSource::NONE;
+-  // The last answer of libstereo-layer for a picture without a mark.
+-  gfx::IntSize mStereoLayerShape;
+-  StereoMode mStereoLayerPacking = StereoMode::MONO;
+-  StereoFit mStereoLayerFit = StereoFit::None;
+   // The buffer of two views full side by side, left eye first, the surface
+   // shows when the picture needs repacking, from the compositor's pool.
+   RefPtr<SurfacePoolHandleWayland> mStereoPoolHandle;
+   RefPtr<widget::WaylandBuffer> mStereoBuffer;
+-  bool mStereoRepackFailed = false;
+ 
+   void DiscardBackbuffersLocked(const widget::WaylandSurfaceLock& aProofOfLock,
+                                 bool aForce) override;
+diff --git a/gfx/layers/composite/TextureHost.cpp b/gfx/layers/composite/TextureHost.cpp
+index dc2bac4391..75764562f2 100644
+--- a/gfx/layers/composite/TextureHost.cpp
++++ b/gfx/layers/composite/TextureHost.cpp
+@@ -599,6 +599,14 @@ void BufferTextureHost::PushResourceUpdates(
+     }
+     auto opacity = wr::ToOpacityType(surfaceFormat);
+     wr::ImageDescriptor yDescriptor(ySize, desc.yStride(), *format, opacity);
++    // The picture's stereo mark, for the compositor surface WebRender may draw
++    // it into. A YCbCr buffer says only the arrangement: whether it comes from
++    // the stream or the container, the size of a view is unknown.
++    yDescriptor.stereo = EncodeStereoMark(
++        desc.stereoMode(),
++        desc.stereoMode() == StereoMode::MONO ? StereoSource::NONE
++                                              : StereoSource::CONTAINER,
++        /* aIsVideo */ true);
+     wr::ImageDescriptor cbcrDescriptor(cbcrSize, desc.cbCrStride(), *format,
+                                        opacity);
+     (aResources.*method)(aImageKeys[0], yDescriptor, aExtID, imageType, 0,
+diff --git a/gfx/webrender_bindings/RenderCompositor.cpp b/gfx/webrender_bindings/RenderCompositor.cpp
+index e1c986104f..4391bf7f48 100644
+--- a/gfx/webrender_bindings/RenderCompositor.cpp
++++ b/gfx/webrender_bindings/RenderCompositor.cpp
+@@ -135,6 +135,13 @@ void wr_compositor_attach_external_image(void* aCompositor,
+   compositor->AttachExternalImage(aId, aExternalImage);
+ }
+ 
++void wr_compositor_set_surface_stereo(void* aCompositor,
++                                      wr::NativeSurfaceId aId,
++                                      uint32_t aStereo) {
++  RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
++  compositor->SetSurfaceStereo(aId, aStereo);
++}
++
+ void wr_compositor_start_compositing(void* aCompositor, wr::ColorF aClearColor,
+                                      const wr::DeviceIntRect* aDirtyRects,
+                                      size_t aNumDirtyRects,
+diff --git a/gfx/webrender_bindings/RenderCompositor.h b/gfx/webrender_bindings/RenderCompositor.h
+index b731ca47b3..89e014698a 100644
+--- a/gfx/webrender_bindings/RenderCompositor.h
++++ b/gfx/webrender_bindings/RenderCompositor.h
+@@ -165,6 +165,9 @@ class RenderCompositor {
+   virtual void DestroyTile(wr::NativeSurfaceId, int32_t aX, int32_t aY) {}
+   virtual void AttachExternalImage(wr::NativeSurfaceId aId,
+                                    wr::ExternalImageId aExternalImage) {}
++  // The picture WebRender draws into the surface carries this stereo mark
++  // (EncodeStereoMark), 0 for none.
++  virtual void SetSurfaceStereo(wr::NativeSurfaceId aId, uint32_t aStereo) {}
+   virtual void AddSurface(wr::NativeSurfaceId aId,
+                           const wr::CompositorSurfaceTransform& aTransform,
+                           wr::DeviceIntRect aClipRect,
+diff --git a/gfx/webrender_bindings/RenderCompositorNative.cpp b/gfx/webrender_bindings/RenderCompositorNative.cpp
+index f60325f45f..67093795b5 100644
+--- a/gfx/webrender_bindings/RenderCompositorNative.cpp
++++ b/gfx/webrender_bindings/RenderCompositorNative.cpp
+@@ -400,10 +400,24 @@ void RenderCompositorNative::CreateTile(wr::NativeSurfaceId aId, int aX,
+ 
+   RefPtr<layers::NativeLayer> layer = mNativeLayerRoot->CreateLayer(
+       surface.TileSize(), surface.mIsOpaque, mSurfacePoolHandle);
++  if (surface.mStereo) {
++    layer->SetStereoMark(surface.mStereo);
++  }
+   surface.mNativeLayers.insert({TileKey(aX, aY), layer});
+   mTotalTilePixelCount += gfx::IntRect({}, layer->GetSize()).Area();
+ }
+ 
++void RenderCompositorNative::SetSurfaceStereo(wr::NativeSurfaceId aId,
++                                              uint32_t aStereo) {
++  auto surfaceCursor = mSurfaces.find(aId);
++  MOZ_RELEASE_ASSERT(surfaceCursor != mSurfaces.end());
++  Surface& surface = surfaceCursor->second;
++  surface.mStereo = aStereo;
++  for (auto& [key, layer] : surface.mNativeLayers) {
++    layer->SetStereoMark(aStereo);
++  }
++}
++
+ void RenderCompositorNative::DestroyTile(wr::NativeSurfaceId aId, int aX,
+                                          int aY) {
+   auto surfaceCursor = mSurfaces.find(aId);
+diff --git a/gfx/webrender_bindings/RenderCompositorNative.h b/gfx/webrender_bindings/RenderCompositorNative.h
+index 150f6d6fac..af269a4cad 100644
+--- a/gfx/webrender_bindings/RenderCompositorNative.h
++++ b/gfx/webrender_bindings/RenderCompositorNative.h
+@@ -72,6 +72,7 @@ class RenderCompositorNative : public RenderCompositor {
+   void DestroyTile(wr::NativeSurfaceId aId, int32_t aX, int32_t aY) override;
+   void AttachExternalImage(wr::NativeSurfaceId aId,
+                            wr::ExternalImageId aExternalImage) override;
++  void SetSurfaceStereo(wr::NativeSurfaceId aId, uint32_t aStereo) override;
+   void AddSurface(wr::NativeSurfaceId aId,
+                   const wr::CompositorSurfaceTransform& aTransform,
+                   wr::DeviceIntRect aClipRect,
+@@ -125,6 +126,8 @@ class RenderCompositorNative : public RenderCompositor {
+     wr::DeviceIntSize mTileSize;
+     bool mIsOpaque;
+     bool mIsExternal = false;
++    // The stereo mark of the picture WebRender draws into the surface.
++    uint32_t mStereo = 0;
+     std::unordered_map<TileKey, RefPtr<layers::NativeLayer>, TileKeyHashFn>
+         mNativeLayers;
+   };
+diff --git a/gfx/webrender_bindings/WebRenderTypes.h b/gfx/webrender_bindings/WebRenderTypes.h
+index 337196432f..110e015548 100644
+--- a/gfx/webrender_bindings/WebRenderTypes.h
++++ b/gfx/webrender_bindings/WebRenderTypes.h
+@@ -134,6 +134,7 @@ struct ImageDescriptor : public WrImageDescriptor {
+     stride = 0;
+     opacity = aOpacityType;
+     prefer_compositor_surface = aPreferCompositorSurface;
++    stereo = 0;
+   }
+ 
+   ImageDescriptor(const gfx::IntSize& aSize, int32_t aByteStride,
+@@ -145,6 +146,7 @@ struct ImageDescriptor : public WrImageDescriptor {
+     stride = aByteStride;
+     opacity = aOpacityType;
+     prefer_compositor_surface = aPreferCompositorSurface;
++    stereo = 0;
+   }
+ };
+ 
+diff --git a/gfx/webrender_bindings/src/bindings.rs b/gfx/webrender_bindings/src/bindings.rs
+index a89cc039ea..5c61002bc7 100644
+--- a/gfx/webrender_bindings/src/bindings.rs
++++ b/gfx/webrender_bindings/src/bindings.rs
+@@ -366,6 +366,9 @@ pub struct WrImageDescriptor {
+     pub opacity: OpacityType,
+     // TODO(gw): Remove this flag (use prim flags instead).
+     pub prefer_compositor_surface: bool,
++    // The picture's stereo mark for the compositor (Sparky Stereo OS), 0 for
++    // none; see ImageDescriptorFlags::STEREO.
++    pub stereo: u32,
+ }
+ 
+ impl<'a> From<&'a WrImageDescriptor> for ImageDescriptor {
+@@ -375,6 +378,7 @@ impl<'a> From<&'a WrImageDescriptor> for ImageDescriptor {
+         if desc.opacity == OpacityType::Opaque {
+             flags |= ImageDescriptorFlags::IS_OPAQUE;
+         }
++        flags |= ImageDescriptorFlags::from_stereo(desc.stereo);
+ 
+         ImageDescriptor {
+             size: DeviceIntSize::new(desc.width, desc.height),
+@@ -1297,6 +1301,11 @@ extern "C" {
+         id: NativeSurfaceId,
+         external_image: ExternalImageId,
+     );
++    fn wr_compositor_set_surface_stereo(
++        compositor: *mut c_void,
++        id: NativeSurfaceId,
++        stereo: u32,
++    );
+     fn wr_compositor_bind(
+         compositor: *mut c_void,
+         id: NativeTileId,
+@@ -1410,6 +1419,12 @@ impl Compositor for WrCompositor {
+         }
+     }
+ 
++    fn set_surface_stereo(&mut self, _device: &mut Device, id: NativeSurfaceId, stereo: u32) {
++        unsafe {
++            wr_compositor_set_surface_stereo(self.0, id, stereo);
++        }
++    }
++
+     fn bind(
+         &mut self,
+         _device: &mut Device,
+diff --git a/gfx/wr/webrender/src/composite.rs b/gfx/wr/webrender/src/composite.rs
+index a69214fb4a..d11062e7e6 100644
+--- a/gfx/wr/webrender/src/composite.rs
++++ b/gfx/wr/webrender/src/composite.rs
+@@ -82,7 +82,11 @@ pub enum NativeSurfaceOperationDetails {
+     AttachExternalImage {
+         id: NativeSurfaceId,
+         external_image: ExternalImageId,
+-    }
++    },
++    SetSurfaceStereo {
++        id: NativeSurfaceId,
++        stereo: u32,
++    },
+ }
+ 
+ /// Describes an operation to apply to a native surface
+@@ -1544,6 +1548,16 @@ pub trait Compositor {
+         external_image: ExternalImageId
+     );
+ 
++    /// The surface (one WebRender draws an image into) shows a picture with the
++    /// embedder's stereo mark (ImageDescriptorFlags::stereo), 0 for none.
++    fn set_surface_stereo(
++        &mut self,
++        _device: &mut Device,
++        _id: NativeSurfaceId,
++        _stereo: u32,
++    ) {
++    }
++
+     /// Mark a tile as invalid before any surfaces are queued for
+     /// composition and before it is updated with bind. This is useful
+     /// for early composition, allowing for dependency tracking of which
+diff --git a/gfx/wr/webrender/src/compositor/sw_compositor.rs b/gfx/wr/webrender/src/compositor/sw_compositor.rs
+index 60a82f42e7..71c3691f6a 100644
+--- a/gfx/wr/webrender/src/compositor/sw_compositor.rs
++++ b/gfx/wr/webrender/src/compositor/sw_compositor.rs
+@@ -1736,6 +1736,12 @@ impl Compositor for SwCompositor {
+         }
+     }
+ 
++    fn set_surface_stereo(&mut self, device: &mut Device, id: NativeSurfaceId, stereo: u32) {
++        if self.use_native_compositor {
++            self.compositor.set_surface_stereo(device, id, stereo);
++        }
++    }
++
+     fn attach_external_image(&mut self, device: &mut Device, id: NativeSurfaceId, external_image: ExternalImageId) {
+         if self.use_native_compositor {
+             self.compositor.attach_external_image(device, id, external_image);
+diff --git a/gfx/wr/webrender/src/renderer/mod.rs b/gfx/wr/webrender/src/renderer/mod.rs
+index 79f8a36d4e..1d3e8c860d 100644
+--- a/gfx/wr/webrender/src/renderer/mod.rs
++++ b/gfx/wr/webrender/src/renderer/mod.rs
+@@ -3757,6 +3757,9 @@ impl Renderer {
+                         NativeSurfaceOperationDetails::AttachExternalImage { id, external_image } => {
+                             compositor.attach_external_image(&mut self.device, id, external_image);
+                         }
++                        NativeSurfaceOperationDetails::SetSurfaceStereo { id, stereo } => {
++                            compositor.set_surface_stereo(&mut self.device, id, stereo);
++                        }
+                     }
+                 }
+             }
+diff --git a/gfx/wr/webrender/src/resource_cache.rs b/gfx/wr/webrender/src/resource_cache.rs
+index 0cc82409d9..d053f0bf82 100644
+--- a/gfx/wr/webrender/src/resource_cache.rs
++++ b/gfx/wr/webrender/src/resource_cache.rs
+@@ -1813,6 +1813,21 @@ impl ResourceCache {
+         );
+     }
+ 
++    pub fn set_compositor_surface_stereo(
++        &mut self,
++        id: NativeSurfaceId,
++        stereo: u32,
++    ) {
++        self.pending_native_surface_updates.push(
++            NativeSurfaceOperation {
++                details: NativeSurfaceOperationDetails::SetSurfaceStereo {
++                    id,
++                    stereo,
++                },
++            }
++        );
++    }
++
+     pub fn attach_compositor_external_image(
+         &mut self,
+         id: NativeSurfaceId,
+diff --git a/gfx/wr/webrender/src/tile_cache/mod.rs b/gfx/wr/webrender/src/tile_cache/mod.rs
+index 5205194881..c6e319b84e 100644
+--- a/gfx/wr/webrender/src/tile_cache/mod.rs
++++ b/gfx/wr/webrender/src/tile_cache/mod.rs
+@@ -685,6 +685,8 @@ pub struct ExternalNativeSurface {
+     /// The image generations are used to check if the compositor surface is dirty and
+     /// needs to be updated.
+     pub image_dependencies: [ImageDependency; 3],
++    /// The stereo mark last given to the compositor for this surface.
++    pub stereo: u32,
+ }
+ 
+ /// Wrapper struct around an external surface descriptor with a little more information
+@@ -2020,6 +2022,7 @@ impl TileCacheInstance {
+                             used_this_frame: true,
+                             native_surface_id,
+                             image_dependencies: [ImageDependency::INVALID; 3],
++                            stereo: 0,
+                         }
+                     });
+ 
+@@ -2027,6 +2030,22 @@ impl TileCacheInstance {
+                 // backing native surface handle isn't freed.
+                 native_surface.used_this_frame = true;
+ 
++                // A surface WebRender draws the image into carries the image's
++                // stereo mark to the compositor (an external surface gets it
++                // from the attached image itself).
++                if external_image_id.is_none() {
++                    let stereo = resource_cache
++                        .get_image_properties(api_keys[0])
++                        .map_or(0, |properties| properties.descriptor.flags.stereo());
++                    if stereo != native_surface.stereo {
++                        native_surface.stereo = stereo;
++                        resource_cache.set_compositor_surface_stereo(
++                            native_surface.native_surface_id,
++                            stereo,
++                        );
++                    }
++                }
++
+                 let update_params = match external_image_id {
+                     Some(external_image) => {
+                         // If this is an external image surface, then there's no update
+diff --git a/gfx/wr/webrender_api/src/image.rs b/gfx/wr/webrender_api/src/image.rs
+index d09c70a6a7..c0ebbdb1ed 100644
+--- a/gfx/wr/webrender_api/src/image.rs
++++ b/gfx/wr/webrender_api/src/image.rs
+@@ -273,6 +273,23 @@ bitflags! {
+         ///
+         /// See https://github.com/servo/webrender/pull/2555/
+         const ALLOW_MIPMAPS = 2;
++        /// The picture's stereo mark (Sparky Stereo OS), bits 8 to 23, as the
++        /// embedder encodes it for its compositor: which views the image holds
++        /// and where that comes from. WebRender passes it on, unread, to the
++        /// native compositor surface it draws the image into.
++        const STEREO = 0x00ff_ff00;
++    }
++}
++
++impl ImageDescriptorFlags {
++    /// The stereo mark the embedder gave the image, 0 for none.
++    pub fn stereo(&self) -> u32 {
++        (self.bits() & Self::STEREO.bits()) >> 8
++    }
++
++    /// Flags carrying the embedder's stereo mark.
++    pub fn from_stereo(stereo: u32) -> Self {
++        Self::from_bits_retain((stereo << 8) & Self::STEREO.bits())
+     }
+ }
+ 
+-- 
+2.53.0
+
