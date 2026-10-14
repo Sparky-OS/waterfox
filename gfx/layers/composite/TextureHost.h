@@ -613,8 +613,10 @@ class TextureHost : public AtomicRefCountedWithFinalize<TextureHost> {
   TextureReadLock* GetReadLock() { return mReadLock; }
 
   // The user's choice of stereo mode for a picture without a mark of its
-  // own (Sparky Stereo OS); only DMABuf pictures carry stereo modes.
+  // own (Sparky Stereo OS), and the user's "Swap eyes", over any mark; only
+  // video pictures (DMABuf and YCbCr buffers) carry stereo modes.
   virtual void ApplyStereoChoice(StereoMode aChoice) {}
+  virtual void ApplyStereoSwap(bool aSwap) {}
 
   virtual BufferTextureHost* AsBufferTextureHost() { return nullptr; }
   virtual ShmemTextureHost* AsShmemTextureHost() { return nullptr; }
@@ -864,6 +866,11 @@ class BufferTextureHost : public TextureHost {
 
   bool IsYCbCr() const;
 
+  void ApplyStereoChoice(StereoMode aChoice) override {
+    mStereoChoice = Some(aChoice);
+  }
+  void ApplyStereoSwap(bool aSwap) override { mStereoSwap = aSwap; }
+
   uint8_t* GetYChannel();
   uint8_t* GetCbChannel();
   uint8_t* GetCrChannel();
@@ -882,6 +889,9 @@ class BufferTextureHost : public TextureHost {
   gfx::SurfaceFormat mFormat;
   bool mLocked;
   bool mUseExternalTextures;
+  // The user's choice for a picture without a mark, and "Swap eyes".
+  Maybe<StereoMode> mStereoChoice;
+  bool mStereoSwap = false;
 
   class DataTextureSourceYCbCrBasic;
 };

@@ -153,18 +153,37 @@ enum class StereoSource : uint8_t {
   MAX,
 };
 
+// The same two views with the eyes the other way round: the user's "Swap
+// eyes", over any mark (a file marked wrongly is corrected by its viewer).
+inline StereoMode SwapStereoEyes(StereoMode aMode) {
+  switch (aMode) {
+    case StereoMode::LEFT_RIGHT:
+      return StereoMode::RIGHT_LEFT;
+    case StereoMode::RIGHT_LEFT:
+      return StereoMode::LEFT_RIGHT;
+    case StereoMode::TOP_BOTTOM:
+      return StereoMode::BOTTOM_TOP;
+    case StereoMode::BOTTOM_TOP:
+      return StereoMode::TOP_BOTTOM;
+    default:
+      return aMode;
+  }
+}
+
 // A picture's stereo mark as WebRender carries it with an image to the
 // compositor surface it draws the image into (ImageDescriptorFlags::STEREO):
 // bit 15 says there is a mark, bits 0 to 4 hold the StereoMode, bits 5 to 7
-// the StereoSource and bit 8 whether the picture is video. 0 means none.
+// the StereoSource, bit 8 whether the picture is video and bit 9 whether its
+// viewer swapped the eyes. 0 means none.
 inline uint32_t EncodeStereoMark(StereoMode aMode, StereoSource aSource,
-                                 bool aIsVideo) {
+                                 bool aIsVideo, bool aSwap = false) {
   return (1u << 15) | uint32_t(aMode) | (uint32_t(aSource) << 5) |
-         (aIsVideo ? 1u << 8 : 0u);
+         (aIsVideo ? 1u << 8 : 0u) | (aSwap ? 1u << 9 : 0u);
 }
 
 inline bool DecodeStereoMark(uint32_t aMark, StereoMode* aMode,
-                             StereoSource* aSource, bool* aIsVideo) {
+                             StereoSource* aSource, bool* aIsVideo,
+                             bool* aSwap) {
   const uint32_t mode = aMark & 0x1f;
   const uint32_t source = (aMark >> 5) & 0x7;
   if (!(aMark & (1u << 15)) || mode >= uint32_t(StereoMode::MAX) ||
@@ -174,6 +193,7 @@ inline bool DecodeStereoMark(uint32_t aMark, StereoMode* aMode,
   *aMode = StereoMode(mode);
   *aSource = StereoSource(source);
   *aIsVideo = !!(aMark & (1u << 8));
+  *aSwap = !!(aMark & (1u << 9));
   return true;
 }
 

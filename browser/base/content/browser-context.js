@@ -119,6 +119,9 @@ document.addEventListener(
             event.target.id.slice("context-video-stereo-".length)
           );
           break;
+        case "context-video-stereo-swap":
+          gContextMenu.mediaCommand("stereoSwap");
+          break;
         case "context-leave-dom-fullscreen":
           gContextMenu.leaveDOMFullScreen();
           break;

@@ -103,6 +103,12 @@ class VideoFrameContainer {
     MutexAutoLock lock(mMutex);
     mStereoChoice = aChoice;
   }
+  // The user's "Swap eyes", over every mark and the picture's shape. Any
+  // thread.
+  void SetStereoSwap(bool aSwap) {
+    MutexAutoLock lock(mMutex);
+    mStereoSwap = aSwap;
+  }
 
  protected:
   void SetCurrentFramesLocked(
@@ -139,6 +145,7 @@ class VideoFrameContainer {
   // ratio.
   Maybe<gfx::IntSize> mIntrinsicSize MOZ_GUARDED_BY(mMutex);
   Maybe<StereoMode> mStereoChoice MOZ_GUARDED_BY(mMutex);
+  bool mStereoSwap MOZ_GUARDED_BY(mMutex) = false;
   // We maintain our own mFrameID which is auto-incremented at every
   // SetCurrentFrame() or NewFrameID() call.
   ImageContainer::FrameID mFrameID;

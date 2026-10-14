@@ -103,6 +103,8 @@ namespace layers {
   bool semaphoreFdIsSyncFd;
   StereoMode stereoMode;
   StereoSource stereoSource;
+  // The user's "Swap eyes", over any mark (Sparky Stereo OS).
+  bool stereoSwap;
 };
 
 [Comparable] struct SurfaceTextureDescriptor {
@@ -156,8 +158,10 @@ namespace layers {
   MaybeVideoBridgeSource source;
   SurfaceDescriptorRemoteDecoderId id;
   // The user's choice of the picture's stereo mode, for a frame without a
-  // mark of its own (Sparky Stereo OS).
+  // mark of its own, and the user's "Swap eyes", over any mark (Sparky
+  // Stereo OS).
   StereoMode? stereoChoice;
+  bool stereoSwap;
 };
 
 [Comparable] union SurfaceDescriptorGPUVideo {

@@ -601,12 +601,16 @@ void BufferTextureHost::PushResourceUpdates(
     wr::ImageDescriptor yDescriptor(ySize, desc.yStride(), *format, opacity);
     // The picture's stereo mark, for the compositor surface WebRender may draw
     // it into. A YCbCr buffer says only the arrangement: whether it comes from
-    // the stream or the container, the size of a view is unknown.
-    yDescriptor.stereo = EncodeStereoMark(
-        desc.stereoMode(),
-        desc.stereoMode() == StereoMode::MONO ? StereoSource::NONE
-                                              : StereoSource::CONTAINER,
-        /* aIsVideo */ true);
+    // the stream or the container, the size of a view is unknown. The user's
+    // choice comes after the picture's own mark; "Swap eyes" goes over both.
+    StereoMode stereoMode = desc.stereoMode();
+    StereoSource stereoSource = StereoSource::CONTAINER;
+    if (stereoMode == StereoMode::MONO) {
+      stereoMode = mStereoChoice.valueOr(StereoMode::MONO);
+      stereoSource = mStereoChoice ? StereoSource::USER : StereoSource::NONE;
+    }
+    yDescriptor.stereo = EncodeStereoMark(stereoMode, stereoSource,
+                                          /* aIsVideo */ true, mStereoSwap);
     wr::ImageDescriptor cbcrDescriptor(cbcrSize, desc.cbCrStride(), *format,
                                        opacity);
     (aResources.*method)(aImageKeys[0], yDescriptor, aExtID, imageType, 0,

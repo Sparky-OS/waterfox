@@ -1526,7 +1526,8 @@ void TextureClient::GetSurfaceDescriptorRemoteDecoder(
 
   *aOutDesc = SurfaceDescriptorRemoteDecoder(
       handle, std::move(subDesc), Nothing(),
-      SurfaceDescriptorRemoteDecoderId::GetNext(), Nothing());
+      SurfaceDescriptorRemoteDecoderId::GetNext(), Nothing(),
+      /* stereoSwap */ false);
 }
 
 class MemoryTextureReadLock : public NonBlockingTextureReadLock {

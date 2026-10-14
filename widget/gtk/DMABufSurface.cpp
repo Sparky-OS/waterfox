@@ -1133,6 +1133,7 @@ bool DMABufSurfaceRGBA::ImportSurfaceDescriptor(
   mPID = desc.pid();
   mStereoMode = desc.stereoMode();
   mStereoSource = desc.stereoSource();
+  mStereoSwap = desc.stereoSwap();
 
   LOGDMABUF(
       "DMABufSurfaceRGBA::ImportSurfaceDescriptor() UID %d size %d x %d\n",
@@ -1208,7 +1209,7 @@ bool DMABufSurfaceRGBA::Serialize(
       mozilla::gfx::TransferFunction::Default, 0, fenceFDs, mUID,
       mCanRecycle ? getpid() : 0, refCountFDs,
       /* semaphoreFd */ nullptr, /* semaphoreFdIsSyncFd */ false, mStereoMode,
-      mStereoSource);
+      mStereoSource, mStereoSwap);
   return true;
 }
 
@@ -2086,6 +2087,7 @@ bool DMABufSurfaceYUV::ImportSurfaceDescriptor(
   mPID = aDesc.pid();
   mStereoMode = aDesc.stereoMode();
   mStereoSource = aDesc.stereoSource();
+  mStereoSwap = aDesc.stereoSwap();
 
   LOGDMABUF("DMABufSurfaceYUV::ImportSurfaceDescriptor() UID %d", mUID);
 
@@ -2164,7 +2166,7 @@ bool DMABufSurfaceYUV::Serialize(
       GetYUVColorSpace(), mColorRange, mColorPrimaries, mTransferFunction,
       mWPChromaLocation, fenceFDs, mUID, mCanRecycle ? getpid() : 0,
       refCountFDs, mSemaphoreFd, mSemaphoreFdIsSyncFd, mStereoMode,
-      mStereoSource);
+      mStereoSource, mStereoSwap);
   return true;
 }
 

@@ -60,6 +60,13 @@ void DMABUFTextureHostOGL::ApplyStereoChoice(StereoMode aChoice) {
   }
 }
 
+// "Swap eyes" goes over every mark and over the picture's shape, last.
+void DMABUFTextureHostOGL::ApplyStereoSwap(bool aSwap) {
+  if (mSurface) {
+    mSurface->SetStereoSwap(aSwap);
+  }
+}
+
 gfx::TransferFunction DMABUFTextureHostOGL::GetTransferFunction() const {
   if (!mSurface) {
     return gfx::TransferFunction::BT709;

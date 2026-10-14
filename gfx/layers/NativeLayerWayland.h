@@ -346,6 +346,8 @@ class NativeLayerWayland : public NativeLayer {
   // The picture's stereo mark and where it comes from.
   StereoMode mStereoMark = StereoMode::MONO;
   StereoSource mStereoSource = StereoSource::NONE;
+  // The user's "Swap eyes", over the mark and the picture's shape.
+  bool mStereoSwap = false;
   // The last answer of libstereo-layer for a picture without a mark.
   gfx::IntSize mStereoLayerShape;
   StereoMode mStereoLayerPacking = StereoMode::MONO;
@@ -360,6 +362,12 @@ class NativeLayerWayland : public NativeLayer {
   // The buffer is a video frame, which can be copied into a buffer of two
   // views full side by side with the left eye first.
   bool mStereoIsVideo = false;
+  // The buffer of two views full side by side, left eye first, the surface
+  // shows when the picture needs repacking, from the compositor's pool.
+  RefPtr<SurfacePoolHandleWayland> mStereoPoolHandle;
+  RefPtr<widget::WaylandBuffer> mStereoBuffer;
+  void ReleaseStereoBufferLocked(
+      const widget::WaylandSurfaceLock& aProofOfLock);
   bool mStereoCanRepack = false;
   // The surface is declared stereo.
   bool mStereoDeclared = false;
@@ -415,6 +423,10 @@ class NativeLayerWaylandRender final : public NativeLayerWayland {
   void DiscardBackbuffersLocked(const widget::WaylandSurfaceLock& aProofOfLock,
                                 bool aForce) override;
   void ReadBackFrontBuffer(const widget::WaylandSurfaceLock& aProofOfLock);
+  // Copies the visible part of each view of the front buffer side by side,
+  // left eye first, into mStereoBuffer.
+  RefPtr<widget::WaylandBuffer> RepackStereoLocked(
+      const widget::WaylandSurfaceLock& aProofOfLock);
   bool CommitFrontBufferToScreenLocked(
       const widget::WaylandSurfaceLock& aProofOfLock) override;
 
@@ -448,13 +460,6 @@ class NativeLayerWaylandExternal final : public NativeLayerWayland {
 
   RefPtr<widget::WaylandBuffer> RepackStereoLocked(
       const widget::WaylandSurfaceLock& aProofOfLock);
-  void ReleaseStereoBufferLocked(
-      const widget::WaylandSurfaceLock& aProofOfLock);
-
-  // The buffer of two views full side by side, left eye first, the surface
-  // shows when the picture needs repacking, from the compositor's pool.
-  RefPtr<SurfacePoolHandleWayland> mStereoPoolHandle;
-  RefPtr<widget::WaylandBuffer> mStereoBuffer;
 
   void DiscardBackbuffersLocked(const widget::WaylandSurfaceLock& aProofOfLock,
                                 bool aForce) override;

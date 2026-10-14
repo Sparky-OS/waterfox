@@ -145,12 +145,12 @@ void VideoFrameContainer::SetCurrentFramesLocked(
 
 #ifdef MOZ_WIDGET_GTK
   // The user's choice comes after the stream's and the container's marks and
-  // before the picture's shape, which the compositor side looks at last. A
-  // frame decoded in another process takes it to the compositor, which knows
-  // the frame's marks.
+  // before the picture's shape, which the compositor side looks at last; the
+  // user's "Swap eyes" goes over all of them. A frame decoded in another
+  // process takes them to the compositor, which knows the frame's marks.
   for (const auto& image : aImages) {
     if (auto* gpuImage = image.mImage->AsGPUVideoImage()) {
-      gpuImage->SetStereoChoice(mStereoChoice);
+      gpuImage->SetStereoChoice(mStereoChoice, mStereoSwap);
       continue;
     }
     auto* dmabufImage = image.mImage->AsDMABUFSurfaceImage();
@@ -158,6 +158,7 @@ void VideoFrameContainer::SetCurrentFramesLocked(
     if (!surface) {
       continue;
     }
+    surface->SetStereoSwap(mStereoSwap);
     const StereoSource source = surface->GetStereoSource();
     if (source != StereoSource::NONE && source != StereoSource::USER) {
       continue;

@@ -100,9 +100,15 @@ partial interface HTMLVideoElement {
 // picture's shape decides, last), "mono", "side-by-side",
 // "side-by-side-right-first", "top-bottom" or "top-bottom-right-first".
 // Pages do not see it.
+//
+// stereoSwap is the user's "Swap eyes": the views are shown the other way
+// round, over any mark and over the picture's shape (a file marked wrongly
+// is corrected by its viewer). Pages do not see it either.
 partial interface HTMLVideoElement {
   [Func="IsChromeOrUAWidget"]
   attribute DOMString stereoChoice;
+  [Func="IsChromeOrUAWidget"]
+  attribute boolean stereoSwap;
 };
 
 // https://w3c.github.io/picture-in-picture/#htmlvideoelement-extensions

@@ -317,6 +317,10 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // its views (Sparky Stereo OS); Nothing() for none.
   void SetStereoChoice(const Maybe<StereoMode>& aChoice);
   const Maybe<StereoMode>& StereoChoice() const { return mStereoChoice; }
+  // The user's "Swap eyes": the views are shown the other way round, over
+  // any mark and over the picture's shape (Sparky Stereo OS).
+  void SetStereoSwap(bool aSwap);
+  bool StereoSwap() const { return mStereoSwap; }
 
   /**
    * Call this to reevaluate whether we should start/stop due to our owner
@@ -1495,6 +1499,7 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   RefPtr<VideoFrameContainer> mVideoFrameContainer;
 
   Maybe<StereoMode> mStereoChoice;
+  bool mStereoSwap = false;
 
   // Holds a reference to the MediaStream that has been set in the src
   // attribute.

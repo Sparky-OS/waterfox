@@ -7033,6 +7033,7 @@ VideoFrameContainer* HTMLMediaElement::GetVideoFrameContainer() {
       this, MakeAndAddRef<ImageContainer>(ImageUsageType::VideoFrameContainer,
                                           ImageContainer::ASYNCHRONOUS));
   mVideoFrameContainer->SetStereoChoice(mStereoChoice);
+  mVideoFrameContainer->SetStereoSwap(mStereoSwap);
 
   return mVideoFrameContainer;
 }
@@ -7041,6 +7042,13 @@ void HTMLMediaElement::SetStereoChoice(const Maybe<StereoMode>& aChoice) {
   mStereoChoice = aChoice;
   if (mVideoFrameContainer) {
     mVideoFrameContainer->SetStereoChoice(aChoice);
+  }
+}
+
+void HTMLMediaElement::SetStereoSwap(bool aSwap) {
+  mStereoSwap = aSwap;
+  if (mVideoFrameContainer) {
+    mVideoFrameContainer->SetStereoSwap(aSwap);
   }
 }
 

@@ -1081,8 +1081,8 @@ export class nsContextMenu {
       onMedia && this.target.duration != Number.POSITIVE_INFINITY
     );
     this.showItem("context-media-loop", onMedia);
-    // The user's choice for a video without a stereo mark of its own
-    // (Sparky Stereo OS).
+    // The user's choice for a video without a stereo mark of its own, and
+    // "Swap Eyes" over any mark (Sparky Stereo OS).
     this.showItem(
       "context-video-stereo",
       this.onVideo && this.target.stereoChoice !== undefined
@@ -1156,6 +1156,11 @@ export class nsContextMenu {
             choice == stereoChoice
           );
         }
+        this.setItemAttr(
+          "context-video-stereo-swap",
+          "checked",
+          !!this.target.stereoSwap
+        );
       }
       var hasError =
         this.target.error != null ||

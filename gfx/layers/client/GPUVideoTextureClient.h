@@ -38,8 +38,9 @@ class GPUVideoTextureData : public TextureData {
 
   void OnSetCurrent();
 
-  // The user's choice of stereo mode, sent with the descriptor.
-  void SetStereoChoice(const Maybe<StereoMode>& aChoice);
+  // The user's choice of stereo mode and "Swap eyes", sent with the
+  // descriptor.
+  void SetStereoChoice(const Maybe<StereoMode>& aChoice, bool aSwap);
 
   GPUVideoTextureData* AsGPUVideoTextureData() override { return this; }
 

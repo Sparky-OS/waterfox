@@ -48,6 +48,7 @@ class DMABUFTextureHostOGL : public TextureHost {
       const wr::ExternalImageId& aExternalImageId) override;
 
   void ApplyStereoChoice(StereoMode aChoice) override;
+  void ApplyStereoSwap(bool aSwap) override;
 
   void PushResourceUpdates(wr::TransactionBuilder& aResources,
                            ResourceUpdateOp aOp,

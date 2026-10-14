@@ -177,6 +177,10 @@ class DMABufSurface {
   }
   mozilla::StereoMode GetStereoMode() const { return mStereoMode; }
   mozilla::StereoSource GetStereoSource() const { return mStereoSource; }
+  // The user's "Swap eyes": the views are shown the other way round, over
+  // any mark (a file marked wrongly is corrected by its viewer).
+  void SetStereoSwap(bool aSwap) { mStereoSwap = aSwap; }
+  bool GetStereoSwap() const { return mStereoSwap; }
 
   void FenceSet();
   void FenceWait();
@@ -349,6 +353,7 @@ class DMABufSurface {
 
   mozilla::StereoMode mStereoMode = mozilla::StereoMode::MONO;
   mozilla::StereoSource mStereoSource = mozilla::StereoSource::NONE;
+  bool mStereoSwap = false;
 
   mozilla::gfx::YUVColorSpace mColorSpace =
       mozilla::gfx::YUVColorSpace::Default;

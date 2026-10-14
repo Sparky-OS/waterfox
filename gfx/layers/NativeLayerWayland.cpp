@@ -1475,24 +1475,30 @@ void NativeLayerWaylandRender::AttachExternalImage(
 
 // WebRender draws a promoted image into this layer (a video that is not a
 // DMABuf, or any video with software WebRender): the layer shows the
-// picture's views as the picture holds them, and is declared the same way.
+// picture's views as the picture holds them, and is declared the same way;
+// views in another order or on top of each other are copied side by side
+// (RepackStereoLocked), as for a DMABuf.
 void NativeLayerWaylandRender::SetStereoMark(uint32_t aStereoMark) {
   WaylandSurfaceLock lock(mSurface);
   StereoMode mode = StereoMode::MONO;
   StereoSource source = StereoSource::NONE;
   bool isVideo = false;
-  if (!DecodeStereoMark(aStereoMark, &mode, &source, &isVideo)) {
+  bool swap = false;
+  if (!DecodeStereoMark(aStereoMark, &mode, &source, &isVideo, &swap)) {
     mode = StereoMode::MONO;
     source = StereoSource::NONE;
     isVideo = false;
+    swap = false;
   }
   if (mode != mStereoMark || source != mStereoSource ||
-      isVideo != mStereoIsVideo) {
-    LOG("NativeLayerWaylandRender::SetStereoMark() mode %d source %d video %d",
-        int(mode), int(source), isVideo);
+      isVideo != mStereoIsVideo || swap != mStereoSwap) {
+    LOG("NativeLayerWaylandRender::SetStereoMark() mode %d source %d video %d "
+        "swap %d",
+        int(mode), int(source), isVideo, swap);
     mStereoMark = mode;
     mStereoSource = source;
     mStereoIsVideo = isVideo;
+    mStereoSwap = swap;
     mState.mMutatedPlacement = true;
   }
 }
@@ -1676,8 +1682,85 @@ bool NativeLayerWaylandRender::CommitFrontBufferToScreenLocked(
     buffer->GetSurface()->FenceWait();
   }
 
-  mSurface->AttachLocked(aProofOfLock, mFrontBuffer);
+  RefPtr<widget::WaylandBuffer> shown = mFrontBuffer;
+  if (mStereoRepack) {
+    shown = RepackStereoLocked(aProofOfLock);
+    if (shown) {
+      mSurface->InvalidateLocked(aProofOfLock);
+    } else {
+      // Shown flat from the next frame on.
+      gfxCriticalNoteOnce << "NativeLayerWaylandRender: stereo copy failed";
+      mStereoRepackFailed = true;
+      mState.mMutatedPlacement = true;
+      shown = mFrontBuffer;
+    }
+  } else {
+    ReleaseStereoBufferLocked(aProofOfLock);
+  }
+
+  mSurface->AttachLocked(aProofOfLock, shown);
   return true;
+}
+
+RefPtr<widget::WaylandBuffer> NativeLayerWaylandRender::RepackStereoLocked(
+    const WaylandSurfaceLock& aProofOfLock) {
+  if (!mFrontBuffer) {
+    return nullptr;
+  }
+  ReleaseStereoBufferLocked(aProofOfLock);
+  mStereoPoolHandle = mSurfacePoolHandle;
+  mStereoBuffer = mSurfacePoolHandle->ObtainBufferFromPool(
+      aProofOfLock, mStereoBufferSize, mRootLayer->GetDRMFormat());
+  if (!mStereoBuffer) {
+    return nullptr;
+  }
+  // WebRender draws these surfaces with the origin at the top left, as the
+  // eyes' rectangles are given: each view is copied at its own size.
+  const int width = mStereoBufferSize.width / 2;
+  const int height = mStereoBufferSize.height;
+  IntRect eyes[2];
+  for (int eye = 0; eye < 2; eye++) {
+    const Rect& r = mStereoEyeRects[eye];
+    const int x = std::clamp(int(std::lround(r.x * mSize.width)), 0,
+                             std::max(mSize.width - width, 0));
+    const int y = std::clamp(int(std::lround(r.y * mSize.height)), 0,
+                             std::max(mSize.height - height, 0));
+    eyes[eye] = IntRect(x, y, width, height);
+  }
+  if (RefPtr<gl::GLContext> gl = mSurfacePoolHandle->gl()) {
+    if (!gl->MakeCurrent()) {
+      return nullptr;
+    }
+    Maybe<GLuint> source =
+        mSurfacePoolHandle->GetFramebufferForBuffer(mFrontBuffer, false);
+    Maybe<GLuint> dest =
+        mSurfacePoolHandle->GetFramebufferForBuffer(mStereoBuffer, false);
+    if (!source || !dest) {
+      return nullptr;
+    }
+    for (int eye = 0; eye < 2; eye++) {
+      gl->BlitHelper()->BlitFramebufferToFramebuffer(
+          *source, *dest, eyes[eye], IntRect(eye * width, 0, width, height),
+          LOCAL_GL_NEAREST);
+    }
+    if (auto* buffer = mStereoBuffer->AsWaylandBufferDMABUF()) {
+      buffer->GetSurface()->FenceSet();
+      buffer->GetSurface()->FenceWait();
+    }
+    return mStereoBuffer;
+  }
+  RefPtr<gfx::DataSourceSurface> front = gfx::CreateDataSourceSurfaceFromData(
+      mSize, mFrontBuffer->GetSurfaceFormat(),
+      (const uint8_t*)mFrontBuffer->GetImageData(),
+      mSize.width * BytesPerPixel(mFrontBuffer->GetSurfaceFormat()));
+  RefPtr<DrawTarget> dt = mStereoBuffer->Lock();
+  if (!front || !dt) {
+    return nullptr;
+  }
+  for (int eye = 0; eye < 2; eye++) {
+    dt->CopySurface(front, eyes[eye], IntPoint(eye * width, 0));
+  }
+  return mStereoBuffer;
 }
 
 void NativeLayerWaylandRender::NotifySurfaceReady() {
@@ -1741,6 +1824,9 @@ void NativeLayerWaylandRender::DiscardBackbuffersLocked(
     mSurfacePoolHandle->ReturnBufferToPool(aProofOfLock, mFrontBuffer);
     mFrontBuffer = nullptr;
   }
+  if (mStereoBuffer && (!mStereoBuffer->IsAttached(aProofOfLock) || aForce)) {
+    ReleaseStereoBufferLocked(aProofOfLock);
+  }
 }
 
 NativeLayerWaylandRender::~NativeLayerWaylandRender() {
@@ -1790,9 +1876,10 @@ void NativeLayerWaylandExternal::AttachExternalImage(
   const bool isVideo = !!surface->GetAsDMABufSurfaceYUV();
   if (surface->GetStereoMode() != mStereoMark ||
       surface->GetStereoSource() != mStereoSource ||
-      isVideo != mStereoIsVideo) {
+      surface->GetStereoSwap() != mStereoSwap || isVideo != mStereoIsVideo) {
     mStereoMark = surface->GetStereoMode();
     mStereoSource = surface->GetStereoSource();
+    mStereoSwap = surface->GetStereoSwap();
     mStereoIsVideo = isVideo;
     mState.mMutatedPlacement = true;
   }
@@ -1812,8 +1899,9 @@ void NativeLayerWaylandExternal::AttachExternalImage(
 // The order in which a picture says it holds two views (Sparky Stereo OS,
 // the same everywhere): the stream's frame packing SEI, then the container's
 // mark, then the user's choice, all read by the browser; for a video without
-// any of them, libstereo-layer's picture policy, last. A WebXR session's
-// canvas holds two views full side by side with the left eye first.
+// any of them, libstereo-layer's picture policy, last. The user's "Swap
+// eyes" goes over whichever of them decided. A WebXR session's canvas holds
+// two views full side by side with the left eye first.
 void NativeLayerWayland::DecideStereoLocked(const gfx::Size& aShape) {
   StereoMode packing = mStereoMark;
   StereoFit fit = StereoFit::None;
@@ -1879,17 +1967,25 @@ void NativeLayerWayland::DecideStereoLocked(const gfx::Size& aShape) {
     packing = StereoMode::MONO;
     fit = StereoFit::None;
   }
+  if (mStereoSwap) {
+    packing = SwapStereoEyes(packing);
+  }
   if (packing != mStereoPacking || fit != mStereoFit) {
-    LOG("NativeLayerWayland::DecideStereoLocked() mark %d source %d "
+    LOG("NativeLayerWayland::DecideStereoLocked() mark %d source %d swap %d "
         "-> packing %d fit %d",
-        int(mStereoMark), int(mStereoSource), int(packing), int(fit));
+        int(mStereoMark), int(mStereoSource), mStereoSwap, int(packing),
+        int(fit));
   }
   mStereoPacking = packing;
   mStereoFit = fit;
-  // Copies are 8 bit RGB: HDR video is not repacked yet. Only layers that
-  // show a decoded picture as it is (external layers) can copy it.
-  mStereoCanRepack = AsNativeLayerWaylandExternal() && mStereoIsVideo &&
-                     !mIsHDR && !mStereoRepackFailed;
+  // Copies are 8 bit RGB: HDR video is not repacked yet. A layer WebRender
+  // draws a video into is copied when its buffer holds just the picture.
+  const bool wholeBuffer =
+      AsNativeLayerWaylandExternal() ||
+      (AsNativeLayerWaylandRender() &&
+       mDisplayRect.Contains(IntRect(IntPoint(), mSize)));
+  mStereoCanRepack =
+      wholeBuffer && mStereoIsVideo && !mIsHDR && !mStereoRepackFailed;
 }
 
 // Copies the visible part of each view into its half of a buffer from the
@@ -1941,7 +2037,7 @@ RefPtr<widget::WaylandBuffer> NativeLayerWaylandExternal::RepackStereoLocked(
   return mStereoBuffer;
 }
 
-void NativeLayerWaylandExternal::ReleaseStereoBufferLocked(
+void NativeLayerWayland::ReleaseStereoBufferLocked(
     const WaylandSurfaceLock& aProofOfLock) {
   if (mStereoBuffer && mStereoPoolHandle) {
     mStereoPoolHandle->ReturnBufferToPool(aProofOfLock, mStereoBuffer);

@@ -243,7 +243,8 @@ main-context-menu-media-loop =
 
 ## How a video that carries no 3D mark of its own holds the two views of a
 ## stereo 3D picture (Sparky Stereo OS). A mark in the video itself always
-## comes first.
+## comes first. "Swap Eyes" shows each eye the other eye's view, whatever
+## decided the arrangement: it corrects a video marked the wrong way round.
 
 main-context-menu-video-stereo =
     .label = 3D Video
@@ -266,6 +267,9 @@ main-context-menu-video-stereo-top-bottom =
 
 main-context-menu-video-stereo-top-bottom-right-first =
     .label = Top and Bottom, Right Eye First
+
+main-context-menu-video-stereo-swap =
+    .label = Swap Eyes
 
 ## The access keys for "Show Controls" and "Hide Controls" are the same
 ## because the two context-menu items are mutually exclusive.
