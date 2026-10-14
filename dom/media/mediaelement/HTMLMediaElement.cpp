@@ -59,6 +59,7 @@
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/MediaFragmentURIParser.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/dom/ContentChild.h"
 #include "mozilla/PresShell.h"
 #include "mozilla/SVGObserverUtils.h"
 #include "mozilla/SchedulerGroup.h"
@@ -3381,6 +3382,8 @@ MediaResult HTMLMediaElement::LoadResource(
 
   // Set the media element's CORS mode only when loading a resource
   mCORSMode = AttrValueToCORSMode(GetParsedAttr(nsGkAtoms::crossorigin));
+
+  RequestStereoFileSwap();
 
   HTMLMediaElement* other = LookupMediaElementURITable(mLoadingSrc);
   if (other && other->mDecoder) {
@@ -7043,6 +7046,30 @@ void HTMLMediaElement::SetStereoChoice(const Maybe<StereoMode>& aChoice) {
   if (mVideoFrameContainer) {
     mVideoFrameContainer->SetStereoChoice(aChoice);
   }
+}
+
+// Sparky Stereo OS: a local video file may carry its viewer's Swap Eyes
+// correction (the extended attribute user.stereo-policy.swap-eyes), which
+// the parent process reads; the element takes it as its own Swap Eyes.
+void HTMLMediaElement::RequestStereoFileSwap() {
+  nsCOMPtr<nsIURI> uri = mLoadingSrc;
+  if (!uri || !uri->SchemeIs("file") || !XRE_IsContentProcess()) {
+    return;
+  }
+  ContentChild* child = ContentChild::GetSingleton();
+  if (!child) {
+    return;
+  }
+  child->SendGetStereoFileSwap(uri)->Then(
+      GetMainThreadSerialEventTarget(), __func__,
+      [self = RefPtr{this}, uri](int32_t aSwap) {
+        bool same = false;
+        if (aSwap >= 0 && self->mLoadingSrc &&
+            NS_SUCCEEDED(self->mLoadingSrc->Equals(uri, &same)) && same) {
+          self->SetStereoSwap(aSwap == 1);
+        }
+      },
+      [](mozilla::ipc::ResponseRejectReason) {});
 }
 
 void HTMLMediaElement::SetStereoSwap(bool aSwap) {

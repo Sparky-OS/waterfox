@@ -1967,6 +1967,13 @@ parent:
     // implementation in ContentParent::RecvGetSystemIcon for details.
     async GetSystemIcon(nullable nsIURI aURI) returns (nsresult aResult, ByteBuf? aData);
 
+    // Sparky Stereo OS: the Swap Eyes correction a local video file carries
+    // (the extended attribute user.stereo-policy.swap-eyes, which
+    // libstereo-policy reads): 1, 0, or -1 when it cannot be read. Only the
+    // file content process asks; content processes cannot read extended
+    // attributes.
+    async GetStereoFileSwap(nullable nsIURI aURI) returns (int32_t aSwap);
+
     // Returns the status of the geolocation permission on this system.
     // May not be accurate if the information is not known.
     async GetSystemGeolocationPermissionBehavior() returns (SystemGeolocationPermissionBehavior permission);

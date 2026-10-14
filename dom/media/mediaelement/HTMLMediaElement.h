@@ -321,6 +321,8 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   // any mark and over the picture's shape (Sparky Stereo OS).
   void SetStereoSwap(bool aSwap);
   bool StereoSwap() const { return mStereoSwap; }
+  // Asks the parent process for the Swap Eyes correction of a file: video.
+  void RequestStereoFileSwap();
 
   /**
    * Call this to reevaluate whether we should start/stop due to our owner

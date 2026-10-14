@@ -160,6 +160,10 @@
 #include "mozilla/layers/ImageBridgeParent.h"
 #include "mozilla/layers/LayerTreeOwnerTracker.h"
 #include "mozilla/layers/PAPZParent.h"
+#if defined(MOZ_WAYLAND)
+#  include "mozilla/layers/StereoPolicy.h"
+#endif
+#include "nsIFileURL.h"
 #include "mozilla/loader/ScriptCacheActors.h"
 #include "mozilla/media/MediaParent.h"
 #include "mozilla/mozSpellChecker.h"
@@ -8067,6 +8071,37 @@ IPCResult ContentParent::RecvGetSystemIcon(nsIURI* aURI,
       "This message is currently implemented only on GTK and Windows "
       "platforms");
 #endif
+}
+
+IPCResult ContentParent::RecvGetStereoFileSwap(
+    nsIURI* aURI, GetStereoFileSwapResolver&& aResolver) {
+#if defined(MOZ_WAYLAND)
+  // Only the process that shows local files asks, and only for a file: URI.
+  nsCOMPtr<nsIFileURL> fileURL = do_QueryInterface(aURI);
+  nsCOMPtr<nsIFile> file;
+  nsAutoCString path;
+  const auto* policy = layers::GetStereoPolicy();
+  if (GetRemoteType() != FILE_REMOTE_TYPE || !fileURL || !policy ||
+      !policy->fileSwapEyes ||
+      NS_FAILED(fileURL->GetFile(getter_AddRefs(file))) || !file ||
+      NS_FAILED(file->GetNativePath(path))) {
+    aResolver(-1);
+    return IPC_OK();
+  }
+  // Away from the main thread: the file may be on a slow file system.
+  NS_DispatchBackgroundTask(NS_NewRunnableFunction(
+      "ContentParent::RecvGetStereoFileSwap",
+      [path = std::move(path), policy,
+       resolver = std::move(aResolver)]() mutable {
+        const int32_t swap = policy->fileSwapEyes(path.get());
+        NS_DispatchToMainThread(NS_NewRunnableFunction(
+            "ContentParent::RecvGetStereoFileSwap::Resolve",
+            [swap, resolver = std::move(resolver)]() { resolver(swap); }));
+      }));
+#else
+  aResolver(-1);
+#endif
+  return IPC_OK();
 }
 
 IPCResult ContentParent::RecvGetSystemGeolocationPermissionBehavior(

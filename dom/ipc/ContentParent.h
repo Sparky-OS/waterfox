@@ -1404,6 +1404,9 @@ class ContentParent final : public PContentParent,
   mozilla::ipc::IPCResult RecvGetSystemIcon(nsIURI* aURI,
                                             GetSystemIconResolver&& aResolver);
 
+  mozilla::ipc::IPCResult RecvGetStereoFileSwap(
+      nsIURI* aURI, GetStereoFileSwapResolver&& aResolver);
+
   mozilla::ipc::IPCResult RecvGetSystemGeolocationPermissionBehavior(
       GetSystemGeolocationPermissionBehaviorResolver&& aResolver);
 
