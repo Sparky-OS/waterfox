@@ -29,6 +29,7 @@
 #include "jsfriendapi.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/StaticPrefs_webgl.h"
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/ImageData.h"
 #include "mozilla/dom/WebGLRenderingContextBinding.h"
@@ -1396,7 +1397,7 @@ void WebGLContext::UniformData(
 
   // The camera hack: remember the camera the page hands the GPU.
   if (activeInfo.elemType == LOCAL_GL_FLOAT_MAT4 && !validationInfo.isArray &&
-      elemCount == 1 && StaticPrefs::webgl_stereo_camera_enabled()) {
+      elemCount == 1 && gfx::gfxVars::StereoContentDeclaration()) {
     std::array<float, 16> m;
     const auto* f = reinterpret_cast<const float*>(data.data());
     for (int i = 0; i < 16; i++) {

@@ -271,6 +271,32 @@ main-context-menu-video-stereo-top-bottom-right-first =
 main-context-menu-video-stereo-swap =
     .label = Swap Eyes
 
+## A WebGL scene that has no stereo 3D of its own, drawn once per eye from
+## the page's own camera (Sparky Stereo OS), for the page's site: on or
+## off, and how deep the picture looks (the distance between the eyes).
+
+main-context-menu-canvas-stereo =
+    .label = 3D Canvas
+    .accesskey = 3
+
+main-context-menu-canvas-stereo-off =
+    .label = Off
+
+main-context-menu-canvas-stereo-on =
+    .label = On
+
+main-context-menu-canvas-stereo-depth-less =
+    .label = Less Depth
+
+main-context-menu-canvas-stereo-depth-normal =
+    .label = Normal Depth
+
+main-context-menu-canvas-stereo-depth-more =
+    .label = More Depth
+
+main-context-menu-canvas-stereo-depth-most =
+    .label = Most Depth
+
 ## The access keys for "Show Controls" and "Hide Controls" are the same
 ## because the two context-menu items are mutually exclusive.
 

@@ -685,7 +685,7 @@ static bool HasInstancedDrawing(const WebGLContext& webgl) {
 // post-processing (StereoTargetPerEye), once otherwise (shadow maps). The
 // right eye's draw samples the right eye's copies of the textures it reads.
 void WebGLContext::DrawPerEye(const std::function<void()>& aDraw) {
-  const float s = StaticPrefs::webgl_stereo_camera_separation() / 100.0f;
+  const float s = mStereoSeparation;
   if (StereoCameraDraws()) {
     UploadStereoCameras(-s);
     aDraw();

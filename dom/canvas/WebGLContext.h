@@ -1368,6 +1368,9 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   uint32_t mStereoOffscreenDraws = 0;
   // Draws once per eye into the page's own framebuffers.
   uint32_t mStereoTargetDraws = 0;
+  // The eyes' separation, a fraction of the view's width: the site's
+  // (SwapChainOptions::stereoDepth) or webgl.stereo-camera.separation.
+  float mStereoSeparation = 0.02f;
   gl::SwapChain mSnapshotSwapChain;
 
   RefPtr<layers::RemoteTextureOwnerClient> mRemoteTextureOwner;

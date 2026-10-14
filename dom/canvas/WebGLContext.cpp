@@ -1948,6 +1948,13 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
   bool useAsync = options.remoteTextureOwnerId.IsValid() &&
                   options.remoteTextureId.IsValid();
 
+  // The camera hack's depth for the canvas's site.
+  if (!xrFb && !webvr && options.stereoCamera) {
+    mStereoSeparation =
+        options.stereoDepth
+            ? options.stereoDepth / 1000.0f
+            : StaticPrefs::webgl_stereo_camera_separation() / 100.0f;
+  }
   // The camera hack: the canvas presents both eyes from now on.
   if (!xrFb && !webvr && options.stereoCamera != mStereoCamera) {
     mStereoCamera = options.stereoCamera;

@@ -107,6 +107,10 @@ const IMAGE_ONLY_PROTOCOLS = [
   "page-icon:",
 ];
 
+// The 3D Canvas menu's depths: the eyes' separation in tenths of a percent
+// of the view's width (permission "stereo-camera-depth").
+const CANVAS_STEREO_DEPTHS = { less: 10, normal: 20, more: 30, most: 40 };
+
 export class nsContextMenu {
   /**
    * A promise to retrieve the translations language pair
@@ -1087,6 +1091,22 @@ export class nsContextMenu {
       "context-video-stereo",
       this.onVideo && this.target.stereoChoice !== undefined
     );
+    // A WebGL scene drawn once per eye from its own camera, for the page's
+    // site, and the depth (Sparky Stereo OS).
+    this.showItem("context-canvas-stereo", this.onCanvas);
+    if (this.onCanvas) {
+      const on = this.canvasStereoOn();
+      this.setItemAttr("context-canvas-stereo-on", "checked", on);
+      this.setItemAttr("context-canvas-stereo-off", "checked", !on);
+      const depth = this.canvasStereoDepth();
+      for (const [name, value] of Object.entries(CANVAS_STEREO_DEPTHS)) {
+        this.setItemAttr(
+          "context-canvas-stereo-depth-" + name,
+          "checked",
+          value == depth
+        );
+      }
+    }
     this.showItem(
       "context-media-showcontrols",
       onMedia && !this.target.controls
@@ -2594,6 +2614,54 @@ export class nsContextMenu {
       "SwitchDocumentDirection",
       "roots"
     );
+  }
+
+  // The camera hack for the page's site: the site's choice, else
+  // webgl.stereo-camera.enabled.
+  canvasStereoOn() {
+    const perm = Services.perms.testPermissionFromPrincipal(
+      this.principal,
+      "stereo-camera"
+    );
+    if (perm == Services.perms.ALLOW_ACTION) {
+      return true;
+    }
+    if (perm == Services.perms.DENY_ACTION) {
+      return false;
+    }
+    return Services.prefs.getBoolPref("webgl.stereo-camera.enabled", false);
+  }
+
+  canvasStereoDepth() {
+    const perm = Services.perms.testPermissionFromPrincipal(
+      this.principal,
+      "stereo-camera-depth"
+    );
+    if (perm >= 5 && perm <= 100) {
+      return perm;
+    }
+    return Math.round(
+      10 * Services.prefs.getFloatPref("webgl.stereo-camera.separation", 2.0)
+    );
+  }
+
+  setCanvasStereo(on) {
+    Services.perms.addFromPrincipal(
+      this.principal,
+      "stereo-camera",
+      on ? Services.perms.ALLOW_ACTION : Services.perms.DENY_ACTION
+    );
+  }
+
+  setCanvasStereoDepth(name) {
+    const value = CANVAS_STEREO_DEPTHS[name];
+    if (value) {
+      Services.perms.addFromPrincipal(
+        this.principal,
+        "stereo-camera-depth",
+        value
+      );
+    }
   }
 
   mediaCommand(command, data) {

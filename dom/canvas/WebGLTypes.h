@@ -836,14 +836,17 @@ struct SwapChainOptions final {
   bool flatXR = false;
   // The camera hack (WebGLStereoCamera.h): the canvas presents both eyes.
   bool stereoCamera = false;
+  // The camera hack's depth for the canvas's site (the 3D Canvas menu): the
+  // eyes' separation in tenths of a percent of the view's width, 0 for
+  // webgl.stereo-camera.separation.
+  uint8_t stereoDepth = 0;
   // Pad to sizeof(u64):
-  uint8_t padding2 = 0;
   uint16_t padding3 = 0;
 
   auto MutTiedFields() {
     return std::tie(remoteTextureId, remoteTextureOwnerId, bgra,
                     forceAsyncPresent, stereoMode, flatXR, stereoCamera,
-                    padding2, padding3);
+                    stereoDepth, padding3);
   }
 };
 

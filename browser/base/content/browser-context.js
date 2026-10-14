@@ -122,6 +122,20 @@ document.addEventListener(
         case "context-video-stereo-swap":
           gContextMenu.mediaCommand("stereoSwap");
           break;
+        case "context-canvas-stereo-off":
+          gContextMenu.setCanvasStereo(false);
+          break;
+        case "context-canvas-stereo-on":
+          gContextMenu.setCanvasStereo(true);
+          break;
+        case "context-canvas-stereo-depth-less":
+        case "context-canvas-stereo-depth-normal":
+        case "context-canvas-stereo-depth-more":
+        case "context-canvas-stereo-depth-most":
+          gContextMenu.setCanvasStereoDepth(
+            event.target.id.slice("context-canvas-stereo-depth-".length)
+          );
+          break;
         case "context-leave-dom-fullscreen":
           gContextMenu.leaveDOMFullScreen();
           break;

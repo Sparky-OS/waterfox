@@ -5,6 +5,7 @@
 #include "WebGLBuffer.h"
 
 #include "mozilla/StaticPrefs_webgl.h"
+#include "mozilla/gfx/gfxVars.h"
 
 #include "GLContext.h"
 #include "WebGLContext.h"
@@ -156,7 +157,7 @@ void WebGLBuffer::BufferData(const GLenum target, const uint64_t size,
 
   mStereoShadow.clear();
   if (target == LOCAL_GL_UNIFORM_BUFFER && size <= 64 * 1024 &&
-      StaticPrefs::webgl_stereo_camera_enabled()) {
+      gfx::gfxVars::StereoContentDeclaration()) {
     mStereoShadow.assign(size, 0);
     if (uploadData) {
       memcpy(mStereoShadow.data(), uploadData, size);
