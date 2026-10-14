@@ -907,6 +907,10 @@ class PlanarYCbCrImage : public Image {
    */
   virtual const Data* GetData() const { return &mData; }
 
+  // The picture's stereo mode, once the decoder knows it for this frame (the
+  // frame packing SEI comes with the decoded frame, after its buffer).
+  void SetStereoMode(StereoMode aMode) { mData.mStereoMode = aMode; }
+
   /**
    * Return the number of bytes of heap memory used to store this image.
    */

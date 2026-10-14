@@ -2088,6 +2088,9 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateImage(
         mLib->av_buffer_get_opaque(mFrame->buf[0]));
     MOZ_ASSERT(wrapper);
     FFMPEG_LOGV("Create a video data from a shmem image={}", fmt::ptr(wrapper));
+    if (PlanarYCbCrImage* planar = wrapper->AsImage()->AsPlanarYCbCrImage()) {
+      planar->SetStereoMode(FrameStereoMode());
+    }
     v = VideoData::CreateFromImage(
         mInfo.mDisplay, aOffset, TimeUnit::FromMicroseconds(aPts),
         TimeUnit::FromMicroseconds(aDuration), wrapper->AsImage(),
@@ -2147,9 +2150,14 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateImage(
         return ret;
       }
     }
+    // The frame's own stereo mark (the frame packing SEI) before the
+    // container's.
+    VideoInfo info = mInfo;
+    info.mStereoMode = FrameStereoMode();
+    info.mStereoSource = FrameStereoSource();
     Result<already_AddRefed<VideoData>, MediaResult> r =
         VideoData::CreateAndCopyData(
-            mInfo, mImageContainer, aOffset, TimeUnit::FromMicroseconds(aPts),
+            info, mImageContainer, aOffset, TimeUnit::FromMicroseconds(aPts),
             TimeUnit::FromMicroseconds(aDuration), b, IsKeyFrame(mFrame),
             TimeUnit::FromMicroseconds(mFrame->pkt_dts),
             mInfo.ScaledImageRect(mFrame->width, mFrame->height),
