@@ -518,6 +518,36 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
 
   void DrawPerEye(const std::function<void()>& aDraw);
 
+  // Per-eye render targets (webgl.stereo-camera.render-targets): a page
+  // framebuffer the page draws its scene into gets a right eye's copy of
+  // each attachment, drawn with the right eye's camera; draws that sample
+  // such a texture are drawn once per eye too, the right eye's draw sampling
+  // the copies. A framebuffer holds two eyes once one of its colour
+  // attachments' copies holds the right eye's picture.
+  bool StereoTargetsActive();
+  bool HasStereoCamera() const;
+  GLuint StereoTwinTexture(WebGLTexture& aTex);
+  GLuint StereoTwinRenderbuffer(WebGLRenderbuffer& aRb);
+  bool EnsureStereoTwinFB(WebGLFramebuffer& aFb);
+  void ApplyStereoTwinDrawBuffers(const WebGLFramebuffer& aFb);
+  bool StereoTargetHoldsEyes(const WebGLFramebuffer& aFb) const;
+  bool StereoTargetPerEye(WebGLFramebuffer& aFb);
+  void SyncStereoTwin(WebGLFramebuffer& aFb);
+  void MarkStereoTwinsValid(WebGLFramebuffer& aFb);
+  bool StereoSamplesTwins() const;
+  bool BindStereoTwins(bool aRight);
+
+ public:
+  // The camera hack: a clear of the bound draw framebuffer repeated on the
+  // right eye's framebuffer, when it has one.
+  void StereoRepeat(const std::function<void()>& aOp);
+  // After a blit: the same blit between the right eyes' framebuffers.
+  void StereoBlit(GLint aSrcX0, GLint aSrcY0, GLint aSrcX1, GLint aSrcY1,
+                  GLint aDstX0, GLint aDstY0, GLint aDstX1, GLint aDstY1,
+                  GLbitfield aMask, GLenum aFilter);
+
+ private:
+
  public:
   // Present swaps the front and back buffers of the swap chain for compositing.
   // This assumes the framebuffer may directly alias with the back buffer,
@@ -1336,6 +1366,8 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   // once into the page's own framebuffers.
   uint32_t mStereoEyeDraws = 0;
   uint32_t mStereoOffscreenDraws = 0;
+  // Draws once per eye into the page's own framebuffers.
+  uint32_t mStereoTargetDraws = 0;
   gl::SwapChain mSnapshotSwapChain;
 
   RefPtr<layers::RemoteTextureOwnerClient> mRemoteTextureOwner;

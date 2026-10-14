@@ -35,6 +35,17 @@ class WebGLRenderbuffer final : public WebGLContextBoundObject,
   explicit WebGLRenderbuffer(WebGLContext* webgl);
 
   const auto& ImageInfo() const { return mImageInfo; }
+  bool HasSecondaryRB() const { return mSecondaryRB != 0; }
+
+  // The camera hack's per-eye render targets (WebGLContext::
+  // StereoTwinRenderbuffer): the right eye's copy, 0 for none, and whether
+  // it holds the right eye's picture.
+  GLuint mStereoTwin = 0;
+  const webgl::FormatUsageInfo* mStereoTwinUsage = nullptr;
+  uint32_t mStereoTwinWidth = 0;
+  uint32_t mStereoTwinHeight = 0;
+  uint8_t mStereoTwinSamples = 0;
+  bool mStereoTwinValid = false;
 
   void RenderbufferStorage(uint32_t samples, GLenum internalFormat,
                            uint32_t width, uint32_t height);

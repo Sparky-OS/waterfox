@@ -141,6 +141,11 @@ class WebGLFramebuffer final : public WebGLContextBoundObject,
 
   const GLuint mGLName;
   bool mHasBeenBound = false;
+  // The camera hack's per-eye render targets (WebGLContext::
+  // EnsureStereoTwinFB): the right eye's framebuffer, made of the right
+  // eye's copies of the attachments (attachment point, copy), 0 for none.
+  GLuint mStereoTwinFB = 0;
+  std::vector<std::pair<GLenum, GLuint>> mStereoTwinAttachments;
   const UniquePtr<gl::MozFramebuffer> mOpaque;
   bool mInOpaqueRAF = false;
   // Swap chain that may be used to present this framebuffer, for opaque

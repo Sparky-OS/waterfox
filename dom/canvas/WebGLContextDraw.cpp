@@ -680,25 +680,49 @@ static bool HasInstancedDrawing(const WebGLContext& webgl) {
 ////////////////////////////////////////
 
 // The camera hack (WebGLStereoCamera.h): a draw into the default framebuffer
-// is drawn once per eye; draws into the page's own framebuffers (shadow maps,
-// render targets) once.
+// is drawn once per eye. A draw into one of the page's own framebuffers is
+// drawn once per eye when that framebuffer holds the scene for
+// post-processing (StereoTargetPerEye), once otherwise (shadow maps). The
+// right eye's draw samples the right eye's copies of the textures it reads.
 void WebGLContext::DrawPerEye(const std::function<void()>& aDraw) {
-  if (!StereoCameraDraws()) {
+  const float s = StaticPrefs::webgl_stereo_camera_separation() / 100.0f;
+  if (StereoCameraDraws()) {
+    UploadStereoCameras(-s);
     aDraw();
-    if (mBoundDrawFramebuffer) {
-      mStereoOffscreenDraws++;
+    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mStereoRightFB->mFB);
+    UploadStereoCameras(s);
+    const bool swapped = BindStereoTwins(true);
+    aDraw();
+    if (swapped) {
+      BindStereoTwins(false);
     }
+    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mDefaultFB->mFB);
+    UploadStereoCameras(0.0f);
+    mStereoEyeDraws++;
     return;
   }
-  const float s = StaticPrefs::webgl_stereo_camera_separation() / 100.0f;
-  UploadStereoCameras(-s);
+  if (mBoundDrawFramebuffer && StereoTargetPerEye(*mBoundDrawFramebuffer)) {
+    auto& fb = *mBoundDrawFramebuffer;
+    SyncStereoTwin(fb);
+    UploadStereoCameras(-s);
+    aDraw();
+    ApplyStereoTwinDrawBuffers(fb);
+    UploadStereoCameras(s);
+    const bool swapped = BindStereoTwins(true);
+    aDraw();
+    if (swapped) {
+      BindStereoTwins(false);
+    }
+    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, fb.mGLName);
+    UploadStereoCameras(0.0f);
+    MarkStereoTwinsValid(fb);
+    mStereoTargetDraws++;
+    return;
+  }
   aDraw();
-  gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mStereoRightFB->mFB);
-  UploadStereoCameras(s);
-  aDraw();
-  gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mDefaultFB->mFB);
-  UploadStereoCameras(0.0f);
-  mStereoEyeDraws++;
+  if (mBoundDrawFramebuffer) {
+    mStereoOffscreenDraws++;
+  }
 }
 
 void WebGLContext::DrawArraysInstanced(const GLenum mode, const GLint first,

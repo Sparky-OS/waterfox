@@ -894,6 +894,8 @@ static bool ValidateFormatAndSize(const WebGLContext* webgl,
 
 void WebGLTexture::TexStorage(TexTarget target, uint32_t levels,
                               GLenum sizedFormat, const uvec3& size) {
+  // The right eye's copy no longer follows (per-eye render targets).
+  mStereoTwinValid = false;
   // Check levels
   if (levels < 1) {
     mContext->ErrorInvalidValue("`levels` must be >= 1.");
@@ -1008,6 +1010,8 @@ void WebGLTexture::TexStorage(TexTarget target, uint32_t levels,
 void WebGLTexture::TexImage(uint32_t level, GLenum respecFormat,
                             const uvec3& offset, const webgl::PackingInfo& pi,
                             const webgl::TexUnpackBlobDesc& src) {
+  // The right eye's copy no longer follows (per-eye render targets).
+  mStereoTwinValid = false;
   const auto blob = webgl::TexUnpackBlob::Create(src);
   if (!blob) {
     MOZ_ASSERT(false);
@@ -1229,6 +1233,8 @@ void WebGLTexture::CompressedTexImage(bool sub, GLenum imageTarget,
                                       const Range<const uint8_t>& src,
                                       const uint32_t pboImageSize,
                                       const Maybe<uint64_t>& pboOffset) {
+  // The right eye's copy no longer follows (per-eye render targets).
+  mStereoTwinValid = false;
   auto imageSize = pboImageSize;
   if (pboOffset) {
     const auto& buffer =
@@ -1886,6 +1892,8 @@ static bool DoCopyTexOrSubImage(WebGLContext* webgl, bool isSubImage,
 void WebGLTexture::CopyTexImage(GLenum imageTarget, uint32_t level,
                                 GLenum respecFormat, const uvec3& dstOffset,
                                 const ivec2& srcOffset, const uvec2& size2) {
+  // The right eye's copy no longer follows (per-eye render targets).
+  mStereoTwinValid = false;
   ////////////////////////////////////
   // Get source info
 

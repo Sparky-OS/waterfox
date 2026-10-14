@@ -87,6 +87,9 @@ WebGLTexture::~WebGLTexture() {
 
   if (!mContext) return;
   mContext->gl->fDeleteTextures(1, &mGLName);
+  if (mStereoTwin) {
+    mContext->gl->fDeleteTextures(1, &mStereoTwin);
+  }
 }
 
 size_t WebGLTexture::MemoryUsage() const {

@@ -539,6 +539,9 @@ WebGLFramebuffer::~WebGLFramebuffer() {
   if (!mOpaque) {
     mContext->gl->fDeleteFramebuffers(1, &mGLName);
   }
+  if (mStereoTwinFB) {
+    mContext->gl->fDeleteFramebuffers(1, &mStereoTwinFB);
+  }
 }
 
 ////
@@ -1610,6 +1613,9 @@ void WebGLFramebuffer::BlitFramebuffer(WebGLContext* webgl, GLint _srcX0,
 
   gl->fBlitFramebuffer(srcP0.x, srcP0.y, srcP1.x, srcP1.y, dstP0.x, dstP0.y,
                        dstP1.x, dstP1.y, mask, filter);
+  // The camera hack: the right eye's framebuffers get the right eye's blit.
+  webgl->StereoBlit(srcP0.x, srcP0.y, srcP1.x, srcP1.y, dstP0.x, dstP0.y,
+                    dstP1.x, dstP1.y, mask, filter);
 
   // -
 

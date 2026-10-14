@@ -53,6 +53,9 @@ WebGLRenderbuffer::~WebGLRenderbuffer() {
   if (mSecondaryRB) {
     mContext->gl->fDeleteRenderbuffers(1, &mSecondaryRB);
   }
+  if (mStereoTwin) {
+    mContext->gl->fDeleteRenderbuffers(1, &mStereoTwin);
+  }
 }
 
 static GLenum DoRenderbufferStorageMaybeMultisample(gl::GLContext* gl,
@@ -146,6 +149,8 @@ GLenum WebGLRenderbuffer::DoRenderbufferStorage(
 void WebGLRenderbuffer::RenderbufferStorage(uint32_t samples,
                                             GLenum internalFormat,
                                             uint32_t width, uint32_t height) {
+  // The right eye's copy no longer follows (per-eye render targets).
+  mStereoTwinValid = false;
   const auto usage = mContext->mFormatUsage->GetRBUsage(internalFormat);
   if (!usage) {
     mContext->ErrorInvalidEnum("Invalid `internalFormat`: 0x%04x.",

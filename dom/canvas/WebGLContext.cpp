@@ -73,6 +73,8 @@
 #include "WebGLFormats.h"
 #include "WebGLFramebuffer.h"
 #include "WebGLMemoryTracker.h"
+#include "WebGLRenderbuffer.h"
+#include "WebGLTexture.h"
 #include "WebGLObjectModel.h"
 #include "WebGLParent.h"
 #include "WebGLProgram.h"
@@ -563,20 +565,14 @@ bool WebGLContext::EnsureStereoRightFB() {
   return true;
 }
 
-void WebGLContext::UploadStereoCameras(const float aShift) const {
-  if (!mActiveProgramLinkInfo) {
-    return;
-  }
-  const auto& link = *mActiveProgramLinkInfo;
-  for (const auto& [loc, camera] : link.stereoCameras) {
-    const auto m = webgl::StereoCameraEye(camera, aShift);
-    gl->fUniformMatrix4fv(static_cast<GLint>(loc), 1, false, m.data());
-  }
-
-  // Cameras in uniform blocks (WebGL 2 engines keep the scene's matrices in
-  // a uniform buffer): read from the buffer's copy, written back per eye.
-  bool rebound = false;
-  for (const auto& block : link.uniformBlocks) {
+// Cameras in uniform blocks (WebGL 2 engines keep the scene's matrices in a
+// uniform buffer), read from the buffers' copies: aFn(buffer, offset,
+// length, stride, row major, camera) for each.
+static void ForEachBlockCamera(
+    const webgl::LinkedProgramInfo& aLink,
+    const std::function<void(const WebGLBuffer&, uint64_t, uint64_t, uint64_t,
+                             bool, const webgl::StereoCamera&)>& aFn) {
+  for (const auto& block : aLink.uniformBlocks) {
     const auto* binding = block.binding;
     if (!binding || !binding->mBufferBinding ||
         binding->mBufferBinding->mStereoShadow.empty()) {
@@ -585,10 +581,10 @@ void WebGLContext::UploadStereoCameras(const float aShift) const {
     const auto& buffer = *binding->mBufferBinding;
     const auto& shadow = buffer.mStereoShadow;
     for (const auto index : block.info.activeUniformIndices) {
-      if (index >= link.active.activeUniforms.size()) {
+      if (index >= aLink.active.activeUniforms.size()) {
         continue;
       }
-      const auto& uniform = link.active.activeUniforms[index];
+      const auto& uniform = aLink.active.activeUniforms[index];
       if (uniform.elemType != LOCAL_GL_FLOAT_MAT4 || uniform.elemCount != 1 ||
           uniform.block_offset < 0) {
         continue;
@@ -608,28 +604,542 @@ void WebGLContext::UploadStereoCameras(const float aShift) const {
         memcpy(&m[i], shadow.data() + offset + major * stride + minor * 4, 4);
       }
       const auto camera = webgl::ClassifyStereoCamera(
-          m.data(), uniform.name, StaticPrefs::webgl_stereo_camera_convergence());
-      if (!camera) {
-        continue;
+          m.data(), uniform.name,
+          StaticPrefs::webgl_stereo_camera_convergence());
+      if (camera) {
+        aFn(buffer, offset, length, stride, uniform.block_isRowMajor, *camera);
       }
-      std::vector<uint8_t> bytes(shadow.begin() + offset,
-                                 shadow.begin() + offset + length);
-      if (aShift != 0.0f) {
-        const auto eye = webgl::StereoCameraEye(*camera, aShift);
-        for (int i = 0; i < 16; i++) {
-          const int major = uniform.block_isRowMajor ? i % 4 : i / 4;
-          const int minor = uniform.block_isRowMajor ? i / 4 : i % 4;
-          memcpy(bytes.data() + major * stride + minor * 4, &eye[i], 4);
-        }
-      }
-      gl->fBindBuffer(LOCAL_GL_UNIFORM_BUFFER, buffer.mGLName);
-      gl->fBufferSubData(LOCAL_GL_UNIFORM_BUFFER, offset, length, bytes.data());
-      rebound = true;
     }
   }
+}
+
+bool WebGLContext::HasStereoCamera() const {
+  if (!mActiveProgramLinkInfo) {
+    return false;
+  }
+  const auto& link = *mActiveProgramLinkInfo;
+  if (!link.stereoCameras.empty()) {
+    return true;
+  }
+  bool found = false;
+  ForEachBlockCamera(link, [&](const WebGLBuffer&, uint64_t, uint64_t,
+                               uint64_t, bool, const webgl::StereoCamera&) {
+    found = true;
+  });
+  return found;
+}
+
+void WebGLContext::UploadStereoCameras(const float aShift) const {
+  if (!mActiveProgramLinkInfo) {
+    return;
+  }
+  const auto& link = *mActiveProgramLinkInfo;
+  for (const auto& [loc, camera] : link.stereoCameras) {
+    const auto m = webgl::StereoCameraEye(camera, aShift);
+    gl->fUniformMatrix4fv(static_cast<GLint>(loc), 1, false, m.data());
+  }
+
+  // Cameras in uniform blocks: written back per eye.
+  bool rebound = false;
+  ForEachBlockCamera(
+      link, [&](const WebGLBuffer& buffer, const uint64_t offset,
+                const uint64_t length, const uint64_t stride,
+                const bool rowMajor, const webgl::StereoCamera& camera) {
+        const auto& shadow = buffer.mStereoShadow;
+        std::vector<uint8_t> bytes(shadow.begin() + offset,
+                                   shadow.begin() + offset + length);
+        if (aShift != 0.0f) {
+          const auto eye = webgl::StereoCameraEye(camera, aShift);
+          for (int i = 0; i < 16; i++) {
+            const int major = rowMajor ? i % 4 : i / 4;
+            const int minor = rowMajor ? i / 4 : i % 4;
+            memcpy(bytes.data() + major * stride + minor * 4, &eye[i], 4);
+          }
+        }
+        gl->fBindBuffer(LOCAL_GL_UNIFORM_BUFFER, buffer.mGLName);
+        gl->fBufferSubData(LOCAL_GL_UNIFORM_BUFFER, offset, length,
+                           bytes.data());
+        rebound = true;
+      });
   if (rebound) {
     gl->fBindBuffer(LOCAL_GL_UNIFORM_BUFFER,
                     mBoundUniformBuffer ? mBoundUniformBuffer->mGLName : 0);
+  }
+}
+
+// -
+// Per-eye render targets (WebGLContext.h).
+
+bool WebGLContext::StereoTargetsActive() {
+  return mStereoCamera && StaticPrefs::webgl_stereo_camera_render_targets() &&
+         mDefaultFB && EnsureStereoRightFB();
+}
+
+// The right eye's copy of level 0 of a 2D texture: the same size and format.
+GLuint WebGLContext::StereoTwinTexture(WebGLTexture& aTex) {
+  if (aTex.Target().get() != LOCAL_GL_TEXTURE_2D) {
+    return 0;
+  }
+  const auto& info = aTex.ImageInfoAtFace(0, 0);
+  if (!info.IsDefined() || !info.mFormat->format->sizedFormat) {
+    return 0;
+  }
+  const GLenum format = info.mFormat->format->sizedFormat;
+  if (aTex.mStereoTwin && aTex.mStereoTwinFormat == format &&
+      aTex.mStereoTwinWidth == info.mWidth &&
+      aTex.mStereoTwinHeight == info.mHeight) {
+    return aTex.mStereoTwin;
+  }
+  if (aTex.mStereoTwin) {
+    gl->fDeleteTextures(1, &aTex.mStereoTwin);
+    aTex.mStereoTwin = 0;
+  }
+  aTex.mStereoTwinValid = false;
+  aTex.mStereoTwinSampling = Nothing();
+
+  gl::GLContext::LocalErrorScope errorScope(*gl);
+  GLuint name = 0;
+  gl->fGenTextures(1, &name);
+  {
+    const gl::ScopedBindTexture bind(gl, name, LOCAL_GL_TEXTURE_2D);
+    if (gl->IsSupported(gl::GLFeature::texture_storage)) {
+      gl->fTexStorage2D(LOCAL_GL_TEXTURE_2D, 1, format, info.mWidth,
+                        info.mHeight);
+    } else if (const auto* unpack = info.mFormat->idealUnpack) {
+      gl->fTexImage2D(LOCAL_GL_TEXTURE_2D, 0, unpack->internalFormat,
+                      info.mWidth, info.mHeight, 0, unpack->unpackFormat,
+                      unpack->unpackType, nullptr);
+      gl->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MAX_LEVEL, 0);
+    }
+  }
+  if (errorScope.GetError()) {
+    gl->fDeleteTextures(1, &name);
+    return 0;
+  }
+  aTex.mStereoTwin = name;
+  aTex.mStereoTwinFormat = format;
+  aTex.mStereoTwinWidth = info.mWidth;
+  aTex.mStereoTwinHeight = info.mHeight;
+  return name;
+}
+
+// The right eye's copy of a renderbuffer: the driver's own format and
+// sample count.
+GLuint WebGLContext::StereoTwinRenderbuffer(WebGLRenderbuffer& aRb) {
+  const auto& info = aRb.ImageInfo();
+  if (aRb.HasSecondaryRB() || !info.IsDefined()) {
+    return 0;
+  }
+  if (aRb.mStereoTwin && aRb.mStereoTwinUsage == info.mFormat &&
+      aRb.mStereoTwinSamples == info.mSamples &&
+      aRb.mStereoTwinWidth == info.mWidth &&
+      aRb.mStereoTwinHeight == info.mHeight) {
+    return aRb.mStereoTwin;
+  }
+  if (aRb.mStereoTwin) {
+    gl->fDeleteRenderbuffers(1, &aRb.mStereoTwin);
+    aRb.mStereoTwin = 0;
+  }
+  aRb.mStereoTwinValid = false;
+
+  GLint format = 0;
+  GLint samples = 0;
+  {
+    const gl::ScopedBindRenderbuffer bind(gl, aRb.mPrimaryRB);
+    gl->fGetRenderbufferParameteriv(LOCAL_GL_RENDERBUFFER,
+                                    LOCAL_GL_RENDERBUFFER_INTERNAL_FORMAT,
+                                    &format);
+    if (gl->IsSupported(gl::GLFeature::framebuffer_multisample)) {
+      gl->fGetRenderbufferParameteriv(LOCAL_GL_RENDERBUFFER,
+                                      LOCAL_GL_RENDERBUFFER_SAMPLES, &samples);
+    }
+  }
+  if (!format) {
+    return 0;
+  }
+  gl::GLContext::LocalErrorScope errorScope(*gl);
+  GLuint name = 0;
+  gl->fGenRenderbuffers(1, &name);
+  {
+    const gl::ScopedBindRenderbuffer bind(gl, name);
+    if (samples > 0) {
+      gl->fRenderbufferStorageMultisample(LOCAL_GL_RENDERBUFFER, samples,
+                                          format, info.mWidth, info.mHeight);
+    } else {
+      gl->fRenderbufferStorage(LOCAL_GL_RENDERBUFFER, format, info.mWidth,
+                               info.mHeight);
+    }
+  }
+  if (errorScope.GetError()) {
+    gl->fDeleteRenderbuffers(1, &name);
+    return 0;
+  }
+  aRb.mStereoTwin = name;
+  aRb.mStereoTwinUsage = info.mFormat;
+  aRb.mStereoTwinSamples = info.mSamples;
+  aRb.mStereoTwinWidth = info.mWidth;
+  aRb.mStereoTwinHeight = info.mHeight;
+  return name;
+}
+
+// The right eye's framebuffer: each attachment's copy at the same point, the
+// same draw buffers. Not for attachments the copies do not cover (cube
+// faces, layers, mipmap levels, multiview): those framebuffers hold one view.
+bool WebGLContext::EnsureStereoTwinFB(WebGLFramebuffer& aFb) {
+  std::vector<std::pair<GLenum, GLuint>> wanted;
+  std::vector<bool> isTexture;
+  for (const auto* attach : aFb.Attachments()) {
+    if (!attach->HasAttachment()) {
+      continue;
+    }
+    GLuint twin = 0;
+    if (auto* tex = attach->Texture()) {
+      if (tex->Target().get() != LOCAL_GL_TEXTURE_2D || attach->MipLevel() != 0 ||
+          attach->IsMultiview()) {
+        return false;
+      }
+      twin = StereoTwinTexture(*tex);
+      isTexture.push_back(true);
+    } else if (auto* rb = attach->Renderbuffer()) {
+      twin = StereoTwinRenderbuffer(*rb);
+      isTexture.push_back(false);
+    }
+    if (!twin) {
+      return false;
+    }
+    wanted.emplace_back(attach->mAttachmentPoint, twin);
+  }
+  if (wanted.empty()) {
+    return false;
+  }
+  if (aFb.mStereoTwinFB && wanted == aFb.mStereoTwinAttachments) {
+    return true;
+  }
+
+  const gl::ScopedBindFramebuffer bindFb(gl);
+  if (aFb.mStereoTwinFB) {
+    gl->fDeleteFramebuffers(1, &aFb.mStereoTwinFB);
+    aFb.mStereoTwinFB = 0;
+    aFb.mStereoTwinAttachments.clear();
+  }
+  GLuint fb = 0;
+  gl->fGenFramebuffers(1, &fb);
+  gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, fb);
+  for (size_t i = 0; i < wanted.size(); i++) {
+    const auto& [point, twin] = wanted[i];
+    if (isTexture[i]) {
+      if (point == LOCAL_GL_DEPTH_STENCIL_ATTACHMENT) {
+        gl->fFramebufferTexture2D(LOCAL_GL_DRAW_FRAMEBUFFER,
+                                  LOCAL_GL_DEPTH_ATTACHMENT,
+                                  LOCAL_GL_TEXTURE_2D, twin, 0);
+        gl->fFramebufferTexture2D(LOCAL_GL_DRAW_FRAMEBUFFER,
+                                  LOCAL_GL_STENCIL_ATTACHMENT,
+                                  LOCAL_GL_TEXTURE_2D, twin, 0);
+      } else {
+        gl->fFramebufferTexture2D(LOCAL_GL_DRAW_FRAMEBUFFER, point,
+                                  LOCAL_GL_TEXTURE_2D, twin, 0);
+      }
+    } else {
+      gl->fFramebufferRenderbuffer(LOCAL_GL_DRAW_FRAMEBUFFER, point,
+                                   LOCAL_GL_RENDERBUFFER, twin);
+    }
+  }
+  aFb.mStereoTwinFB = fb;
+  aFb.mStereoTwinAttachments = wanted;
+  ApplyStereoTwinDrawBuffers(aFb);
+  if (gl->fCheckFramebufferStatus(LOCAL_GL_DRAW_FRAMEBUFFER) !=
+      LOCAL_GL_FRAMEBUFFER_COMPLETE) {
+    gl->fDeleteFramebuffers(1, &aFb.mStereoTwinFB);
+    aFb.mStereoTwinFB = 0;
+    aFb.mStereoTwinAttachments.clear();
+    return false;
+  }
+  return true;
+}
+
+// The right eye's framebuffer draws into the same colour attachments as the
+// page's framebuffer (binds it as the draw framebuffer).
+void WebGLContext::ApplyStereoTwinDrawBuffers(const WebGLFramebuffer& aFb) {
+  gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, aFb.mStereoTwinFB);
+  if (!gl->IsSupported(gl::GLFeature::draw_buffers)) {
+    return;
+  }
+  std::vector<GLenum> buffers(Limits().maxColorDrawBuffers, LOCAL_GL_NONE);
+  for (const auto& attach : aFb.ColorDrawBuffers()) {
+    if (attach->HasAttachment()) {
+      const uint32_t index = attach->mAttachmentPoint - LOCAL_GL_COLOR_ATTACHMENT0;
+      if (index < buffers.size()) {
+        buffers[index] = attach->mAttachmentPoint;
+      }
+    }
+  }
+  gl->fDrawBuffers(buffers.size(), buffers.data());
+}
+
+bool WebGLContext::StereoTargetHoldsEyes(const WebGLFramebuffer& aFb) const {
+  for (const auto* attach : aFb.Attachments()) {
+    if (!attach->ColorAttachmentId()) {
+      continue;
+    }
+    if (const auto* tex = attach->Texture()) {
+      if (tex->mStereoTwin && tex->mStereoTwinValid) {
+        return true;
+      }
+    } else if (const auto* rb = attach->Renderbuffer()) {
+      if (rb->mStereoTwin && rb->mStereoTwinValid) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// A draw into a page framebuffer is drawn once per eye when the framebuffer
+// holds two eyes already, when the draw samples a texture that holds two
+// eyes, or when it draws through the page's camera into a framebuffer of
+// the canvas's shape (the scene drawn for post-processing; a light's shadow
+// map, square and drawn from the light, stays one picture).
+bool WebGLContext::StereoTargetPerEye(WebGLFramebuffer& aFb) {
+  if (!StereoTargetsActive()) {
+    return false;
+  }
+  bool perEye = StereoTargetHoldsEyes(aFb) || StereoSamplesTwins();
+  if (!perEye && HasStereoCamera()) {
+    const auto* info = aFb.GetCompletenessInfo();
+    const auto& canvas = mDefaultFB->mSize;
+    if (info && info->width && info->height && canvas.width > 0 &&
+        canvas.height > 0) {
+      const double target = double(info->width) / info->height;
+      const double shape = double(canvas.width) / canvas.height;
+      perEye = std::fabs(target - shape) <= 0.02 * shape;
+    }
+  }
+  return perEye && EnsureStereoTwinFB(aFb);
+}
+
+// Copies that do not hold the right eye's picture start from what the
+// attachment holds.
+void WebGLContext::SyncStereoTwin(WebGLFramebuffer& aFb) {
+  std::vector<GLenum> colors;
+  GLbitfield depthStencil = 0;
+  for (const auto* attach : aFb.Attachments()) {
+    if (!attach->HasAttachment()) {
+      continue;
+    }
+    const bool valid = attach->Texture()
+                           ? attach->Texture()->mStereoTwinValid
+                           : attach->Renderbuffer()->mStereoTwinValid;
+    if (valid) {
+      continue;
+    }
+    switch (attach->mAttachmentPoint) {
+      case LOCAL_GL_DEPTH_ATTACHMENT:
+        depthStencil |= LOCAL_GL_DEPTH_BUFFER_BIT;
+        break;
+      case LOCAL_GL_STENCIL_ATTACHMENT:
+        depthStencil |= LOCAL_GL_STENCIL_BUFFER_BIT;
+        break;
+      case LOCAL_GL_DEPTH_STENCIL_ATTACHMENT:
+        depthStencil |= LOCAL_GL_DEPTH_BUFFER_BIT | LOCAL_GL_STENCIL_BUFFER_BIT;
+        break;
+      default:
+        colors.push_back(attach->mAttachmentPoint);
+        break;
+    }
+  }
+  const auto* info = aFb.GetCompletenessInfo();
+  if ((colors.empty() && !depthStencil) || !info) {
+    return;
+  }
+  const GLint w = info->width;
+  const GLint h = info->height;
+  const gl::ScopedBindFramebuffer bindFb(gl);
+  if (mScissorTestEnabled) {
+    gl->fDisable(LOCAL_GL_SCISSOR_TEST);
+  }
+  gl->fBindFramebuffer(LOCAL_GL_READ_FRAMEBUFFER, aFb.mGLName);
+  gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, aFb.mStereoTwinFB);
+  for (const GLenum color : colors) {
+    gl->fReadBuffer(color);
+    std::vector<GLenum> buffers(color - LOCAL_GL_COLOR_ATTACHMENT0 + 1,
+                                LOCAL_GL_NONE);
+    buffers.back() = color;
+    gl->fDrawBuffers(buffers.size(), buffers.data());
+    gl->fBlitFramebuffer(0, 0, w, h, 0, 0, w, h, LOCAL_GL_COLOR_BUFFER_BIT,
+                         LOCAL_GL_NEAREST);
+  }
+  if (depthStencil) {
+    gl->fBlitFramebuffer(0, 0, w, h, 0, 0, w, h, depthStencil,
+                         LOCAL_GL_NEAREST);
+  }
+  // The page's framebuffer reads from where the page set it.
+  gl->fBindFramebuffer(LOCAL_GL_READ_FRAMEBUFFER, aFb.mGLName);
+  const auto* read = aFb.ColorReadBuffer();
+  gl->fReadBuffer(read && read->HasAttachment() ? read->mAttachmentPoint
+                                                : LOCAL_GL_NONE);
+  ApplyStereoTwinDrawBuffers(aFb);
+  if (mScissorTestEnabled) {
+    gl->fEnable(LOCAL_GL_SCISSOR_TEST);
+  }
+}
+
+void WebGLContext::MarkStereoTwinsValid(WebGLFramebuffer& aFb) {
+  for (const auto* attach : aFb.Attachments()) {
+    if (auto* tex = attach->Texture()) {
+      tex->mStereoTwinValid = true;
+    } else if (auto* rb = attach->Renderbuffer()) {
+      rb->mStereoTwinValid = true;
+    }
+  }
+}
+
+bool WebGLContext::StereoSamplesTwins() const {
+  if (!mActiveProgramLinkInfo) {
+    return false;
+  }
+  for (const auto& pUniform : mActiveProgramLinkInfo->samplerUniforms) {
+    const auto& uniform = *pUniform;
+    if (&uniform.texListForType != &mBound2DTextures) {
+      continue;
+    }
+    for (const auto& unit : uniform.texUnits) {
+      if (unit >= mBound2DTextures.Length()) {
+        continue;
+      }
+      const auto* tex = mBound2DTextures[unit].get();
+      if (tex && tex->mStereoTwin && tex->mStereoTwinValid) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// For the right eye's draw, the textures the draw samples that hold two eyes
+// are swapped for their right eye's copies (with the texture's sampling
+// state); swapped back after. Returns whether any was.
+bool WebGLContext::BindStereoTwins(const bool aRight) {
+  if (!mActiveProgramLinkInfo) {
+    return false;
+  }
+  bool any = false;
+  for (const auto& pUniform : mActiveProgramLinkInfo->samplerUniforms) {
+    const auto& uniform = *pUniform;
+    if (&uniform.texListForType != &mBound2DTextures) {
+      continue;
+    }
+    for (const auto& unit : uniform.texUnits) {
+      if (unit >= mBound2DTextures.Length()) {
+        continue;
+      }
+      auto* tex = mBound2DTextures[unit].get();
+      if (!tex || !tex->mStereoTwin || !tex->mStereoTwinValid) {
+        continue;
+      }
+      gl->fActiveTexture(LOCAL_GL_TEXTURE0 + unit);
+      gl->fBindTexture(LOCAL_GL_TEXTURE_2D,
+                       aRight ? tex->mStereoTwin : tex->mGLName);
+      any = true;
+      if (!aRight) {
+        continue;
+      }
+      const auto& want = tex->mSamplingState;
+      const auto& have = tex->mStereoTwinSampling;
+      if (!have || have->minFilter.get() != want.minFilter.get() ||
+          have->magFilter.get() != want.magFilter.get() ||
+          have->wrapS.get() != want.wrapS.get() ||
+          have->wrapT.get() != want.wrapT.get() ||
+          have->compareMode.get() != want.compareMode.get()) {
+        // The copy has one level: a mipmap filter samples it.
+        gl->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MIN_FILTER,
+                           want.minFilter.get());
+        gl->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_MAG_FILTER,
+                           want.magFilter.get());
+        gl->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_WRAP_S,
+                           want.wrapS.get());
+        gl->fTexParameteri(LOCAL_GL_TEXTURE_2D, LOCAL_GL_TEXTURE_WRAP_T,
+                           want.wrapT.get());
+        if (gl->IsSupported(gl::GLFeature::texture_storage)) {
+          gl->fTexParameteri(LOCAL_GL_TEXTURE_2D,
+                             LOCAL_GL_TEXTURE_COMPARE_MODE,
+                             want.compareMode.get());
+        }
+        tex->mStereoTwinSampling = Some(want);
+      }
+    }
+  }
+  if (any) {
+    gl->fActiveTexture(LOCAL_GL_TEXTURE0 + mActiveTexture);
+  }
+  return any;
+}
+
+void WebGLContext::StereoRepeat(const std::function<void()>& aOp) {
+  if (StereoCameraDraws()) {
+    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mStereoRightFB->mFB);
+    aOp();
+    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mDefaultFB->mFB);
+    return;
+  }
+  if (mBoundDrawFramebuffer && StereoTargetsActive() &&
+      StereoTargetHoldsEyes(*mBoundDrawFramebuffer) &&
+      EnsureStereoTwinFB(*mBoundDrawFramebuffer)) {
+    ApplyStereoTwinDrawBuffers(*mBoundDrawFramebuffer);
+    aOp();
+    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER,
+                         mBoundDrawFramebuffer->mGLName);
+  }
+}
+
+// A blit from a framebuffer that holds two eyes copies the right eye's
+// picture into the destination's right eye's framebuffer (the canvas's,
+// for the default framebuffer); a blit of one picture into a framebuffer
+// that holds two eyes goes to both.
+void WebGLContext::StereoBlit(const GLint aSrcX0, const GLint aSrcY0,
+                              const GLint aSrcX1, const GLint aSrcY1,
+                              const GLint aDstX0, const GLint aDstY0,
+                              const GLint aDstX1, const GLint aDstY1,
+                              const GLbitfield aMask, const GLenum aFilter) {
+  if (!StereoTargetsActive()) {
+    return;
+  }
+  WebGLFramebuffer* const src = mBoundReadFramebuffer;
+  WebGLFramebuffer* const dst = mBoundDrawFramebuffer;
+  const bool srcEyes =
+      src && StereoTargetHoldsEyes(*src) && EnsureStereoTwinFB(*src);
+  GLuint drawRight = 0;
+  if (!dst) {
+    drawRight = mStereoRightFB->mFB;
+  } else {
+    if (!srcEyes && !StereoTargetHoldsEyes(*dst)) {
+      return;
+    }
+    if (!EnsureStereoTwinFB(*dst)) {
+      return;
+    }
+    SyncStereoTwin(*dst);
+    drawRight = dst->mStereoTwinFB;
+  }
+  GLuint readRight = mStereoRightFB->mFB;
+  if (src) {
+    readRight = srcEyes ? src->mStereoTwinFB : src->mGLName;
+  }
+  const gl::ScopedBindFramebuffer bindFb(gl);
+  gl->fBindFramebuffer(LOCAL_GL_READ_FRAMEBUFFER, readRight);
+  if (srcEyes && gl->IsSupported(gl::GLFeature::read_buffer)) {
+    const auto* read = src->ColorReadBuffer();
+    gl->fReadBuffer(read && read->HasAttachment() ? read->mAttachmentPoint
+                                                  : LOCAL_GL_NONE);
+  }
+  if (dst) {
+    ApplyStereoTwinDrawBuffers(*dst);
+  } else {
+    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, drawRight);
+  }
+  gl->fBlitFramebuffer(aSrcX0, aSrcY0, aSrcX1, aSrcY1, aDstX0, aDstY0, aDstX1,
+                       aDstY1, aMask, aFilter);
+  if (dst) {
+    MarkStereoTwinsValid(*dst);
   }
 }
 
@@ -1246,11 +1756,13 @@ bool WebGLContext::PresentInto(gl::SwapChain& swapChain) {
   const auto presentedSize =
       stereo ? gfx::IntSize(2 * size.width, size.height) : size;
   MOZ_LOG(gWebGLStereoLog, LogLevel::Debug,
-          ("present %s: %u draws per eye, %u into the page's framebuffers",
+          ("present %s: %u draws per eye, %u into the page's framebuffers, "
+           "%u per eye into the page's framebuffers",
            stereo ? "two eyes" : "one view", mStereoEyeDraws,
-           mStereoOffscreenDraws));
+           mStereoOffscreenDraws, mStereoTargetDraws));
   mStereoEyeDraws = 0;
   mStereoOffscreenDraws = 0;
+  mStereoTargetDraws = 0;
 
   const auto error = [&]() -> std::optional<std::string> {
     const auto canvasCspace = ToColorSpace2ForOutput(mDrawingBufferColorSpace);

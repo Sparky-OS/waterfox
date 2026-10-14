@@ -100,6 +100,18 @@ class WebGLTexture final : public WebGLContextBoundObject,
  public:
   const GLuint mGLName;
 
+  // The camera hack's per-eye render targets (WebGLContext::
+  // StereoTwinTexture): the right eye's copy of level 0 of a 2D texture the
+  // page renders into, 0 for none; whether it holds the right eye's picture
+  // (an upload into the texture leaves it behind); the sampling state last
+  // given to it.
+  GLuint mStereoTwin = 0;
+  GLenum mStereoTwinFormat = 0;
+  uint32_t mStereoTwinWidth = 0;
+  uint32_t mStereoTwinHeight = 0;
+  bool mStereoTwinValid = false;
+  Maybe<webgl::SamplingState> mStereoTwinSampling;
+
  protected:
   TexTarget mTarget;
 

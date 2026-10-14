@@ -20061,6 +20061,15 @@
   value: 5.0f
   mirror: always
 
+# Per-eye render targets: a page framebuffer the page draws its scene into
+# (a post-processing chain: bloom, an effect composer) gets a right eye's
+# copy, so that what the page draws from it is stereo too. Off: those
+# framebuffers hold one view, drawn from the page's own camera.
+- name: webgl.stereo-camera.render-targets
+  type: RelaxedAtomicBool
+  value: true
+  mirror: always
+
 - name: webgl.max-warnings-per-context
   type: RelaxedAtomicUint32
   value: 32

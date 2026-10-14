@@ -110,26 +110,32 @@ void WebGL2Context::ClearBufferTv(GLenum buffer, GLint drawBuffer,
   }
 
   ScopedDrawCallWrapper wrapper(*this);
-  switch (data.type) {
-    case webgl::AttribBaseType::Boolean:
-      MOZ_ASSERT(false);
-      return;
+  const auto clear = [&]() {
+    switch (data.type) {
+      case webgl::AttribBaseType::Boolean:
+        MOZ_ASSERT(false);
+        return;
 
-    case webgl::AttribBaseType::Float:
-      gl->fClearBufferfv(buffer, drawBuffer,
-                         reinterpret_cast<const float*>(data.data.data()));
-      break;
+      case webgl::AttribBaseType::Float:
+        gl->fClearBufferfv(buffer, drawBuffer,
+                           reinterpret_cast<const float*>(data.data.data()));
+        break;
 
-    case webgl::AttribBaseType::Int:
-      gl->fClearBufferiv(buffer, drawBuffer,
-                         reinterpret_cast<const int32_t*>(data.data.data()));
-      break;
+      case webgl::AttribBaseType::Int:
+        gl->fClearBufferiv(buffer, drawBuffer,
+                           reinterpret_cast<const int32_t*>(data.data.data()));
+        break;
 
-    case webgl::AttribBaseType::Uint:
-      gl->fClearBufferuiv(buffer, drawBuffer,
-                          reinterpret_cast<const uint32_t*>(data.data.data()));
-      break;
-  }
+      case webgl::AttribBaseType::Uint:
+        gl->fClearBufferuiv(
+            buffer, drawBuffer,
+            reinterpret_cast<const uint32_t*>(data.data.data()));
+        break;
+    }
+  };
+  clear();
+  // The camera hack: the right eye's framebuffer is cleared alike.
+  StereoRepeat(clear);
 }
 
 ////
@@ -157,6 +163,10 @@ void WebGL2Context::ClearBufferfi(GLenum buffer, GLint drawBuffer,
 
   ScopedDrawCallWrapper wrapper(*this);
   gl->fClearBufferfi(buffer, drawBuffer, driverDepth, driverStencil);
+  // The camera hack: the right eye's framebuffer is cleared alike.
+  StereoRepeat([&]() {
+    gl->fClearBufferfi(buffer, drawBuffer, driverDepth, driverStencil);
+  });
 }
 
 }  // namespace mozilla
