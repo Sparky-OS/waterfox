@@ -1,7 +1,7 @@
 From 05d454703a55774871694cf4edfbb05bade028f1 Mon Sep 17 00:00:00 2001
 From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
 Date: Wed, 14 Oct 2026 04:26:09 -0300
-Subject: [PATCH 17/18] NativeLayerWayland: decide through libstereo-policy
+Subject: [PATCH 17/25] NativeLayerWayland: decide through libstereo-policy
 
 How a video holds its views is now decided by libstereo-policy
 (stereo-policy.h, stereo-layer 1.4.0), the stereo policy every program

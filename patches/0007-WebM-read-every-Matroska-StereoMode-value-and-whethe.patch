@@ -1,7 +1,7 @@
 From cd6b38b88e3caa07fdb3c0418daac80d7426118b Mon Sep 17 00:00:00 2001
 From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
 Date: Tue, 13 Oct 2026 14:54:20 -0300
-Subject: [PATCH 07/18] WebM: read every Matroska StereoMode value and whether
+Subject: [PATCH 07/25] WebM: read every Matroska StereoMode value and whether
  a view's size is given
 
 nestegg passed on only StereoMode 0 to 3 and 11 and gave 0 for a track

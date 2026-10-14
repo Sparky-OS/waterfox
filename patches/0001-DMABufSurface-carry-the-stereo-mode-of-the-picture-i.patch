@@ -1,7 +1,7 @@
 From 5eadaccb9691934e7864a5db0b789d037ae17159 Mon Sep 17 00:00:00 2001
 From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
 Date: Mon, 12 Oct 2026 21:05:16 -0300
-Subject: [PATCH 01/18] DMABufSurface: carry the stereo mode of the picture it
+Subject: [PATCH 01/25] DMABufSurface: carry the stereo mode of the picture it
  holds
 
 A DMABuf surface may hold the two views of a stereoscopic picture, packed

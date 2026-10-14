@@ -1,7 +1,7 @@
 From 453858e23e85f8e222e9189d1b86646d308a9f8f Mon Sep 17 00:00:00 2001
 From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
 Date: Wed, 14 Oct 2026 02:49:49 -0300
-Subject: [PATCH 15/18] WebGL: draw a page's scene once per eye from its own
+Subject: [PATCH 15/25] WebGL: draw a page's scene once per eye from its own
  camera
 
 The camera hack (webgl.stereo-camera.enabled, off by default; the

@@ -1,7 +1,7 @@
 From 055f8428fd521de48efda7bccd8c67c5196a9dae Mon Sep 17 00:00:00 2001
 From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
 Date: Wed, 14 Oct 2026 02:49:50 -0300
-Subject: [PATCH 16/18] Video: Swap Eyes in the 3D Video menu, over every mark
+Subject: [PATCH 16/25] Video: Swap Eyes in the 3D Video menu, over every mark
 
 The 3D Video menu gets Swap Eyes, a check box: each eye sees the other
 eye's view, whatever decided the picture's arrangement (the stream's

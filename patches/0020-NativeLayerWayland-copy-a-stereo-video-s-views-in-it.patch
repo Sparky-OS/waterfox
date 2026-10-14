@@ -1,0 +1,331 @@
+From fc37f3c14c779f34776fc2038dedd991d2443e0d Mon Sep 17 00:00:00 2001
+From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
+Date: Wed, 14 Oct 2026 06:32:58 -0300
+Subject: [PATCH 20/25] NativeLayerWayland: copy a stereo video's views in its
+ own format
+
+A stereo video whose views are not side by side with the left eye first
+and visible across their whole width is copied into a buffer that holds
+them so. The copy converted the video to 8-bit RGB: its colours were the
+browser's conversion, not the compositor's; HDR video could not be
+copied and stayed flat; and a surface that went from the video's own
+buffers to RGB copies while playing (Swap Eyes, the user's choice, a
+scroll that clips the video) switched buffer formats, which KWin 6.7 did
+not survive.
+
+A video with two planes (NV12, P010, P016) is now copied plane by plane
+into a surface of its own format and colours
+(DMABufSurfaceYUV::CreateCopyTarget), each view's visible part into its
+half, the chroma at whole samples. Its colour representation stays on
+the surface, the compositor converts it as it converts the video itself,
+and HDR is kept. A few such surfaces are kept per layer, since the
+compositor holds the one shown. Other formats, or a copy that fails,
+still go to RGB, except HDR video, which then stays flat.
+
+Assisted-by: Claude Opus 5.5 via Claude Code
+---
+ gfx/layers/NativeLayerWayland.cpp | 137 ++++++++++++++++++++++++++++--
+ gfx/layers/NativeLayerWayland.h   |  13 +++
+ widget/gtk/DMABufSurface.cpp      |  46 ++++++++++
+ widget/gtk/DMABufSurface.h        |   8 ++
+ 4 files changed, 197 insertions(+), 7 deletions(-)
+
+diff --git a/gfx/layers/NativeLayerWayland.cpp b/gfx/layers/NativeLayerWayland.cpp
+index 291230ebf8..4e7d73d84f 100644
+--- a/gfx/layers/NativeLayerWayland.cpp
++++ b/gfx/layers/NativeLayerWayland.cpp
+@@ -1815,6 +1815,8 @@ void NativeLayerWaylandExternal::AttachExternalImage(
+ 
+   // The picture's stereo mark, decided on with the place's shape.
+   const bool isVideo = !!surface->GetAsDMABufSurfaceYUV();
++  mStereoCanCopyYUV = isVideo && !mStereoYUVCopyFailed &&
++                      surface->GetAsDMABufSurfaceYUV()->GetTextureCount() == 2;
+   if (surface->GetStereoMode() != mStereoMark ||
+       surface->GetStereoSource() != mStereoSource ||
+       surface->GetStereoSwap() != mStereoSwap || isVideo != mStereoIsVideo) {
+@@ -1866,18 +1868,22 @@ void NativeLayerWayland::DecideStereoLocked(const gfx::Size& aShape) {
+   }
+   mStereoPacking = packing;
+   mStereoFit = fit;
+-  // Copies are 8 bit RGB: HDR video is not repacked yet. A layer WebRender
+-  // draws a video into is copied when its buffer holds just the picture.
++  // RGB copies are 8 bit: HDR video is copied only in its own format. A layer
++  // WebRender draws a video into is copied when its buffer holds just the
++  // picture.
+   const bool wholeBuffer =
+       AsNativeLayerWaylandExternal() ||
+       (AsNativeLayerWaylandRender() &&
+        mDisplayRect.Contains(IntRect(IntPoint(), mSize)));
+-  mStereoCanRepack =
+-      wholeBuffer && mStereoIsVideo && !mIsHDR && !mStereoRepackFailed;
++  mStereoCanRepack = wholeBuffer && mStereoIsVideo &&
++                     (!mIsHDR || mStereoCanCopyYUV) && !mStereoRepackFailed;
+ }
+ 
+-// Copies the visible part of each view into its half of a buffer from the
+-// compositor's pool, left eye first, converting the video to RGB.
++// Copies the visible part of each view into its half of a buffer, left eye
++// first: plane by plane into a surface of the video's own format when it has
++// two planes (NV12, P010), so colours stay exact, HDR is kept and the surface
++// never changes between YUV and RGB buffers; otherwise into an RGB buffer from
++// the compositor's pool.
+ RefPtr<widget::WaylandBuffer> NativeLayerWaylandExternal::RepackStereoLocked(
+     const WaylandSurfaceLock& aProofOfLock) {
+   RefPtr<DMABufSurface> surface = GetSurface();
+@@ -1895,6 +1901,21 @@ RefPtr<widget::WaylandBuffer> NativeLayerWaylandExternal::RepackStereoLocked(
+     return nullptr;
+   }
+   ReleaseStereoBufferLocked(aProofOfLock);
++  if (mStereoCanCopyYUV) {
++    if (RefPtr<widget::WaylandBuffer> buffer = RepackStereoYUVLocked(
++            aProofOfLock, surface->GetAsDMABufSurfaceYUV(), gl)) {
++      mStereoCopyIsYUV = true;
++      return buffer;
++    }
++    gfxCriticalNoteOnce << "NativeLayerWaylandExternal: YUV stereo copy failed";
++    mStereoYUVCopyFailed = true;
++    mStereoCanCopyYUV = false;
++    if (mIsHDR) {
++      // An RGB copy would lose the HDR picture: shown flat instead.
++      return nullptr;
++    }
++  }
++  mStereoCopyIsYUV = false;
+   mStereoBuffer = mStereoPoolHandle->ObtainBufferFromPool(
+       aProofOfLock, mStereoBufferSize, mRootLayer->GetDRMFormat());
+   if (!mStereoBuffer) {
+@@ -1925,6 +1946,107 @@ RefPtr<widget::WaylandBuffer> NativeLayerWaylandExternal::RepackStereoLocked(
+   return mStereoBuffer;
+ }
+ 
++RefPtr<widget::WaylandBuffer> NativeLayerWaylandExternal::RepackStereoYUVLocked(
++    const WaylandSurfaceLock& aProofOfLock, DMABufSurfaceYUV* aSource,
++    gl::GLContext* aGL) {
++  if (!aSource || aSource->GetTextureCount() != 2) {
++    return nullptr;
++  }
++  // Whole chroma samples (4:2:0): even sizes and places.
++  const int width = (mStereoBufferSize.width / 2) & ~1;
++  const int height = mStereoBufferSize.height & ~1;
++  if (width <= 0 || height <= 0) {
++    return nullptr;
++  }
++  const IntSize size(2 * width, height);
++  RefPtr<widget::WaylandBufferDMABUF> target;
++  mStereoYUVTargets.RemoveElementsBy([&](const auto& buffer) {
++    return !buffer->IsAttached(aProofOfLock) &&
++           (buffer->GetSurface()->GetWidth() != size.width ||
++            buffer->GetSurface()->GetHeight() != size.height);
++  });
++  for (const auto& buffer : mStereoYUVTargets) {
++    if (!buffer->IsAttached(aProofOfLock)) {
++      target = buffer;
++      break;
++    }
++  }
++  if (!target) {
++    RefPtr<DMABufSurfaceYUV> surface = DMABufSurfaceYUV::CreateCopyTarget(
++        aGL, aSource, size.width, size.height);
++    if (!surface) {
++      return nullptr;
++    }
++    target = widget::WaylandBufferDMABUF::CreateExternal(surface);
++    if (!target) {
++      return nullptr;
++    }
++    mStereoYUVTargets.AppendElement(target);
++  }
++  auto* dest = target->GetSurface()->GetAsDMABufSurfaceYUV();
++  if (!dest) {
++    return nullptr;
++  }
++  // The copy's textures live only for the copy, on this thread: the copy may
++  // be dropped on another one (the layer's last reference, at shutdown on
++  // the main thread), where its GL context is not current.
++  for (int plane = 0; plane < 2; plane++) {
++    if (!dest->GetTexture(plane) && !dest->CreateTexture(aGL, plane)) {
++      dest->ReleaseTextures();
++      return nullptr;
++    }
++  }
++  auto releaseDestTextures = MakeScopeExit([&] { dest->ReleaseTextures(); });
++
++  bool createdTextures = false;
++  for (int plane = 0; plane < 2; plane++) {
++    if (!aSource->GetTexture(plane)) {
++      if (!aSource->CreateTexture(aGL, plane)) {
++        aSource->ReleaseTextures();
++        return nullptr;
++      }
++      createdTextures = true;
++    }
++  }
++  auto releaseTextures = MakeScopeExit([&] {
++    if (createdTextures) {
++      aSource->ReleaseTextures();
++    }
++  });
++
++  const gl::ScopedGLState scissor(aGL, LOCAL_GL_SCISSOR_TEST, false);
++  for (int plane = 0; plane < 2; plane++) {
++    // The second plane holds the chroma at half the width and height.
++    const int shift = plane;
++    const gl::ScopedFramebufferForTexture source(aGL,
++                                                 aSource->GetTexture(plane));
++    const gl::ScopedFramebufferForTexture copy(aGL, dest->GetTexture(plane));
++    if (!source.IsComplete() || !copy.IsComplete()) {
++      return nullptr;
++    }
++    const int planeWidth = width >> shift;
++    const int planeHeight = height >> shift;
++    for (int eye = 0; eye < 2; eye++) {
++      // Both are top left: the copy keeps the picture upright.
++      const Rect& r = mStereoEyeRects[eye];
++      const int x = std::clamp(int(std::lround(r.x * mSize.width)), 0,
++                               std::max(mSize.width - width, 0)) &
++                    ~1;
++      const int y = std::clamp(int(std::lround(r.y * mSize.height)), 0,
++                               std::max(mSize.height - height, 0)) &
++                    ~1;
++      aGL->BlitHelper()->BlitFramebufferToFramebuffer(
++          source.FB(), copy.FB(),
++          IntRect(x >> shift, y >> shift, planeWidth, planeHeight),
++          IntRect(eye * planeWidth, 0, planeWidth, planeHeight),
++          LOCAL_GL_NEAREST);
++    }
++  }
++  dest->FenceSet();
++  dest->FenceWait();
++  return target;
++}
++
+ void NativeLayerWayland::ReleaseStereoBufferLocked(
+     const WaylandSurfaceLock& aProofOfLock) {
+   if (mStereoBuffer && mStereoPoolHandle) {
+@@ -1942,6 +2064,7 @@ void NativeLayerWaylandExternal::DiscardBackbuffersLocked(
+   mTextureHost = nullptr;
+   mFrontBuffer = nullptr;
+   ReleaseStereoBufferLocked(aProofOfLock);
++  mStereoYUVTargets.Clear();
+ }
+ 
+ RefPtr<DrawTarget> NativeLayerWaylandExternal::NextSurfaceAsDrawTarget(
+@@ -1986,7 +2109,7 @@ bool NativeLayerWaylandExternal::CommitFrontBufferToScreenLocked(
+   // to it (wp_color_representation_v1).
+   RefPtr<DMABufSurface> surface = GetSurface();
+   auto* surfaceYUV = surface ? surface->GetAsDMABufSurfaceYUV() : nullptr;
+-  const bool rgb = buffer != mFrontBuffer || !surfaceYUV;
++  const bool rgb = !surfaceYUV || (buffer != mFrontBuffer && !mStereoCopyIsYUV);
+   if (rgb) {
+     mSurface->ClearColorRepresentationLocked(aProofOfLock);
+   } else if (!mSurface->HasColorRepresentationLocked(aProofOfLock)) {
+diff --git a/gfx/layers/NativeLayerWayland.h b/gfx/layers/NativeLayerWayland.h
+index 04edd13a2d..312c169854 100644
+--- a/gfx/layers/NativeLayerWayland.h
++++ b/gfx/layers/NativeLayerWayland.h
+@@ -356,6 +356,9 @@ class NativeLayerWayland : public NativeLayer {
+   // The buffer is a video frame, which can be copied into a buffer of two
+   // views full side by side with the left eye first.
+   bool mStereoIsVideo = false;
++  // The video's views can be copied in its own two-plane format (NV12, P010),
++  // which keeps HDR video exact.
++  bool mStereoCanCopyYUV = false;
+   // The buffer of two views full side by side, left eye first, the surface
+   // shows when the picture needs repacking, from the compositor's pool.
+   RefPtr<SurfacePoolHandleWayland> mStereoPoolHandle;
+@@ -454,6 +457,16 @@ class NativeLayerWaylandExternal final : public NativeLayerWayland {
+ 
+   RefPtr<widget::WaylandBuffer> RepackStereoLocked(
+       const widget::WaylandSurfaceLock& aProofOfLock);
++  RefPtr<widget::WaylandBuffer> RepackStereoYUVLocked(
++      const widget::WaylandSurfaceLock& aProofOfLock, DMABufSurfaceYUV* aSource,
++      gl::GLContext* aGL);
++
++  // Surfaces in the video's own format that the views are copied into, side
++  // by side, left eye first; a few, as the compositor holds the one shown.
++  nsTArray<RefPtr<widget::WaylandBufferDMABUF>> mStereoYUVTargets;
++  // The surface shows such a copy, not an RGB one.
++  bool mStereoCopyIsYUV = false;
++  bool mStereoYUVCopyFailed = false;
+ 
+   void DiscardBackbuffersLocked(const widget::WaylandSurfaceLock& aProofOfLock,
+                                 bool aForce) override;
+diff --git a/widget/gtk/DMABufSurface.cpp b/widget/gtk/DMABufSurface.cpp
+index fb16cc72e8..ad891638bb 100644
+--- a/widget/gtk/DMABufSurface.cpp
++++ b/widget/gtk/DMABufSurface.cpp
+@@ -1641,6 +1641,52 @@ already_AddRefed<DMABufSurfaceYUV> DMABufSurfaceYUV::CopyYUVSurface(
+   return surf.forget();
+ }
+ 
++already_AddRefed<DMABufSurfaceYUV> DMABufSurfaceYUV::CreateCopyTarget(
++    GLContext* aGLContext, DMABufSurfaceYUV* aLike, int aWidth, int aHeight) {
++  if (!aGLContext || !aLike || aLike->mBufferPlaneCount != 2 || aWidth <= 0 ||
++      aHeight <= 0) {
++    return nullptr;
++  }
++  auto surf = MakeRefPtr<DMABufSurfaceYUV>();
++  switch (aLike->mFOURCCFormat) {
++    case VA_FOURCC_NV12:
++      surf->mDrmFormats[0] = GBM_FORMAT_R8;
++      surf->mDrmFormats[1] = GBM_FORMAT_GR88;
++      break;
++    case VA_FOURCC_P010:
++    case VA_FOURCC_P016:
++      surf->mDrmFormats[0] = GBM_FORMAT_R16;
++      surf->mDrmFormats[1] = GBM_FORMAT_GR1616;
++      break;
++    default:
++      return nullptr;
++  }
++  LOGDMABUFS("[%p] DMABufSurfaceYUV::CreateCopyTarget() UID %d %d x %d",
++             surf.get(), surf->GetUID(), aWidth, aHeight);
++  surf->mFOURCCFormat = aLike->mFOURCCFormat;
++  surf->mBufferPlaneCount = 2;
++  surf->mWidthAligned[0] = surf->mWidth[0] = aWidth;
++  surf->mHeightAligned[0] = surf->mHeight[0] = aHeight;
++  surf->mWidthAligned[1] = surf->mWidth[1] = (aWidth + 1) >> 1;
++  surf->mHeightAligned[1] = surf->mHeight[1] = (aHeight + 1) >> 1;
++  surf->mGbmBufferFlags = GBM_BO_USE_RENDERING | GBM_BO_USE_SCANOUT;
++  surf->mColorSpace = aLike->mColorSpace;
++  surf->mColorRange = aLike->mColorRange;
++  surf->mColorPrimaries = aLike->mColorPrimaries;
++  surf->mTransferFunction = aLike->mTransferFunction;
++  surf->mWPChromaLocation = aLike->mWPChromaLocation;
++  auto format = GetGlobalDMABufFormats()->GetDRMFormat(surf->mFOURCCFormat);
++  for (int i = 0; i < surf->mBufferPlaneCount; i++) {
++    if (!surf->CreateYUVPlane(aGLContext, i, format) ||
++        !surf->CreateTexture(aGLContext, i)) {
++      return nullptr;
++    }
++  }
++  LogMemoryAddYUV(surf->GetUID(),
++                  GetUsedMemoryYUV(surf->mFOURCCFormat, aWidth, aHeight));
++  return surf.forget();
++}
++
+ size_t DMABufSurfaceYUV::GetUsedMemoryYUV(int32_t aFOURCCFormat, int aWidth,
+                                           int aHeight) {
+   switch (aFOURCCFormat) {
+diff --git a/widget/gtk/DMABufSurface.h b/widget/gtk/DMABufSurface.h
+index 9cfe962658..b87cbf911b 100644
+--- a/widget/gtk/DMABufSurface.h
++++ b/widget/gtk/DMABufSurface.h
+@@ -462,6 +462,14 @@ class DMABufSurfaceYUV final : public DMABufSurface {
+       const VADRMPRIMESurfaceDescriptor& aDesc, int aWidth, int aHeight);
+   static already_AddRefed<DMABufSurfaceYUV> CopyYUVSurface(
+       const VADRMPRIMESurfaceDescriptor& aVaDesc, int aWidth, int aHeight);
++  // An empty surface of aWidth x aHeight in aLike's two-plane format (NV12,
++  // P010 or P016) and colours, whose planes aGLContext can draw into: the
++  // target of copies of aLike's planes (Sparky Stereo OS: the views of a
++  // stereo picture put side by side, left eye first, in the picture's own
++  // format). Null for any other format.
++  static already_AddRefed<DMABufSurfaceYUV> CreateCopyTarget(
++      mozilla::gl::GLContext* aGLContext, DMABufSurfaceYUV* aLike, int aWidth,
++      int aHeight);
+   static void ReleaseVADRMPRIMESurfaceDescriptor(
+       VADRMPRIMESurfaceDescriptor& aDesc);
+ 
+-- 
+2.53.0
+

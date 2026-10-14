@@ -1,4 +1,4 @@
-"""The strings of the browser's 3D Video menu in the edition's languages.
+"""The strings of the browser's 3D Video and 3D Canvas menus in the edition's languages.
 
 Usage: python3 stereo-strings.py L10N_BASE LOCALE...
 
@@ -20,10 +20,24 @@ IDS = (
     "main-context-menu-video-stereo-top-bottom",
     "main-context-menu-video-stereo-top-bottom-right-first",
     "main-context-menu-video-stereo-swap",
+    # 3D Canvas (milestone 5)
+    "main-context-menu-canvas-stereo",
+    "main-context-menu-canvas-stereo-off",
+    "main-context-menu-canvas-stereo-on",
+    "main-context-menu-canvas-stereo-depth-less",
+    "main-context-menu-canvas-stereo-depth-normal",
+    "main-context-menu-canvas-stereo-depth-more",
+    "main-context-menu-canvas-stereo-depth-most",
 )
+# The menus' access keys.
+ACCESSKEYS = {
+    "main-context-menu-video-stereo": "3",
+    "main-context-menu-canvas-stereo": "3",
+}
 
 # 3D Video, Automatic, Not 3D, Side by Side, Side by Side Right Eye First,
-# Top and Bottom, Top and Bottom Right Eye First, Swap Eyes
+# Top and Bottom, Top and Bottom Right Eye First, Swap Eyes; 3D Canvas, Off,
+# On, Less Depth, Normal Depth, More Depth, Most Depth
 LABELS = {
     "pl": (
         "Wideo 3D",
@@ -34,6 +48,13 @@ LABELS = {
         "Góra i dół",
         "Góra i dół, najpierw prawe oko",
         "Zamień oczy",
+        "Kanwa 3D",
+        "Wyłączone",
+        "Włączone",
+        "Mniejsza głębia",
+        "Zwykła głębia",
+        "Większa głębia",
+        "Największa głębia",
     ),
     "pt-BR": (
         "Vídeo 3D",
@@ -44,6 +65,13 @@ LABELS = {
         "Em cima e embaixo",
         "Em cima e embaixo, olho direito primeiro",
         "Inverter os olhos",
+        "Canvas 3D",
+        "Desligado",
+        "Ligado",
+        "Menos profundidade",
+        "Profundidade normal",
+        "Mais profundidade",
+        "Profundidade máxima",
     ),
     "fr": (
         "Vidéo 3D",
@@ -54,6 +82,13 @@ LABELS = {
         "Haut et bas",
         "Haut et bas, œil droit en premier",
         "Inverser les yeux",
+        "Canvas 3D",
+        "Désactivé",
+        "Activé",
+        "Moins de profondeur",
+        "Profondeur normale",
+        "Plus de profondeur",
+        "Profondeur maximale",
     ),
     "ja": (
         "3D 動画",
@@ -64,6 +99,13 @@ LABELS = {
         "トップアンドボトム",
         "トップアンドボトム (右目が先)",
         "左右の目を入れ替え",
+        "3D キャンバス",
+        "オフ",
+        "オン",
+        "奥行き: 小",
+        "奥行き: 標準",
+        "奥行き: 大",
+        "奥行き: 最大",
     ),
     "ko": (
         "3D 동영상",
@@ -74,6 +116,13 @@ LABELS = {
         "상하 배치",
         "상하 배치, 오른쪽 눈 먼저",
         "좌우 눈 바꾸기",
+        "3D 캔버스",
+        "끄기",
+        "켜기",
+        "깊이 작게",
+        "깊이 보통",
+        "깊이 크게",
+        "깊이 최대",
     ),
     "zh-CN": (
         "3D 视频",
@@ -84,6 +133,13 @@ LABELS = {
         "上下排列",
         "上下排列，右眼在前",
         "交换左右眼",
+        "3D 画布",
+        "关闭",
+        "开启",
+        "景深较浅",
+        "景深标准",
+        "景深较深",
+        "景深最深",
     ),
     "zh-TW": (
         "3D 影片",
@@ -94,6 +150,13 @@ LABELS = {
         "上下排列",
         "上下排列，右眼在前",
         "交換左右眼",
+        "3D 畫布",
+        "關閉",
+        "開啟",
+        "景深較淺",
+        "景深標準",
+        "景深較深",
+        "景深最深",
     ),
 }
 
@@ -104,8 +167,8 @@ def messages(text, labels):
         if f"\n{msg} =" in text:
             continue
         out.append(f"{msg} =\n    .label = {label}\n")
-        if i == 0:
-            out[-1] += "    .accesskey = 3\n"
+        if msg in ACCESSKEYS:
+            out[-1] += f"    .accesskey = {ACCESSKEYS[msg]}\n"
     return "\n" + "\n".join(out) if out else ""
 
 
@@ -139,7 +202,7 @@ def main():
             continue
         path = os.path.join(base, locale, "browser", "browser", "browserContext.ftl")
         if os.path.exists(path) and add(path, labels):
-            print(f"{path}: 3D Video menu")
+            print(f"{path}: 3D Video and 3D Canvas menus")
 
 
 if __name__ == "__main__":

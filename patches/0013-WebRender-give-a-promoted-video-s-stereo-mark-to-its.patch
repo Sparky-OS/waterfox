@@ -1,7 +1,7 @@
 From 41fb18411c85644e7c3eb0b9da7cd28e87a7ac69 Mon Sep 17 00:00:00 2001
 From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
 Date: Wed, 14 Oct 2026 02:49:47 -0300
-Subject: [PATCH 13/18] WebRender: give a promoted video's stereo mark to its
+Subject: [PATCH 13/25] WebRender: give a promoted video's stereo mark to its
  compositor surface
 
 A video WebRender cannot hand to the compositor as it is (any video with

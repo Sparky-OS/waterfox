@@ -1,5 +1,32 @@
 sparky-stereo-browser (@DEBVERSION@) unstable; urgency=medium
 
+  * A stereo picture that does not get a surface of its own (an opacity on
+    the video or canvas, a turn, a clip the compositor cannot take) is
+    drawn into the page's tiles, and each tile that shows it is drawn once
+    per eye, twice as wide, and declared full side by side, left eye
+    first; the rest of the page is the same in both eyes. Views the
+    browser drew (WebXR, the camera hack) drawn into a surface the
+    compositor cannot show per eye (a CSS filter) show the left eye's
+    view instead of both views squeezed together.
+  * An opacity on a video or a canvas is drawn with its image, which keeps
+    it in the page's tiles.
+  * Stereo videos in two planes (NV12, P010) are copied in their own
+    format when their views must be rearranged: exact colours, HDR kept,
+    and the video's surface never changes format while playing.
+  * A local video file's Swap Eyes correction (the extended attribute
+    user.stereo-policy.swap-eyes of libstereo-policy) is read by the
+    browser's parent process and applied to file: videos.
+  * The camera hack draws a page's post-processing (render targets such as
+    three.js's EffectComposer and bloom) once per eye too, each eye from
+    its own camera (webgl.stereo-camera.render-targets, on). Shadow maps
+    stay one picture.
+  * A 3D Canvas menu in the canvas context menu: Off or On, and four
+    depths, for the page's site, in the edition's eight languages.
+
+ -- Daniel Ramos (Capitain Jack) <Capitain_Jack@yahoo.com>  @DATE@
+
+sparky-stereo-browser (6.7.5-0+stereo3d4) unstable; urgency=medium
+
   * WebGL pages without WebXR are drawn in stereo by the browser (the
     camera hack, webgl.stereo-camera.enabled, on in this package). The
     page's camera, a perspective projection or a view-projection product
@@ -36,7 +63,7 @@ sparky-stereo-browser (@DEBVERSION@) unstable; urgency=medium
   * The camera hack presents both eyes only where the compositor takes
     declared stereo content; elsewhere, X11 included, pages draw as before.
 
- -- Daniel Ramos (Capitain Jack) <Capitain_Jack@yahoo.com>  @DATE@
+ -- Daniel Ramos (Capitain Jack) <Capitain_Jack@yahoo.com>  Wed, 14 Oct 2026 07:55:54 +0000
 
 sparky-stereo-browser (6.7.5-0+stereo3d3) unstable; urgency=medium
 

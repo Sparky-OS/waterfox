@@ -1,0 +1,506 @@
+From b1d115f8d3070a81f3e231acb86cc446656581fd Mon Sep 17 00:00:00 2001
+From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
+Date: Wed, 14 Oct 2026 08:52:52 -0300
+Subject: [PATCH 25/25] Browser: a 3D Canvas menu, per site
+
+The camera hack was a preference for every page
+(webgl.stereo-camera.enabled, off). The canvas context menu now has a
+3D Canvas menu beside the video's 3D Video menu: Off or On, and four
+depths (the eyes' separation: 1, 2, 3 or 4 percent of the view's
+width), for the page's site. The choices are permissions
+(stereo-camera: allow or deny; stereo-camera-depth: the separation in
+tenths of a percent), which the content process reads for the canvas's
+document at each present; without them the preferences decide. A change
+takes effect with the canvas's next renderer, as the presented frames
+change size. The depth reaches the WebGL host with each present
+(SwapChainOptions::stereoDepth). Cameras are looked for wherever the
+session can show stereo, whatever the site's choice, so that a site
+turned on draws in stereo from the next frame even when its page
+uploaded its camera once.
+
+Assisted-by: Claude Opus 5.5 via Claude Code
+---
+ .../base/content/browser-context.inc.xhtml    | 35 ++++++++++
+ browser/base/content/browser-context.js       | 14 ++++
+ browser/base/content/nsContextMenu.sys.mjs    | 68 +++++++++++++++++++
+ .../locales/en-US/browser/browserContext.ftl  | 26 +++++++
+ dom/canvas/ClientWebGLContext.cpp             | 62 ++++++++++++++++-
+ dom/canvas/ClientWebGLContext.h               | 13 +++-
+ dom/canvas/WebGLBuffer.cpp                    |  3 +-
+ dom/canvas/WebGLContext.cpp                   |  7 ++
+ dom/canvas/WebGLContext.h                     |  3 +
+ dom/canvas/WebGLContextDraw.cpp               |  2 +-
+ dom/canvas/WebGLContextGL.cpp                 |  3 +-
+ dom/canvas/WebGLTypes.h                       |  7 +-
+ 12 files changed, 234 insertions(+), 9 deletions(-)
+
+diff --git a/browser/base/content/browser-context.inc.xhtml b/browser/base/content/browser-context.inc.xhtml
+index f60e8189b0..c40b99d725 100644
+--- a/browser/base/content/browser-context.inc.xhtml
++++ b/browser/base/content/browser-context.inc.xhtml
+@@ -229,6 +229,41 @@
+                     />
+         </menupopup>
+       </menu>
++      <menu id="context-canvas-stereo" data-l10n-id="main-context-menu-canvas-stereo">
++        <menupopup>
++          <menuitem id="context-canvas-stereo-off"
++                    data-l10n-id="main-context-menu-canvas-stereo-off"
++                    type="radio"
++                    name="canvasstereo"
++                    />
++          <menuitem id="context-canvas-stereo-on"
++                    data-l10n-id="main-context-menu-canvas-stereo-on"
++                    type="radio"
++                    name="canvasstereo"
++                    />
++          <menuseparator/>
++          <menuitem id="context-canvas-stereo-depth-less"
++                    data-l10n-id="main-context-menu-canvas-stereo-depth-less"
++                    type="radio"
++                    name="canvasstereodepth"
++                    />
++          <menuitem id="context-canvas-stereo-depth-normal"
++                    data-l10n-id="main-context-menu-canvas-stereo-depth-normal"
++                    type="radio"
++                    name="canvasstereodepth"
++                    />
++          <menuitem id="context-canvas-stereo-depth-more"
++                    data-l10n-id="main-context-menu-canvas-stereo-depth-more"
++                    type="radio"
++                    name="canvasstereodepth"
++                    />
++          <menuitem id="context-canvas-stereo-depth-most"
++                    data-l10n-id="main-context-menu-canvas-stereo-depth-most"
++                    type="radio"
++                    name="canvasstereodepth"
++                    />
++        </menupopup>
++      </menu>
+       <menuitem id="context-leave-dom-fullscreen"
+                 data-l10n-id="main-context-menu-media-video-leave-fullscreen"
+                 />
+diff --git a/browser/base/content/browser-context.js b/browser/base/content/browser-context.js
+index 14cfde7d9e..fc6ce768e4 100644
+--- a/browser/base/content/browser-context.js
++++ b/browser/base/content/browser-context.js
+@@ -122,6 +122,20 @@ document.addEventListener(
+         case "context-video-stereo-swap":
+           gContextMenu.mediaCommand("stereoSwap");
+           break;
++        case "context-canvas-stereo-off":
++          gContextMenu.setCanvasStereo(false);
++          break;
++        case "context-canvas-stereo-on":
++          gContextMenu.setCanvasStereo(true);
++          break;
++        case "context-canvas-stereo-depth-less":
++        case "context-canvas-stereo-depth-normal":
++        case "context-canvas-stereo-depth-more":
++        case "context-canvas-stereo-depth-most":
++          gContextMenu.setCanvasStereoDepth(
++            event.target.id.slice("context-canvas-stereo-depth-".length)
++          );
++          break;
+         case "context-leave-dom-fullscreen":
+           gContextMenu.leaveDOMFullScreen();
+           break;
+diff --git a/browser/base/content/nsContextMenu.sys.mjs b/browser/base/content/nsContextMenu.sys.mjs
+index 6488d1d8e5..5338037305 100644
+--- a/browser/base/content/nsContextMenu.sys.mjs
++++ b/browser/base/content/nsContextMenu.sys.mjs
+@@ -107,6 +107,10 @@ const IMAGE_ONLY_PROTOCOLS = [
+   "page-icon:",
+ ];
+ 
++// The 3D Canvas menu's depths: the eyes' separation in tenths of a percent
++// of the view's width (permission "stereo-camera-depth").
++const CANVAS_STEREO_DEPTHS = { less: 10, normal: 20, more: 30, most: 40 };
++
+ export class nsContextMenu {
+   /**
+    * A promise to retrieve the translations language pair
+@@ -1087,6 +1091,22 @@ export class nsContextMenu {
+       "context-video-stereo",
+       this.onVideo && this.target.stereoChoice !== undefined
+     );
++    // A WebGL scene drawn once per eye from its own camera, for the page's
++    // site, and the depth (Sparky Stereo OS).
++    this.showItem("context-canvas-stereo", this.onCanvas);
++    if (this.onCanvas) {
++      const on = this.canvasStereoOn();
++      this.setItemAttr("context-canvas-stereo-on", "checked", on);
++      this.setItemAttr("context-canvas-stereo-off", "checked", !on);
++      const depth = this.canvasStereoDepth();
++      for (const [name, value] of Object.entries(CANVAS_STEREO_DEPTHS)) {
++        this.setItemAttr(
++          "context-canvas-stereo-depth-" + name,
++          "checked",
++          value == depth
++        );
++      }
++    }
+     this.showItem(
+       "context-media-showcontrols",
+       onMedia && !this.target.controls
+@@ -2596,6 +2616,54 @@ export class nsContextMenu {
+     );
+   }
+ 
++  // The camera hack for the page's site: the site's choice, else
++  // webgl.stereo-camera.enabled.
++  canvasStereoOn() {
++    const perm = Services.perms.testPermissionFromPrincipal(
++      this.principal,
++      "stereo-camera"
++    );
++    if (perm == Services.perms.ALLOW_ACTION) {
++      return true;
++    }
++    if (perm == Services.perms.DENY_ACTION) {
++      return false;
++    }
++    return Services.prefs.getBoolPref("webgl.stereo-camera.enabled", false);
++  }
++
++  canvasStereoDepth() {
++    const perm = Services.perms.testPermissionFromPrincipal(
++      this.principal,
++      "stereo-camera-depth"
++    );
++    if (perm >= 5 && perm <= 100) {
++      return perm;
++    }
++    return Math.round(
++      10 * Services.prefs.getFloatPref("webgl.stereo-camera.separation", 2.0)
++    );
++  }
++
++  setCanvasStereo(on) {
++    Services.perms.addFromPrincipal(
++      this.principal,
++      "stereo-camera",
++      on ? Services.perms.ALLOW_ACTION : Services.perms.DENY_ACTION
++    );
++  }
++
++  setCanvasStereoDepth(name) {
++    const value = CANVAS_STEREO_DEPTHS[name];
++    if (value) {
++      Services.perms.addFromPrincipal(
++        this.principal,
++        "stereo-camera-depth",
++        value
++      );
++    }
++  }
++
+   mediaCommand(command, data) {
+     this.actor.mediaCommand(this.targetIdentifier, command, data);
+   }
+diff --git a/browser/locales/en-US/browser/browserContext.ftl b/browser/locales/en-US/browser/browserContext.ftl
+index cf872ce092..976e5b1167 100644
+--- a/browser/locales/en-US/browser/browserContext.ftl
++++ b/browser/locales/en-US/browser/browserContext.ftl
+@@ -271,6 +271,32 @@ main-context-menu-video-stereo-top-bottom-right-first =
+ main-context-menu-video-stereo-swap =
+     .label = Swap Eyes
+ 
++## A WebGL scene that has no stereo 3D of its own, drawn once per eye from
++## the page's own camera (Sparky Stereo OS), for the page's site: on or
++## off, and how deep the picture looks (the distance between the eyes).
++
++main-context-menu-canvas-stereo =
++    .label = 3D Canvas
++    .accesskey = 3
++
++main-context-menu-canvas-stereo-off =
++    .label = Off
++
++main-context-menu-canvas-stereo-on =
++    .label = On
++
++main-context-menu-canvas-stereo-depth-less =
++    .label = Less Depth
++
++main-context-menu-canvas-stereo-depth-normal =
++    .label = Normal Depth
++
++main-context-menu-canvas-stereo-depth-more =
++    .label = More Depth
++
++main-context-menu-canvas-stereo-depth-most =
++    .label = Most Depth
++
+ ## The access keys for "Show Controls" and "Hide Controls" are the same
+ ## because the two context-menu items are mutually exclusive.
+ 
+diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.cpp
+index d78b4bcec0..e8c862b808 100644
+--- a/dom/canvas/ClientWebGLContext.cpp
++++ b/dom/canvas/ClientWebGLContext.cpp
+@@ -32,6 +32,7 @@
+ #include "mozilla/dom/Document.h"
+ #include "mozilla/dom/GeneratePlaceholderCanvasData.h"
+ #include "mozilla/dom/HTMLCanvasElement.h"
++#include "mozilla/PermissionManager.h"
+ #include "nsIFrame.h"
+ #include "mozilla/dom/ToJSValue.h"
+ #include "mozilla/dom/TypedArray.h"
+@@ -536,6 +537,15 @@ void ClientWebGLContext::Present(WebGLFramebufferJS* const xrFb,
+     mIsCanvasDirty = false;
+   }
+   CancelAutoFlush();
++  if (!xrFb && UpdateStereoCameraSite()) {
++    if (mStereoCamera) {
++      // The site's choice changes what the canvas presents: from the next
++      // canvas renderer on, which this asks for.
++      OnStereoCameraStarted();
++    } else {
++      mStereoCameraAllowed = mStereoCameraSiteAllowed;
++    }
++  }
+   webgl::SwapChainOptions asyncOptions =
+       PrepareAsyncSwapChainOptions(xrFb, webvr, options);
+   if (!xrFb && mFlatXR) {
+@@ -548,6 +558,7 @@ void ClientWebGLContext::Present(WebGLFramebufferJS* const xrFb,
+   } else if (!xrFb && StereoCameraPresents()) {
+     // The camera hack: both eyes, full side by side, left eye first.
+     asyncOptions.stereoCamera = true;
++    asyncOptions.stereoDepth = mStereoDepth;
+     asyncOptions.stereoMode = uint8_t(StereoMode::LEFT_RIGHT);
+   }
+   Run<RPROC(Present)>(xrFb ? xrFb->mId : 0, type, webvr, asyncOptions);
+@@ -585,7 +596,7 @@ uvec2 ClientWebGLContext::PresentedSize() {
+ void ClientWebGLContext::LookForStereoCamera(const GLenum target,
+                                              const Span<const uint8_t>& aData) {
+   if (mStereoCamera || target != LOCAL_GL_UNIFORM_BUFFER ||
+-      aData.size() > 64 * 1024 || !StaticPrefs::webgl_stereo_camera_enabled()) {
++      aData.size() > 64 * 1024 || !gfx::gfxVars::StereoContentDeclaration()) {
+     return;
+   }
+   const float factor = StaticPrefs::webgl_stereo_camera_convergence();
+@@ -614,10 +625,45 @@ void ClientWebGLContext::OnStereoCameraStarted() {
+ // Only where the two views are declared on a surface of their own: anywhere
+ // else the canvas stays as the page drew it.
+ bool ClientWebGLContext::StereoCameraPresents() const {
+-  return mStereoCamera && !mFlatXR && !mInlineStereo &&
++  return mStereoCamera && mStereoCameraAllowed && !mFlatXR && !mInlineStereo &&
+          gfx::gfxVars::StereoContentDeclaration();
+ }
+ 
++// The 3D Canvas menu sets, for the page's site, whether its WebGL scenes are
++// drawn once per eye (permission "stereo-camera", allow or deny) and the
++// eyes' separation ("stereo-camera-depth", in tenths of a percent of the
++// view's width); without them the preferences decide
++// (webgl.stereo-camera.enabled, webgl.stereo-camera.separation). A canvas
++// in a worker follows the preferences.
++bool ClientWebGLContext::UpdateStereoCameraSite() {
++  bool allowed = StaticPrefs::webgl_stereo_camera_enabled();
++  uint8_t depth = 0;
++  if (NS_IsMainThread() && mCanvasElement) {
++    if (RefPtr<PermissionManager> perms = PermissionManager::GetInstance()) {
++      nsIPrincipal* principal = mCanvasElement->NodePrincipal();
++      uint32_t perm = nsIPermissionManager::UNKNOWN_ACTION;
++      if (NS_SUCCEEDED(perms->TestPermissionFromPrincipal(
++              principal, "stereo-camera"_ns, &perm))) {
++        if (perm == nsIPermissionManager::ALLOW_ACTION) {
++          allowed = true;
++        } else if (perm == nsIPermissionManager::DENY_ACTION) {
++          allowed = false;
++        }
++      }
++      perm = nsIPermissionManager::UNKNOWN_ACTION;
++      if (NS_SUCCEEDED(perms->TestPermissionFromPrincipal(
++              principal, "stereo-camera-depth"_ns, &perm)) &&
++          perm >= 5 && perm <= 100) {
++        depth = uint8_t(perm);
++      }
++    }
++  }
++  mStereoDepth = depth;
++  mStereoCameraSiteAllowed = allowed;
++  mStereoCameraSiteRead = true;
++  return allowed != mStereoCameraAllowed;
++}
++
+ void ClientWebGLContext::SetInlineStereo(const bool inlineStereo) {
+   if (mInlineStereo == inlineStereo) return;
+   mInlineStereo = inlineStereo;
+@@ -720,10 +766,18 @@ bool ClientWebGLContext::UpdateWebRenderCanvasData(
+     nsDisplayListBuilder* aBuilder, WebRenderCanvasData* aCanvasData) {
+   CanvasRenderer* renderer = aCanvasData->GetCanvasRenderer();
+ 
++  if (!mStereoCameraSiteRead) {
++    UpdateStereoCameraSite();
++    mStereoCameraAllowed = mStereoCameraSiteAllowed;
++  }
++
+   if (!IsContextLost() && !mResetLayer && renderer) {
+     return true;
+   }
+ 
++  // The site's choice of the camera hack takes effect with a new canvas
++  // renderer, which has the size of the frames presented from now on.
++  mStereoCameraAllowed = mStereoCameraSiteAllowed;
+   const auto size = PresentedSize();
+ 
+   if (!IsContextLost() && !renderer && mNotLost->mCanvasRenderer &&
+@@ -5089,8 +5143,10 @@ void ClientWebGLContext::UniformData(const GLenum funcElemType,
+ 
+   // The camera hack: a page that uploads a camera has a 3D scene; from the
+   // next frame on the canvas presents both eyes.
++  // Looked for whether or not the site has the camera hack on, so that the
++  // 3D Canvas menu takes effect at once: a page may upload its camera once.
+   if (!mStereoCamera && funcElemType == LOCAL_GL_FLOAT_MAT4 &&
+-      availCount == 16 && StaticPrefs::webgl_stereo_camera_enabled()) {
++      availCount == 16 && gfx::gfxVars::StereoContentDeclaration()) {
+     std::array<float, 16> m;
+     const auto* f = reinterpret_cast<const float*>(begin);
+     for (int i = 0; i < 16; i++) {
+diff --git a/dom/canvas/ClientWebGLContext.h b/dom/canvas/ClientWebGLContext.h
+index a192fd91fc..4128ac8816 100644
+--- a/dom/canvas/ClientWebGLContext.h
++++ b/dom/canvas/ClientWebGLContext.h
+@@ -768,8 +768,17 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
+   uvec2 mFlatXRSize = {};
+   bool mInlineStereo = false;
+   // The camera hack (WebGLStereoCamera.h): the page uploaded a camera, so
+-  // the canvas presents both eyes, full side by side.
++  // the canvas presents both eyes, full side by side, when the camera hack
++  // is on for the page's site (mStereoCameraAllowed).
+   mutable bool mStereoCamera = false;
++  // The camera hack for the canvas's site (the 3D Canvas menu, permissions
++  // "stereo-camera" and "stereo-camera-depth"), else the preferences: as
++  // last read (UpdateStereoCameraSite), and in effect, which follows with
++  // the next canvas renderer (the presented frames change size).
++  bool mStereoCameraSiteRead = false;
++  bool mStereoCameraSiteAllowed = false;
++  bool mStereoCameraAllowed = false;
++  uint8_t mStereoDepth = 0;
+   uvec2 mRequestedSize = {};
+ 
+  public:
+@@ -1113,6 +1122,8 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
+   bool IsPresentingFlatXR() const { return mFlatXR; }
+   bool StereoCameraPresents() const;
+   void OnStereoCameraStarted();
++  // Reads the site's choice; true when it differs from the one in effect.
++  bool UpdateStereoCameraSite();
+   void LookForStereoCamera(GLenum target, const Span<const uint8_t>& aData);
+   // An inline-stereo session draws its left view into the left half of the
+   // canvas and its right view into the right half.
+diff --git a/dom/canvas/WebGLBuffer.cpp b/dom/canvas/WebGLBuffer.cpp
+index c8380caeb4..830b496027 100644
+--- a/dom/canvas/WebGLBuffer.cpp
++++ b/dom/canvas/WebGLBuffer.cpp
+@@ -5,6 +5,7 @@
+ #include "WebGLBuffer.h"
+ 
+ #include "mozilla/StaticPrefs_webgl.h"
++#include "mozilla/gfx/gfxVars.h"
+ 
+ #include "GLContext.h"
+ #include "WebGLContext.h"
+@@ -156,7 +157,7 @@ void WebGLBuffer::BufferData(const GLenum target, const uint64_t size,
+ 
+   mStereoShadow.clear();
+   if (target == LOCAL_GL_UNIFORM_BUFFER && size <= 64 * 1024 &&
+-      StaticPrefs::webgl_stereo_camera_enabled()) {
++      gfx::gfxVars::StereoContentDeclaration()) {
+     mStereoShadow.assign(size, 0);
+     if (uploadData) {
+       memcpy(mStereoShadow.data(), uploadData, size);
+diff --git a/dom/canvas/WebGLContext.cpp b/dom/canvas/WebGLContext.cpp
+index 86b544e2f7..8ea18613a7 100644
+--- a/dom/canvas/WebGLContext.cpp
++++ b/dom/canvas/WebGLContext.cpp
+@@ -1948,6 +1948,13 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
+   bool useAsync = options.remoteTextureOwnerId.IsValid() &&
+                   options.remoteTextureId.IsValid();
+ 
++  // The camera hack's depth for the canvas's site.
++  if (!xrFb && !webvr && options.stereoCamera) {
++    mStereoSeparation =
++        options.stereoDepth
++            ? options.stereoDepth / 1000.0f
++            : StaticPrefs::webgl_stereo_camera_separation() / 100.0f;
++  }
+   // The camera hack: the canvas presents both eyes from now on.
+   if (!xrFb && !webvr && options.stereoCamera != mStereoCamera) {
+     mStereoCamera = options.stereoCamera;
+diff --git a/dom/canvas/WebGLContext.h b/dom/canvas/WebGLContext.h
+index 709f996999..0092c98139 100644
+--- a/dom/canvas/WebGLContext.h
++++ b/dom/canvas/WebGLContext.h
+@@ -1368,6 +1368,9 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
+   uint32_t mStereoOffscreenDraws = 0;
+   // Draws once per eye into the page's own framebuffers.
+   uint32_t mStereoTargetDraws = 0;
++  // The eyes' separation, a fraction of the view's width: the site's
++  // (SwapChainOptions::stereoDepth) or webgl.stereo-camera.separation.
++  float mStereoSeparation = 0.02f;
+   gl::SwapChain mSnapshotSwapChain;
+ 
+   RefPtr<layers::RemoteTextureOwnerClient> mRemoteTextureOwner;
+diff --git a/dom/canvas/WebGLContextDraw.cpp b/dom/canvas/WebGLContextDraw.cpp
+index 6dbe4aab37..0d3f0b4c51 100644
+--- a/dom/canvas/WebGLContextDraw.cpp
++++ b/dom/canvas/WebGLContextDraw.cpp
+@@ -685,7 +685,7 @@ static bool HasInstancedDrawing(const WebGLContext& webgl) {
+ // post-processing (StereoTargetPerEye), once otherwise (shadow maps). The
+ // right eye's draw samples the right eye's copies of the textures it reads.
+ void WebGLContext::DrawPerEye(const std::function<void()>& aDraw) {
+-  const float s = StaticPrefs::webgl_stereo_camera_separation() / 100.0f;
++  const float s = mStereoSeparation;
+   if (StereoCameraDraws()) {
+     UploadStereoCameras(-s);
+     aDraw();
+diff --git a/dom/canvas/WebGLContextGL.cpp b/dom/canvas/WebGLContextGL.cpp
+index 6ba02285c5..24813b3ed0 100644
+--- a/dom/canvas/WebGLContextGL.cpp
++++ b/dom/canvas/WebGLContextGL.cpp
+@@ -29,6 +29,7 @@
+ #include "jsfriendapi.h"
+ #include "mozilla/RefPtr.h"
+ #include "mozilla/StaticPrefs_webgl.h"
++#include "mozilla/gfx/gfxVars.h"
+ #include "mozilla/dom/BindingUtils.h"
+ #include "mozilla/dom/ImageData.h"
+ #include "mozilla/dom/WebGLRenderingContextBinding.h"
+@@ -1396,7 +1397,7 @@ void WebGLContext::UniformData(
+ 
+   // The camera hack: remember the camera the page hands the GPU.
+   if (activeInfo.elemType == LOCAL_GL_FLOAT_MAT4 && !validationInfo.isArray &&
+-      elemCount == 1 && StaticPrefs::webgl_stereo_camera_enabled()) {
++      elemCount == 1 && gfx::gfxVars::StereoContentDeclaration()) {
+     std::array<float, 16> m;
+     const auto* f = reinterpret_cast<const float*>(data.data());
+     for (int i = 0; i < 16; i++) {
+diff --git a/dom/canvas/WebGLTypes.h b/dom/canvas/WebGLTypes.h
+index a3a580980a..6aae3651fe 100644
+--- a/dom/canvas/WebGLTypes.h
++++ b/dom/canvas/WebGLTypes.h
+@@ -836,14 +836,17 @@ struct SwapChainOptions final {
+   bool flatXR = false;
+   // The camera hack (WebGLStereoCamera.h): the canvas presents both eyes.
+   bool stereoCamera = false;
++  // The camera hack's depth for the canvas's site (the 3D Canvas menu): the
++  // eyes' separation in tenths of a percent of the view's width, 0 for
++  // webgl.stereo-camera.separation.
++  uint8_t stereoDepth = 0;
+   // Pad to sizeof(u64):
+-  uint8_t padding2 = 0;
+   uint16_t padding3 = 0;
+ 
+   auto MutTiedFields() {
+     return std::tie(remoteTextureId, remoteTextureOwnerId, bgra,
+                     forceAsyncPresent, stereoMode, flatXR, stereoCamera,
+-                    padding2, padding3);
++                    stereoDepth, padding3);
+   }
+ };
+ 
+-- 
+2.53.0
+

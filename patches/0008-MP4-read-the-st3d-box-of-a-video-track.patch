@@ -1,7 +1,7 @@
 From 98250a3c88a88f3bf19f9922eb6e865ac3b4c622 Mon Sep 17 00:00:00 2001
 From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
 Date: Tue, 13 Oct 2026 14:54:20 -0300
-Subject: [PATCH 08/18] MP4: read the st3d box of a video track
+Subject: [PATCH 08/25] MP4: read the st3d box of a video track
 
 A video track's sample entry may hold the Stereoscopic 3D Video box,
 st3d, of the Spherical Video V2 RFC (stereo_mode 0 mono, 1 top and

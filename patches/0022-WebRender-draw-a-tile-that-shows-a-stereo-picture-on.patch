@@ -1,0 +1,1807 @@
+From 5e7599176ebf2309108017d79231b9e9d891d02a Mon Sep 17 00:00:00 2001
+From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
+Date: Wed, 14 Oct 2026 08:53:00 -0300
+Subject: [PATCH 22/25] WebRender: draw a tile that shows a stereo picture once
+ per eye
+
+A stereo picture that is not given a compositor surface of its own (an
+opacity on the element, a turn, a clip the compositor cannot take) is
+drawn into the page's picture cache tiles, where it showed both views
+squeezed into its place. A tile of the root picture cache that draws
+such a picture straight into itself is now drawn once per eye, when the
+compositor shows such tiles (CompositorCapabilities::
+supports_stereo_tiles): into a buffer twice as wide as the tile, the
+left eye's drawing over the tile's valid rect and the right eye's beside
+it, offset by the valid rect's width; every other primitive the same in
+both. Each eye's drawing shows that eye's view over the picture's place
+(a brush segment over the view's place, its texels the view's part of
+the picture). The compositor declares the tile's surface two views full
+side by side, left eye first (NativeLayerWaylandRender: buffers twice as
+wide, the right eye's part read back with the left's, a tile visible
+across part of its width copied side by side).
+
+How a picture holds its views is the browser's decision, the same for a
+picture with a surface of its own (layers::DecideStereo through
+libstereo-policy): WebRender asks it through a policy the embedder
+registers (webrender::set_stereo_policy), with the picture's mark and the
+shape its place is shown at (a video's image is laid out at the frame's
+size and scaled by a reference frame). DMABuf textures now carry their
+stereo mark to WebRender as other textures do. Images that hold two views
+are drawn through the brush path, which draws one eye's view; the quad
+path draws a picture whole.
+
+Views the browser drew itself (WebXR, the camera hack) hold one scene:
+drawn once, in a surface the compositor cannot show per eye (a filter),
+they show the left eye's view instead of both views squeezed together.
+Other pictures drawn once show as they are, as before.
+
+Off-screen passes (filters, masks) are drawn once.
+
+Assisted-by: Claude Opus 5.5 via Claude Code
+---
+ gfx/layers/NativeLayer.h                      |   7 +
+ gfx/layers/NativeLayerWayland.cpp             | 284 ++++++++++++------
+ gfx/layers/NativeLayerWayland.h               |  15 +
+ gfx/layers/opengl/DMABUFTextureHostOGL.cpp    |  17 ++
+ gfx/webrender_bindings/RenderCompositor.cpp   |  82 +++++
+ gfx/webrender_bindings/RenderCompositor.h     |   4 +
+ .../RenderCompositorNative.cpp                |  14 +
+ .../RenderCompositorNative.h                  |   1 +
+ gfx/webrender_bindings/src/bindings.rs        |  17 ++
+ gfx/wr/webrender/res/brush_yuv_image.glsl     |  38 ++-
+ gfx/wr/webrender/src/batch.rs                 | 166 ++++++++++
+ gfx/wr/webrender/src/composite.rs             |  17 ++
+ .../webrender/src/compositor/sw_compositor.rs |  27 +-
+ gfx/wr/webrender/src/frame_builder.rs         |  94 +++---
+ .../src/invalidation/cached_surface.rs        |  16 +
+ gfx/wr/webrender/src/invalidation/mod.rs      |   2 +
+ gfx/wr/webrender/src/lib.rs                   |   2 +
+ gfx/wr/webrender/src/picture.rs               |  13 +
+ gfx/wr/webrender/src/prepare.rs               |  17 +-
+ gfx/wr/webrender/src/render_target.rs         |  10 +
+ gfx/wr/webrender/src/render_task.rs           |   2 +
+ gfx/wr/webrender/src/render_task_graph.rs     |   1 +
+ gfx/wr/webrender/src/renderer/mod.rs          |  40 ++-
+ gfx/wr/webrender/src/stereo.rs                | 133 ++++++++
+ gfx/wr/webrender/src/tile_cache/mod.rs        |  18 ++
+ 25 files changed, 880 insertions(+), 157 deletions(-)
+ create mode 100644 gfx/wr/webrender/src/stereo.rs
+
+diff --git a/gfx/layers/NativeLayer.h b/gfx/layers/NativeLayer.h
+index c79c661a3f..af79525af7 100644
+--- a/gfx/layers/NativeLayer.h
++++ b/gfx/layers/NativeLayer.h
+@@ -258,6 +258,13 @@ class NativeLayer {
+   // into. Layers of compositors without stereo ignore it.
+   virtual void SetStereoMark(uint32_t aStereoMark) {}
+ 
++  // Before the next surface is drawn: WebRender draws this tile once per eye
++  // (Sparky Stereo OS), into a buffer twice as wide as the layer, the left
++  // eye's drawing over the display rect and the right eye's beside it, offset
++  // by the display rect's width. Layers of compositors without stereo ignore
++  // it, and the right eye's drawing then lands outside their buffer.
++  virtual void SetStereoTile(bool aStereo) {}
++
+   virtual GpuFence* GetGpuFence() = 0;
+ 
+  protected:
+diff --git a/gfx/layers/NativeLayerWayland.cpp b/gfx/layers/NativeLayerWayland.cpp
+index 4e7d73d84f..afe1d43693 100644
+--- a/gfx/layers/NativeLayerWayland.cpp
++++ b/gfx/layers/NativeLayerWayland.cpp
+@@ -1042,74 +1042,108 @@ void NativeLayerWayland::UpdateLayerPlacementLocked(
+   // view is copied side by side into a buffer of its own (RepackStereoLocked).
+   bool stereo = false;
+   bool repack = false;
+-  DecideStereoLocked(place.Size());
+-  if (mStereoPacking != StereoMode::MONO) {
+-    Rect view = place;
+-    if (mStereoFit == StereoFit::HalfWidth) {
+-      view.x += view.width / 4;
+-      view.width /= 2;
+-    } else if (mStereoFit == StereoFit::HalfHeight) {
+-      view.y += view.height / 4;
+-      view.height /= 2;
+-    }
+-    Rect viewClipped = view;
+-    if (mClipRect) {
+-      viewClipped = viewClipped.Intersect(Rect(mClipRect.value()));
+-    }
++  if (mStereoTileOffset > 0) {
++    // A tile WebRender drew once per eye: each eye's drawing lies over the
++    // display rect, the right eye's mStereoTileOffset pixels to the right of
++    // the left eye's. The surface shows the buffer itself when the tile is
++    // visible across the display rect's whole width, so that the two halves
++    // of the source box are the two drawings; otherwise the visible part of
++    // each drawing is copied side by side. A tile flipped sideways is not
++    // declared and shows the left eye's drawing.
+     const bool flipX = transform2D._11 < 0.0;
+     const bool flipY = transform2D._22 < 0.0;
+-    if (!viewClipped.IsEmpty() && !flipX) {
+-      // The visible part of a view, as a fraction of the view, in the
+-      // buffer's orientation.
+-      float x0 = (viewClipped.x - view.x) / view.width;
+-      float x1 = (viewClipped.XMost() - view.x) / view.width;
+-      float y0 = (viewClipped.y - view.y) / view.height;
+-      float y1 = (viewClipped.YMost() - view.y) / view.height;
+-      if (flipY) {
+-        std::swap(y0, y1);
+-        y0 = 1.0f - y0;
+-        y1 = 1.0f - y1;
+-      }
+-      const float pixel = 1.0f / std::max(view.width, 1.0f);
+-      const bool wholeWidth = x0 <= pixel && x1 >= 1.0f - pixel;
+-      if (mStereoPacking == StereoMode::LEFT_RIGHT && wholeWidth) {
++    const Rect visible = transform2D.Inverse()
++                             .TransformBounds(surfaceRectClipped)
++                             .Intersect(bufferRect);
++    const float offset = float(mStereoTileOffset);
++    if (!visible.IsEmpty() && !flipX) {
++      if (std::abs(visible.width - offset) < 0.5f) {
+         stereo = true;
+-      } else if (mStereoCanRepack && !flipY) {
+-        Rect views[2];
+-        switch (mStereoPacking) {
+-          case StereoMode::LEFT_RIGHT:
+-            views[0] = Rect(0.0f, 0.0f, 0.5f, 1.0f);
+-            views[1] = Rect(0.5f, 0.0f, 0.5f, 1.0f);
+-            break;
+-          case StereoMode::RIGHT_LEFT:
+-            views[0] = Rect(0.5f, 0.0f, 0.5f, 1.0f);
+-            views[1] = Rect(0.0f, 0.0f, 0.5f, 1.0f);
+-            break;
+-          case StereoMode::TOP_BOTTOM:
+-            views[0] = Rect(0.0f, 0.0f, 1.0f, 0.5f);
+-            views[1] = Rect(0.0f, 0.5f, 1.0f, 0.5f);
+-            break;
+-          default:  // BOTTOM_TOP
+-            views[0] = Rect(0.0f, 0.5f, 1.0f, 0.5f);
+-            views[1] = Rect(0.0f, 0.0f, 1.0f, 0.5f);
+-            break;
+-        }
++      } else if (!flipY) {
++        const float frontWidth = 2.0f * float(mSize.width);
++        const float frontHeight = std::max(float(mSize.height), 1.0f);
+         for (int eye = 0; eye < 2; eye++) {
+-          const Rect& v = views[eye];
+           mStereoEyeRects[eye] =
+-              Rect(v.x + x0 * v.width, v.y + y0 * v.height,
+-                   (x1 - x0) * v.width, (y1 - y0) * v.height);
++              Rect((visible.x + float(eye) * offset) / frontWidth,
++                   visible.y / frontHeight, visible.width / frontWidth,
++                   visible.height / frontHeight);
+         }
+-        const int width = std::max(
+-            1, int(std::lround(mStereoEyeRects[0].width * mSize.width)));
+-        const int height = std::max(
+-            1, int(std::lround(mStereoEyeRects[0].height * mSize.height)));
+-        mStereoBufferSize = IntSize(width * 2, height);
++        mStereoBufferSize =
++            IntSize(2 * std::max(1, int(std::lround(visible.width))),
++                    std::max(1, int(std::lround(visible.height))));
+         stereo = repack = true;
+       }
+     }
+-    if (stereo) {
+-      surfaceRectClipped = viewClipped;
++  } else {
++    DecideStereoLocked(place.Size());
++    if (mStereoPacking != StereoMode::MONO) {
++      Rect view = place;
++      if (mStereoFit == StereoFit::HalfWidth) {
++        view.x += view.width / 4;
++        view.width /= 2;
++      } else if (mStereoFit == StereoFit::HalfHeight) {
++        view.y += view.height / 4;
++        view.height /= 2;
++      }
++      Rect viewClipped = view;
++      if (mClipRect) {
++        viewClipped = viewClipped.Intersect(Rect(mClipRect.value()));
++      }
++      const bool flipX = transform2D._11 < 0.0;
++      const bool flipY = transform2D._22 < 0.0;
++      if (!viewClipped.IsEmpty() && !flipX) {
++        // The visible part of a view, as a fraction of the view, in the
++        // buffer's orientation.
++        float x0 = (viewClipped.x - view.x) / view.width;
++        float x1 = (viewClipped.XMost() - view.x) / view.width;
++        float y0 = (viewClipped.y - view.y) / view.height;
++        float y1 = (viewClipped.YMost() - view.y) / view.height;
++        if (flipY) {
++          std::swap(y0, y1);
++          y0 = 1.0f - y0;
++          y1 = 1.0f - y1;
++        }
++        const float pixel = 1.0f / std::max(view.width, 1.0f);
++        const bool wholeWidth = x0 <= pixel && x1 >= 1.0f - pixel;
++        if (mStereoPacking == StereoMode::LEFT_RIGHT && wholeWidth) {
++          stereo = true;
++        } else if (mStereoCanRepack && !flipY) {
++          Rect views[2];
++          switch (mStereoPacking) {
++            case StereoMode::LEFT_RIGHT:
++              views[0] = Rect(0.0f, 0.0f, 0.5f, 1.0f);
++              views[1] = Rect(0.5f, 0.0f, 0.5f, 1.0f);
++              break;
++            case StereoMode::RIGHT_LEFT:
++              views[0] = Rect(0.5f, 0.0f, 0.5f, 1.0f);
++              views[1] = Rect(0.0f, 0.0f, 0.5f, 1.0f);
++              break;
++            case StereoMode::TOP_BOTTOM:
++              views[0] = Rect(0.0f, 0.0f, 1.0f, 0.5f);
++              views[1] = Rect(0.0f, 0.5f, 1.0f, 0.5f);
++              break;
++            default:  // BOTTOM_TOP
++              views[0] = Rect(0.0f, 0.5f, 1.0f, 0.5f);
++              views[1] = Rect(0.0f, 0.0f, 1.0f, 0.5f);
++              break;
++          }
++          for (int eye = 0; eye < 2; eye++) {
++            const Rect& v = views[eye];
++            mStereoEyeRects[eye] =
++                Rect(v.x + x0 * v.width, v.y + y0 * v.height,
++                     (x1 - x0) * v.width, (y1 - y0) * v.height);
++          }
++          const int width = std::max(
++              1, int(std::lround(mStereoEyeRects[0].width * mSize.width)));
++          const int height = std::max(
++              1, int(std::lround(mStereoEyeRects[0].height * mSize.height)));
++          mStereoBufferSize = IntSize(width * 2, height);
++          stereo = repack = true;
++        }
++      }
++      if (stereo) {
++        surfaceRectClipped = viewClipped;
++      }
+     }
+   }
+   if (!DeclareStereoLocked(aProofOfLock, stereo)) {
+@@ -1150,7 +1184,10 @@ void NativeLayerWayland::UpdateLayerPlacementLocked(
+   Rect bufferClip = transform2DInversed.TransformBounds(surfaceRectClipped);
+   auto unscaledViewportRect =
+       bufferClip.Intersect(Rect(0, 0, mSize.width, mSize.height));
+-  if (stereo) {
++  if (stereo && mStereoTileOffset > 0) {
++    // Both eyes' drawings, the right eye's beside the left eye's.
++    unscaledViewportRect.width += float(mStereoTileOffset);
++  } else if (stereo) {
+     // Both views, across their whole width.
+     unscaledViewportRect.x = 0;
+     unscaledViewportRect.width = mSize.width;
+@@ -1444,6 +1481,48 @@ void NativeLayerWaylandRender::SetStereoMark(uint32_t aStereoMark) {
+   }
+ }
+ 
++// WebRender draws the next surface of this tile once per eye (Sparky Stereo
++// OS), when the tile shows a stereo picture that is not given a surface of its
++// own: into a buffer twice as wide as the tile, the left eye's drawing over
++// the display rect, the right eye's beside it, offset by the display rect's
++// width. The surface is declared full side by side, left eye first, and each
++// eye sees its drawing over the tile's place (UpdateLayerPlacementLocked).
++void NativeLayerWaylandRender::SetStereoTile(bool aStereo) {
++  WaylandSurfaceLock lock(mSurface);
++  if (mStereoTile != aStereo) {
++    LOG("NativeLayerWaylandRender::SetStereoTile() %d", aStereo);
++    mStereoTile = aStereo;
++  }
++}
++
++// The buffer the next drawing goes into: the front buffer when the Wayland
++// compositor released it early and it fits the drawing, one of the pool's
++// otherwise.
++RefPtr<widget::WaylandBuffer>
++NativeLayerWaylandRender::ObtainInProgressBufferLocked(
++    const WaylandSurfaceLock& aProofOfLock, const IntRect& aDisplayRect,
++    bool* aReusedFrontBuffer) {
++  const IntSize size =
++      mStereoTile ? IntSize(mSize.width * 2, mSize.height) : mSize;
++  mInProgressStereoOffset = mStereoTile ? aDisplayRect.width : 0;
++  *aReusedFrontBuffer = false;
++  if (mFrontBuffer && !mFrontBuffer->IsAttached(aProofOfLock) &&
++      mFrontBuffer->IsMatchingSize(LayoutDeviceIntSize::FromUnknownSize(size)) &&
++      mStereoTileOffset == mInProgressStereoOffset) {
++    LOGVERBOSE(
++        "NativeLayerWaylandRender::ObtainInProgressBufferLocked(): use front "
++        "buffer for rendering");
++    *aReusedFrontBuffer = true;
++    return std::move(mFrontBuffer);
++  }
++  LOGVERBOSE(
++      "NativeLayerWaylandRender::ObtainInProgressBufferLocked(): use progress "
++      "buffer for rendering, stereo offset %d",
++      mInProgressStereoOffset);
++  return mSurfacePoolHandle->ObtainBufferFromPool(aProofOfLock, size,
++                                                  mRootLayer->GetDRMFormat());
++}
++
+ bool NativeLayerWaylandRender::IsFrontBufferChanged() {
+   return mState.mMutatedFrontBuffer && !mDirtyRegion.IsEmpty();
+ }
+@@ -1462,26 +1541,18 @@ RefPtr<DrawTarget> NativeLayerWaylandRender::NextSurfaceAsDrawTarget(
+   mDirtyRegion = aUpdateRegion;
+ 
+   MOZ_DIAGNOSTIC_ASSERT(!mInProgressBuffer);
+-  if (mFrontBuffer && !mFrontBuffer->IsAttached(lock)) {
++  bool reusedFrontBuffer = false;
++  mInProgressBuffer =
++      ObtainInProgressBufferLocked(lock, aDisplayRect, &reusedFrontBuffer);
++  if (!reusedFrontBuffer && mFrontBuffer) {
+     LOGVERBOSE(
+-        "NativeLayerWaylandRender::NextSurfaceAsDrawTarget(): use front buffer "
+-        "for rendering");
+-    // the Wayland compositor released the buffer early, we can reuse it
+-    mInProgressBuffer = std::move(mFrontBuffer);
+-  } else {
+-    LOGVERBOSE(
+-        "NativeLayerWaylandRender::NextSurfaceAsDrawTarget(): use progress "
+-        "buffer for rendering");
+-    mInProgressBuffer = mSurfacePoolHandle->ObtainBufferFromPool(
+-        lock, mSize, mRootLayer->GetDRMFormat());
+-    if (mFrontBuffer) {
+-      LOGVERBOSE(
+-          "NativeLayerWaylandRender::NextSurfaceAsDrawTarget(): read-back from "
+-          "front buffer");
++        "NativeLayerWaylandRender::NextSurfaceAsDrawTarget(): read-back from "
++        "front buffer");
++    if (mInProgressBuffer) {
+       ReadBackFrontBuffer(lock);
+-      mSurfacePoolHandle->ReturnBufferToPool(lock, mFrontBuffer);
+-      mFrontBuffer = nullptr;
+     }
++    mSurfacePoolHandle->ReturnBufferToPool(lock, mFrontBuffer);
++    mFrontBuffer = nullptr;
+   }
+   MOZ_DIAGNOSTIC_ASSERT(!mFrontBuffer);
+ 
+@@ -1512,19 +1583,9 @@ Maybe<GLuint> NativeLayerWaylandRender::NextSurfaceAsFramebuffer(
+   mDirtyRegion = IntRegion(aUpdateRegion);
+ 
+   MOZ_DIAGNOSTIC_ASSERT(!mInProgressBuffer);
+-  if (mFrontBuffer && !mFrontBuffer->IsAttached(lock)) {
+-    LOGVERBOSE(
+-        "NativeLayerWaylandRender::NextSurfaceAsFramebuffer(): use front "
+-        "buffer for rendering");
+-    // the Wayland compositor released the buffer early, we can reuse it
+-    mInProgressBuffer = std::move(mFrontBuffer);
+-  } else {
+-    LOGVERBOSE(
+-        "NativeLayerWaylandRender::NextSurfaceAsFramebuffer(): use progress "
+-        "buffer for rendering");
+-    mInProgressBuffer = mSurfacePoolHandle->ObtainBufferFromPool(
+-        lock, mSize, mRootLayer->GetDRMFormat());
+-  }
++  bool reusedFrontBuffer = false;
++  mInProgressBuffer =
++      ObtainInProgressBufferLocked(lock, aDisplayRect, &reusedFrontBuffer);
+ 
+   MOZ_DIAGNOSTIC_ASSERT(mInProgressBuffer,
+                         "NativeLayerWaylandRender: Failed to obtain buffer");
+@@ -1566,6 +1627,13 @@ void NativeLayerWaylandRender::ReadBackFrontBuffer(
+ 
+   LOG("NativeLayerWaylandRender::ReadBackFrontBuffer()");
+ 
++  // Tiles drawn once per eye keep the right eye's drawing too, from its place
++  // in the front buffer to its place in the new one.
++  const bool bothEyes = mStereoTileOffset > 0 && mInProgressStereoOffset > 0;
++  const IntPoint frontRight(mStereoTileOffset, 0);
++  const IntPoint newRight(mInProgressStereoOffset, 0);
++  const IntSize frontSize = mFrontBuffer->GetSize().ToUnknownSize();
++
+   if (!copyRegion.IsEmpty()) {
+     if (mSurfacePoolHandle->gl()) {
+       mSurfacePoolHandle->gl()->MakeCurrent();
+@@ -1589,18 +1657,26 @@ void NativeLayerWaylandRender::ReadBackFrontBuffer(
+         }
+         mSurfacePoolHandle->gl()->BlitHelper()->BlitFramebufferToFramebuffer(
+             sourceFB.value(), destFB.value(), r, r, LOCAL_GL_NEAREST);
++        if (bothEyes) {
++          mSurfacePoolHandle->gl()->BlitHelper()->BlitFramebufferToFramebuffer(
++              sourceFB.value(), destFB.value(), r + frontRight, r + newRight,
++              LOCAL_GL_NEAREST);
++        }
+       }
+     } else {
+       RefPtr<gfx::DataSourceSurface> dataSourceSurface =
+           gfx::CreateDataSourceSurfaceFromData(
+-              mSize, mFrontBuffer->GetSurfaceFormat(),
++              frontSize, mFrontBuffer->GetSurfaceFormat(),
+               (const uint8_t*)mFrontBuffer->GetImageData(),
+-              mSize.width * BytesPerPixel(mFrontBuffer->GetSurfaceFormat()));
++              frontSize.width * BytesPerPixel(mFrontBuffer->GetSurfaceFormat()));
+       RefPtr<DrawTarget> dt = mInProgressBuffer->Lock();
+ 
+       for (auto iter = copyRegion.RectIter(); !iter.Done(); iter.Next()) {
+         IntRect r = iter.Get();
+         dt->CopySurface(dataSourceSurface, r, IntPoint(r.x, r.y));
++        if (bothEyes) {
++          dt->CopySurface(dataSourceSurface, r + frontRight, r.TopLeft() + newRight);
++        }
+       }
+     }
+   }
+@@ -1611,7 +1687,8 @@ bool NativeLayerWaylandRender::CommitFrontBufferToScreenLocked(
+   // Don't operate over hidden layers
+   LOG("NativeLayerWaylandRender::CommitFrontBufferToScreenLocked()");
+ 
+-  if (mState.mMutatedVisibility) {
++  // A tile drawn once per eye changes both eyes' drawings.
++  if (mState.mMutatedVisibility || mStereoTileOffset > 0) {
+     mSurface->InvalidateLocked(aProofOfLock);
+   } else {
+     mSurface->InvalidateRegionLocked(aProofOfLock, mDirtyRegion);
+@@ -1656,16 +1733,19 @@ RefPtr<widget::WaylandBuffer> NativeLayerWaylandRender::RepackStereoLocked(
+     return nullptr;
+   }
+   // WebRender draws these surfaces with the origin at the top left, as the
+-  // eyes' rectangles are given: each view is copied at its own size.
++  // eyes' rectangles are given: each view is copied at its own size. The
++  // rectangles are fractions of the front buffer, which is twice as wide as
++  // the layer for a tile drawn once per eye.
++  const IntSize frontSize = mFrontBuffer->GetSize().ToUnknownSize();
+   const int width = mStereoBufferSize.width / 2;
+   const int height = mStereoBufferSize.height;
+   IntRect eyes[2];
+   for (int eye = 0; eye < 2; eye++) {
+     const Rect& r = mStereoEyeRects[eye];
+-    const int x = std::clamp(int(std::lround(r.x * mSize.width)), 0,
+-                             std::max(mSize.width - width, 0));
+-    const int y = std::clamp(int(std::lround(r.y * mSize.height)), 0,
+-                             std::max(mSize.height - height, 0));
++    const int x = std::clamp(int(std::lround(r.x * frontSize.width)), 0,
++                             std::max(frontSize.width - width, 0));
++    const int y = std::clamp(int(std::lround(r.y * frontSize.height)), 0,
++                             std::max(frontSize.height - height, 0));
+     eyes[eye] = IntRect(x, y, width, height);
+   }
+   if (RefPtr<gl::GLContext> gl = mSurfacePoolHandle->gl()) {
+@@ -1691,9 +1771,9 @@ RefPtr<widget::WaylandBuffer> NativeLayerWaylandRender::RepackStereoLocked(
+     return mStereoBuffer;
+   }
+   RefPtr<gfx::DataSourceSurface> front = gfx::CreateDataSourceSurfaceFromData(
+-      mSize, mFrontBuffer->GetSurfaceFormat(),
++      frontSize, mFrontBuffer->GetSurfaceFormat(),
+       (const uint8_t*)mFrontBuffer->GetImageData(),
+-      mSize.width * BytesPerPixel(mFrontBuffer->GetSurfaceFormat()));
++      frontSize.width * BytesPerPixel(mFrontBuffer->GetSurfaceFormat()));
+   RefPtr<DrawTarget> dt = mStereoBuffer->Lock();
+   if (!front || !dt) {
+     return nullptr;
+@@ -1716,6 +1796,10 @@ void NativeLayerWaylandRender::NotifySurfaceReady() {
+ 
+   MOZ_DIAGNOSTIC_ASSERT(!mFrontBuffer);
+   mFrontBuffer = std::move(mInProgressBuffer);
++  if (mStereoTileOffset != mInProgressStereoOffset) {
++    mStereoTileOffset = mInProgressStereoOffset;
++    mState.mMutatedPlacement = true;
++  }
+   if (mSurfacePoolHandle->gl()) {
+     auto* buffer = mFrontBuffer->AsWaylandBufferDMABUF();
+     if (buffer) {
+diff --git a/gfx/layers/NativeLayerWayland.h b/gfx/layers/NativeLayerWayland.h
+index 312c169854..9c0bffdebb 100644
+--- a/gfx/layers/NativeLayerWayland.h
++++ b/gfx/layers/NativeLayerWayland.h
+@@ -374,6 +374,10 @@ class NativeLayerWayland : public NativeLayer {
+   // The part of the buffer each eye sees, normalized, top left origin.
+   gfx::Rect mStereoEyeRects[2];
+   gfx::IntSize mStereoBufferSize;
++  // The front buffer holds a tile WebRender drew once per eye (SetStereoTile):
++  // the left eye's drawing over the display rect, the right eye's beside it,
++  // this many pixels to the right. 0 for a tile drawn once.
++  int mStereoTileOffset = 0;
+ 
+   enum class MainThreadUpdate {
+     None,
+@@ -406,6 +410,7 @@ class NativeLayerWaylandRender final : public NativeLayerWayland {
+   void AttachExternalImage(wr::RenderTextureHost* aExternalImage) override;
+   bool IsFrontBufferChanged() override;
+   void SetStereoMark(uint32_t aStereoMark) override;
++  void SetStereoTile(bool aStereo) override;
+ 
+   NativeLayerWaylandRender(NativeLayerRootWayland* aRootLayer,
+                            const gfx::IntSize& aSize, bool aIsOpaque,
+@@ -427,9 +432,19 @@ class NativeLayerWaylandRender final : public NativeLayerWayland {
+   bool CommitFrontBufferToScreenLocked(
+       const widget::WaylandSurfaceLock& aProofOfLock) override;
+ 
++  // The buffer the next drawing goes into: twice as wide as the layer for a
++  // tile drawn once per eye, and the right eye's offset in it (0 for none).
++  RefPtr<widget::WaylandBuffer> ObtainInProgressBufferLocked(
++      const widget::WaylandSurfaceLock& aProofOfLock,
++      const gfx::IntRect& aDisplayRect, bool* aReusedFrontBuffer);
++
+   const RefPtr<SurfacePoolHandleWayland> mSurfacePoolHandle;
+   RefPtr<widget::WaylandBuffer> mInProgressBuffer;
+   gfx::IntRegion mDirtyRegion;
++  // WebRender draws the next surface once per eye.
++  bool mStereoTile = false;
++  // mInProgressBuffer's right eye offset, as mStereoTileOffset.
++  int mInProgressStereoOffset = 0;
+ };
+ 
+ class NativeLayerWaylandExternal final : public NativeLayerWayland {
+diff --git a/gfx/layers/opengl/DMABUFTextureHostOGL.cpp b/gfx/layers/opengl/DMABUFTextureHostOGL.cpp
+index 56ed687a86..391f528908 100644
+--- a/gfx/layers/opengl/DMABUFTextureHostOGL.cpp
++++ b/gfx/layers/opengl/DMABUFTextureHostOGL.cpp
+@@ -112,6 +112,19 @@ void DMABUFTextureHostOGL::PushResourceUpdates(
+   auto imageType =
+       wr::ExternalImageType::TextureHandle(wr::ImageBufferKind::Texture2D);
+ 
++  // The picture's stereo mark on its first plane, for WebRender: a picture
++  // drawn into the page's tiles (not given a surface of its own) has them
++  // drawn once per eye. A surface without a mark that is not a video holds one
++  // picture.
++  const bool isVideo = !!mSurface->GetAsDMABufSurfaceYUV();
++  const uint32_t stereo =
++      isVideo || mSurface->GetStereoMode() != StereoMode::MONO ||
++              mSurface->GetStereoSource() != StereoSource::NONE
++          ? EncodeStereoMark(mSurface->GetStereoMode(),
++                             mSurface->GetStereoSource(), isVideo,
++                             mSurface->GetStereoSwap())
++          : 0;
++
+   switch (mSurface->GetFormat()) {
+     case gfx::SurfaceFormat::R8G8B8X8:
+     case gfx::SurfaceFormat::R8G8B8A8:
+@@ -129,6 +142,7 @@ void DMABUFTextureHostOGL::PushResourceUpdates(
+       }
+       wr::ImageDescriptor descriptor(GetSize(), *format,
+                                      wr::ToOpacityType(mSurface->GetFormat()));
++      descriptor.stereo = stereo;
+       (aResources.*method)(aImageKeys[0], descriptor, aExtID, imageType, 0,
+                            /* aNormalizedUvs */ false);
+       break;
+@@ -141,6 +155,7 @@ void DMABUFTextureHostOGL::PushResourceUpdates(
+       wr::ImageDescriptor descriptor0(
+           gfx::IntSize(mSurface->GetWidth(0), mSurface->GetHeight(0)),
+           wr::ImageFormat::R8, wr::OpacityType::HasAlphaChannel);
++      descriptor0.stereo = stereo;
+       wr::ImageDescriptor descriptor1(
+           gfx::IntSize(mSurface->GetWidth(1), mSurface->GetHeight(1)),
+           wr::ImageFormat::RG8, wr::OpacityType::Opaque);
+@@ -158,6 +173,7 @@ void DMABUFTextureHostOGL::PushResourceUpdates(
+       wr::ImageDescriptor descriptor0(
+           gfx::IntSize(mSurface->GetWidth(0), mSurface->GetHeight(0)),
+           wr::ImageFormat::R8, wr::OpacityType::HasAlphaChannel);
++      descriptor0.stereo = stereo;
+       wr::ImageDescriptor descriptor1(
+           gfx::IntSize(mSurface->GetWidth(1), mSurface->GetHeight(1)),
+           wr::ImageFormat::R8, wr::OpacityType::HasAlphaChannel);
+@@ -178,6 +194,7 @@ void DMABUFTextureHostOGL::PushResourceUpdates(
+       wr::ImageDescriptor descriptor0(
+           gfx::IntSize(mSurface->GetWidth(0), mSurface->GetHeight(0)),
+           wr::ImageFormat::R16, wr::OpacityType::HasAlphaChannel);
++      descriptor0.stereo = stereo;
+       wr::ImageDescriptor descriptor1(
+           gfx::IntSize(mSurface->GetWidth(1), mSurface->GetHeight(1)),
+           wr::ImageFormat::RG16, wr::OpacityType::HasAlphaChannel);
+diff --git a/gfx/webrender_bindings/RenderCompositor.cpp b/gfx/webrender_bindings/RenderCompositor.cpp
+index 4391bf7f48..b713fccbc0 100644
+--- a/gfx/webrender_bindings/RenderCompositor.cpp
++++ b/gfx/webrender_bindings/RenderCompositor.cpp
+@@ -4,6 +4,9 @@
+ 
+ #include "RenderCompositor.h"
+ 
++#include <cmath>
++#include <iterator>
++
+ #include "gfxConfig.h"
+ #include "gfxPlatform.h"
+ #include "GLContext.h"
+@@ -27,6 +30,9 @@
+ #endif
+ 
+ #ifdef MOZ_WAYLAND
++#  include "mozilla/StaticMutex.h"
++#  include "mozilla/TimeStamp.h"
++#  include "mozilla/layers/StereoPolicy.h"
+ #  include "mozilla/webrender/RenderCompositorNative.h"
+ #endif
+ 
+@@ -142,6 +148,82 @@ void wr_compositor_set_surface_stereo(void* aCompositor,
+   compositor->SetSurfaceStereo(aId, aStereo);
+ }
+ 
++void wr_compositor_set_tile_stereo(void* aCompositor, wr::NativeTileId aId,
++                                   bool aStereo) {
++  RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
++  compositor->SetTileStereo(aId, aStereo);
++}
++
++#ifdef MOZ_WAYLAND
++// The last answers, for a second: WebRender asks for every stereo picture in
++// every frame it builds.
++struct StereoPolicyAnswer {
++  uint32_t mMark = 0;
++  gfx::IntSize mShape;
++  uint32_t mAnswer = 0;
++  TimeStamp mTime;
++};
++static StaticMutex sStereoPolicyMutex MOZ_UNANNOTATED;
++static StereoPolicyAnswer sStereoPolicyAnswers[8];
++static size_t sStereoPolicyNext = 0;
++#endif
++
++// How a stereo picture WebRender draws into the page's tiles holds its views
++// (webrender::set_stereo_policy): the decision the compositor's layers take
++// for a picture given a surface of its own (layers::DecideStereo), for the
++// picture's mark and the shape of its place. The answer is 0 for one
++// picture; otherwise bits 0 and 1 hold the layout (1 side by side, 2 top and
++// bottom), bit 2 the right eye first, bits 3 and 4 the fit (1 a full view in
++// the middle of the place's width, 2 of its height), bit 5 views the browser
++// drew itself (WebXR, the camera hack), which show the left eye's view where
++// they are drawn once.
++uint32_t wr_stereo_policy(uint32_t aMark, float aWidth, float aHeight) {
++#ifdef MOZ_WAYLAND
++  mozilla::StereoMode mode = mozilla::StereoMode::MONO;
++  mozilla::StereoSource source = mozilla::StereoSource::NONE;
++  bool isVideo = false;
++  bool swap = false;
++  if (!mozilla::DecodeStereoMark(aMark, &mode, &source, &isVideo, &swap)) {
++    return 0;
++  }
++  const gfx::IntSize shape(int(std::lround(aWidth)), int(std::lround(aHeight)));
++  const TimeStamp now = TimeStamp::Now();
++  StaticMutexAutoLock lock(sStereoPolicyMutex);
++  for (const auto& answer : sStereoPolicyAnswers) {
++    if (!answer.mTime.IsNull() && answer.mMark == aMark &&
++        answer.mShape == shape &&
++        (now - answer.mTime) < TimeDuration::FromSeconds(1)) {
++      return answer.mAnswer;
++    }
++  }
++  const layers::StereoDecision decision =
++      layers::DecideStereo(mode, source, swap, isVideo, shape);
++  uint32_t result = 0;
++  if (decision.mPacking != mozilla::StereoMode::MONO) {
++    result = layers::IsTopAndBottom(decision.mPacking) ? 2 : 1;
++    if (decision.mPacking == mozilla::StereoMode::RIGHT_LEFT ||
++        decision.mPacking == mozilla::StereoMode::BOTTOM_TOP) {
++      result |= 1 << 2;
++    }
++    if (decision.mFit == layers::StereoFit::HalfWidth) {
++      result |= 1 << 3;
++    } else if (decision.mFit == layers::StereoFit::HalfHeight) {
++      result |= 2 << 3;
++    }
++    if (source == mozilla::StereoSource::XR ||
++        source == mozilla::StereoSource::CAMERA) {
++      result |= 1 << 5;
++    }
++  }
++  sStereoPolicyAnswers[sStereoPolicyNext] =
++      StereoPolicyAnswer{aMark, shape, result, now};
++  sStereoPolicyNext = (sStereoPolicyNext + 1) % std::size(sStereoPolicyAnswers);
++  return result;
++#else
++  return 0;
++#endif
++}
++
+ void wr_compositor_start_compositing(void* aCompositor, wr::ColorF aClearColor,
+                                      const wr::DeviceIntRect* aDirtyRects,
+                                      size_t aNumDirtyRects,
+diff --git a/gfx/webrender_bindings/RenderCompositor.h b/gfx/webrender_bindings/RenderCompositor.h
+index 89e014698a..329326a3d2 100644
+--- a/gfx/webrender_bindings/RenderCompositor.h
++++ b/gfx/webrender_bindings/RenderCompositor.h
+@@ -168,6 +168,10 @@ class RenderCompositor {
+   // The picture WebRender draws into the surface carries this stereo mark
+   // (EncodeStereoMark), 0 for none.
+   virtual void SetSurfaceStereo(wr::NativeSurfaceId aId, uint32_t aStereo) {}
++  // Before the tile is bound: WebRender draws it once per eye, into a buffer
++  // twice as wide (the right eye beside the left one, offset by the valid
++  // rect's width), shown as two views side by side, left eye first.
++  virtual void SetTileStereo(wr::NativeTileId aId, bool aStereo) {}
+   virtual void AddSurface(wr::NativeSurfaceId aId,
+                           const wr::CompositorSurfaceTransform& aTransform,
+                           wr::DeviceIntRect aClipRect,
+diff --git a/gfx/webrender_bindings/RenderCompositorNative.cpp b/gfx/webrender_bindings/RenderCompositorNative.cpp
+index 67093795b5..84043efb98 100644
+--- a/gfx/webrender_bindings/RenderCompositorNative.cpp
++++ b/gfx/webrender_bindings/RenderCompositorNative.cpp
+@@ -131,6 +131,10 @@ void RenderCompositorNative::GetCompositorCapabilities(
+ #if defined(XP_DARWIN)
+   aCaps->supports_surface_for_backdrop = !gfx::gfxVars::UseSoftwareWebRender();
+ #endif
++#if defined(MOZ_WAYLAND)
++  // NativeLayerWaylandRender shows a tile drawn once per eye as two views.
++  aCaps->supports_stereo_tiles = !!mNativeLayerRoot->AsNativeLayerRootWayland();
++#endif
+ }
+ 
+ RenderCompositorNative::Surface::~Surface() = default;
+@@ -418,6 +422,16 @@ void RenderCompositorNative::SetSurfaceStereo(wr::NativeSurfaceId aId,
+   }
+ }
+ 
++void RenderCompositorNative::SetTileStereo(wr::NativeTileId aId,
++                                           bool aStereo) {
++  auto surfaceCursor = mSurfaces.find(aId.surface_id);
++  MOZ_RELEASE_ASSERT(surfaceCursor != mSurfaces.end());
++  Surface& surface = surfaceCursor->second;
++  auto layerCursor = surface.mNativeLayers.find(TileKey(aId.x, aId.y));
++  MOZ_RELEASE_ASSERT(layerCursor != surface.mNativeLayers.end());
++  layerCursor->second->SetStereoTile(aStereo);
++}
++
+ void RenderCompositorNative::DestroyTile(wr::NativeSurfaceId aId, int aX,
+                                          int aY) {
+   auto surfaceCursor = mSurfaces.find(aId);
+diff --git a/gfx/webrender_bindings/RenderCompositorNative.h b/gfx/webrender_bindings/RenderCompositorNative.h
+index af269a4cad..e583c07e70 100644
+--- a/gfx/webrender_bindings/RenderCompositorNative.h
++++ b/gfx/webrender_bindings/RenderCompositorNative.h
+@@ -73,6 +73,7 @@ class RenderCompositorNative : public RenderCompositor {
+   void AttachExternalImage(wr::NativeSurfaceId aId,
+                            wr::ExternalImageId aExternalImage) override;
+   void SetSurfaceStereo(wr::NativeSurfaceId aId, uint32_t aStereo) override;
++  void SetTileStereo(wr::NativeTileId aId, bool aStereo) override;
+   void AddSurface(wr::NativeSurfaceId aId,
+                   const wr::CompositorSurfaceTransform& aTransform,
+                   wr::DeviceIntRect aClipRect,
+diff --git a/gfx/webrender_bindings/src/bindings.rs b/gfx/webrender_bindings/src/bindings.rs
+index 5c61002bc7..20dbc831fe 100644
+--- a/gfx/webrender_bindings/src/bindings.rs
++++ b/gfx/webrender_bindings/src/bindings.rs
+@@ -1306,6 +1306,8 @@ extern "C" {
+         id: NativeSurfaceId,
+         stereo: u32,
+     );
++    fn wr_compositor_set_tile_stereo(compositor: *mut c_void, id: NativeTileId, stereo: bool);
++    fn wr_stereo_policy(mark: u32, width: f32, height: f32) -> u32;
+     fn wr_compositor_bind(
+         compositor: *mut c_void,
+         id: NativeTileId,
+@@ -1425,6 +1427,12 @@ impl Compositor for WrCompositor {
+         }
+     }
+ 
++    fn set_tile_stereo(&mut self, _device: &mut Device, id: NativeTileId, stereo: bool) {
++        unsafe {
++            wr_compositor_set_tile_stereo(self.0, id, stereo);
++        }
++    }
++
+     fn bind(
+         &mut self,
+         _device: &mut Device,
+@@ -1972,6 +1980,12 @@ pub extern "C" fn wr_glyph_raster_thread_delete(thread: *mut WrGlyphRasterThread
+ }
+ 
+ // Call MakeCurrent before this.
++/// How a stereo picture drawn into the page's tiles holds its views, from the
++/// browser (wr_stereo_policy in RenderCompositor.cpp).
++extern "C" fn stereo_policy(mark: u32, width: f32, height: f32) -> u32 {
++    unsafe { wr_stereo_policy(mark, width, height) }
++}
++
+ #[no_mangle]
+ pub extern "C" fn wr_window_new(
+     window_id: WrWindowId,
+@@ -2181,6 +2195,9 @@ pub extern "C" fn wr_window_new(
+         ..Default::default()
+     };
+ 
++    // Stereo pictures drawn into the page's tiles ask the browser's policy.
++    webrender::set_stereo_policy(stereo_policy);
++
+     let window_size = DeviceIntSize::new(window_width, window_height);
+     let notifier = Box::new(CppNotifier { window_id });
+     let (renderer, sender) = match create_webrender_instance(gl, notifier, opts, shaders.map(|sh| &sh.shaders)) {
+diff --git a/gfx/wr/webrender/res/brush_yuv_image.glsl b/gfx/wr/webrender/res/brush_yuv_image.glsl
+index c4b33733dc..5c7bb7ea91 100644
+--- a/gfx/wr/webrender/res/brush_yuv_image.glsl
++++ b/gfx/wr/webrender/res/brush_yuv_image.glsl
+@@ -46,9 +46,19 @@ void brush_vs(
+     mat4 transform,
+     PictureTask pic_task,
+     int brush_flags,
+-    vec4 unused
++    vec4 segment_data
+ ) {
+-    vec2 f = (vi.local_pos - local_rect.p0) / rect_size(local_rect);
++    // A segment that draws a part of the picture over a part of the
++    // primitive (one eye's view of a stereo picture): segment_data holds the
++    // part, as fractions of the picture.
++    RectWithEndpoint rect = local_rect;
++    vec4 part = vec4(0.0, 0.0, 1.0, 1.0);
++    if ((brush_flags & BRUSH_FLAG_SEGMENT_RELATIVE) != 0 &&
++        (brush_flags & BRUSH_FLAG_TEXEL_RECT) != 0) {
++        rect = segment_rect;
++        part = segment_data;
++    }
++    vec2 f = (vi.local_pos - rect.p0) / rect_size(rect);
+ 
+     YuvPrimitive prim = fetch_yuv_primitive(prim_address);
+ 
+@@ -73,17 +83,29 @@ void brush_vs(
+         ImageSource res_y = fetch_image_source(prim_user_data.x);
+         ImageSource res_u = fetch_image_source(prim_user_data.y);
+         ImageSource res_v = fetch_image_source(prim_user_data.z);
+-        write_uv_rect(res_y.uv_rect.p0, res_y.uv_rect.p1, f, TEX_SIZE_YUV(sColor0), vUv_Y, vUvBounds_Y);
+-        write_uv_rect(res_u.uv_rect.p0, res_u.uv_rect.p1, f, TEX_SIZE_YUV(sColor1), vUv_U, vUvBounds_U);
+-        write_uv_rect(res_v.uv_rect.p0, res_v.uv_rect.p1, f, TEX_SIZE_YUV(sColor2), vUv_V, vUvBounds_V);
++        write_uv_rect(mix(res_y.uv_rect.p0, res_y.uv_rect.p1, part.xy),
++                      mix(res_y.uv_rect.p0, res_y.uv_rect.p1, part.zw),
++                      f, TEX_SIZE_YUV(sColor0), vUv_Y, vUvBounds_Y);
++        write_uv_rect(mix(res_u.uv_rect.p0, res_u.uv_rect.p1, part.xy),
++                      mix(res_u.uv_rect.p0, res_u.uv_rect.p1, part.zw),
++                      f, TEX_SIZE_YUV(sColor1), vUv_U, vUvBounds_U);
++        write_uv_rect(mix(res_v.uv_rect.p0, res_v.uv_rect.p1, part.xy),
++                      mix(res_v.uv_rect.p0, res_v.uv_rect.p1, part.zw),
++                      f, TEX_SIZE_YUV(sColor2), vUv_V, vUvBounds_V);
+     } else if (vFormat.x == YUV_FORMAT_NV12 || vFormat.x == YUV_FORMAT_P010) {
+         ImageSource res_y = fetch_image_source(prim_user_data.x);
+         ImageSource res_u = fetch_image_source(prim_user_data.y);
+-        write_uv_rect(res_y.uv_rect.p0, res_y.uv_rect.p1, f, TEX_SIZE_YUV(sColor0), vUv_Y, vUvBounds_Y);
+-        write_uv_rect(res_u.uv_rect.p0, res_u.uv_rect.p1, f, TEX_SIZE_YUV(sColor1), vUv_U, vUvBounds_U);
++        write_uv_rect(mix(res_y.uv_rect.p0, res_y.uv_rect.p1, part.xy),
++                      mix(res_y.uv_rect.p0, res_y.uv_rect.p1, part.zw),
++                      f, TEX_SIZE_YUV(sColor0), vUv_Y, vUvBounds_Y);
++        write_uv_rect(mix(res_u.uv_rect.p0, res_u.uv_rect.p1, part.xy),
++                      mix(res_u.uv_rect.p0, res_u.uv_rect.p1, part.zw),
++                      f, TEX_SIZE_YUV(sColor1), vUv_U, vUvBounds_U);
+     } else if (vFormat.x == YUV_FORMAT_INTERLEAVED) {
+         ImageSource res_y = fetch_image_source(prim_user_data.x);
+-        write_uv_rect(res_y.uv_rect.p0, res_y.uv_rect.p1, f, TEX_SIZE_YUV(sColor0), vUv_Y, vUvBounds_Y);
++        write_uv_rect(mix(res_y.uv_rect.p0, res_y.uv_rect.p1, part.xy),
++                      mix(res_y.uv_rect.p0, res_y.uv_rect.p1, part.zw),
++                      f, TEX_SIZE_YUV(sColor0), vUv_Y, vUvBounds_Y);
+     }
+ }
+ #endif
+diff --git a/gfx/wr/webrender/src/batch.rs b/gfx/wr/webrender/src/batch.rs
+index 3a15c9f6aa..94d8edbc5d 100644
+--- a/gfx/wr/webrender/src/batch.rs
++++ b/gfx/wr/webrender/src/batch.rs
+@@ -37,6 +37,7 @@ use smallvec::SmallVec;
+ use std::{f32, i32, usize};
+ use crate::util::{project_rect, MaxRect, ScaleOffset};
+ use crate::segment::EdgeMask;
++use crate::stereo::{place_shape, StereoDecision};
+ 
+ 
+ // Special sentinel value recognized by the shader. It is considered to be
+@@ -730,12 +731,21 @@ pub struct BatchBuilder {
+     glyph_fetch_buffer: Vec<GlyphFetchResult>,
+ 
+     batcher: AlphaBatchBuilder,
++
++    /// The eye a stereo tile is batched for (0 left, 1 right), whose part
++    /// of each stereo picture is drawn (crate::stereo).
++    stereo_eye: Option<usize>,
+ }
+ 
+ impl BatchBuilder {
++    pub fn set_stereo_eye(&mut self, eye: Option<usize>) {
++        self.stereo_eye = eye;
++    }
++
+     pub fn new(batcher: AlphaBatchBuilder) -> Self {
+         BatchBuilder {
+             glyph_fetch_buffer: Vec::new(),
++            stereo_eye: None,
+             batcher,
+         }
+     }
+@@ -2107,6 +2117,45 @@ impl BatchBuilder {
+                     yuv_image_data.color_range,
+                 );
+ 
++                // One eye's view of a stereo picture: in a tile drawn per eye,
++                // that eye's; drawn once, the left eye's view of views the
++                // browser drew (crate::stereo).
++                let mark = ctx.resource_cache
++                    .get_image_properties(yuv_image_data.yuv_key[0])
++                    .map_or(0, |properties| properties.descriptor.flags.stereo());
++                let shape = place_shape(prim_rect, ctx.spatial_tree, prim_spatial_node_index);
++                if let Some(decision) = StereoDecision::decide(mark, shape) {
++                    if let Some(eye) = self.stereo_eye.or(decision.flat_eye()) {
++                        let mut writer = gpu_buffer_builder.f32.write_blocks(1 + VECS_PER_SEGMENT);
++                        yuv_image_data.write_prim_gpu_blocks(&mut writer);
++                        self.add_stereo_eye_to_batch(
++                            eye,
++                            decision,
++                            prim_rect,
++                            writer,
++                            BatchKey {
++                                blend_mode,
++                                kind: BatchKind::Brush(kind),
++                                textures: BatchTextures::empty(),
++                            },
++                            textures,
++                            0,
++                            [uv_rect_addresses[0], uv_rect_addresses[1], uv_rect_addresses[2], 0],
++                            &base_prim_header,
++                            batch_features,
++                            brush_flags,
++                            common_data.transformed_aa_edges,
++                            bounding_rect,
++                            z_id,
++                            prim_info.clip_task_index,
++                            ctx,
++                            render_tasks,
++                            prim_headers,
++                        );
++                        return;
++                    }
++                }
++
+                 let batch_params = BrushBatchParameters::shared(
+                     kind,
+                     textures,
+@@ -2199,6 +2248,54 @@ impl BatchBuilder {
+                         }
+                     };
+ 
++                    // One eye's view of a stereo picture: in a tile drawn per
++                    // eye, that eye's; drawn once, the left eye's view of
++                    // views the browser drew (crate::stereo).
++                    let mark = ctx.resource_cache
++                        .get_image_properties(image_data.key)
++                        .map_or(0, |properties| properties.descriptor.flags.stereo());
++                    let shape = place_shape(prim_rect, ctx.spatial_tree, prim_spatial_node_index);
++                    if let Some(decision) = StereoDecision::decide(mark, shape) {
++                        if let Some(eye) = self.stereo_eye.or(decision.flat_eye()) {
++                            let mut writer = gpu_buffer_builder.f32.write_blocks(3 + VECS_PER_SEGMENT);
++                            writer.push_one(image_data.color.premultiplied());
++                            writer.push_one(PremultipliedColorF::WHITE);
++                            // A negative stretch makes the shader take the local size.
++                            writer.push_one([-1.0, 0.0, 0.0, 0.0]);
++                            let mut textures = TextureSet::UNTEXTURED;
++                            textures.colors[0] = texture_source;
++                            let brush_flags = match image_scratch.normalized_uvs {
++                                true => brush_flags | BrushFlags::NORMALIZED_UVS,
++                                false => brush_flags,
++                            };
++                            self.add_stereo_eye_to_batch(
++                                eye,
++                                decision,
++                                image_scratch.adjustment.map_local_rect(&prim_rect),
++                                writer,
++                                BatchKey {
++                                    blend_mode,
++                                    kind: BatchKind::Brush(BrushBatchKind::Image(texture_source.image_buffer_kind())),
++                                    textures: BatchTextures::empty(),
++                                },
++                                textures,
++                                uv_rect_address.as_int(),
++                                prim_user_data,
++                                &base_prim_header,
++                                batch_features,
++                                brush_flags,
++                                common_data.transformed_aa_edges,
++                                bounding_rect,
++                                z_id,
++                                prim_info.clip_task_index,
++                                ctx,
++                                render_tasks,
++                                prim_headers,
++                            );
++                            return;
++                        }
++                    }
++
+                     let batch_params = BrushBatchParameters::shared(
+                         BrushBatchKind::Image(texture_source.image_buffer_kind()),
+                         TextureSet::prim_textured(texture_source),
+@@ -2485,6 +2582,75 @@ impl BatchBuilder {
+     /// if the segments enable it.
+     /// In other words passing EdgeAaSegmentFlags::all() does not necessarily mean all edges will
+     /// be anti-aliased, only that they could be.
++    /// One eye's drawing of a stereo picture in a tile drawn per eye
++    /// (crate::stereo): the eye's part of the picture, as a segment relative
++    /// to the primitive, over the part of the place the eye's view takes.
++    /// `writer` holds the brush's own blocks; the segment is added to it.
++    fn add_stereo_eye_to_batch(
++        &mut self,
++        eye: usize,
++        decision: StereoDecision,
++        local_rect: LayoutRect,
++        mut writer: crate::renderer::GpuBufferWriterF<'_>,
++        batch_key: BatchKey,
++        textures: TextureSet,
++        resource_address: i32,
++        user_data: [i32; 4],
++        base_prim_header: &PrimitiveHeader,
++        features: BatchFeatures,
++        brush_flags: BrushFlags,
++        edge_aa_mask: EdgeMask,
++        bounding_rect: &PictureRect,
++        z_id: ZBufferId,
++        clip_task_index: ClipTaskIndex,
++        ctx: &RenderTargetContext,
++        render_tasks: &RenderTaskGraph,
++        prim_headers: &mut PrimitiveHeaders,
++    ) {
++        let segment = decision.eye_rect(local_rect).translate(-local_rect.min.to_vector());
++        writer.push_one([segment.min.x, segment.min.y, segment.max.x, segment.max.y]);
++        writer.push_one(decision.eye_fraction(eye));
++        let specific_prim_address = writer.finish();
++
++        let prim_header = PrimitiveHeader {
++            local_rect,
++            specific_prim_address: specific_prim_address.as_int(),
++            user_data,
++            ..*base_prim_header
++        };
++        let prim_header_index = prim_headers.push(&prim_header);
++
++        let (clip_task_address, clip_mask) = match ctx.get_prim_clip_task_and_texture(
++            clip_task_index,
++            render_tasks,
++        ) {
++            Some(result) => result,
++            None => return,
++        };
++
++        let batch_key = BatchKey {
++            textures: BatchTextures {
++                input: textures,
++                clip_mask,
++            },
++            ..batch_key
++        };
++
++        self.add_brush_instance_to_batches(
++            batch_key,
++            features,
++            bounding_rect,
++            z_id,
++            0,
++            EdgeMask::all() & edge_aa_mask,
++            clip_task_address,
++            brush_flags | BrushFlags::SEGMENT_RELATIVE | BrushFlags::SEGMENT_TEXEL_RECT |
++                BrushFlags::PERSPECTIVE_INTERPOLATION,
++            prim_header_index,
++            resource_address,
++        );
++    }
++
+     fn add_segment_to_batch(
+         &mut self,
+         segment: &BrushSegment,
+diff --git a/gfx/wr/webrender/src/composite.rs b/gfx/wr/webrender/src/composite.rs
+index d11062e7e6..79e34d6387 100644
+--- a/gfx/wr/webrender/src/composite.rs
++++ b/gfx/wr/webrender/src/composite.rs
+@@ -1421,6 +1421,9 @@ pub struct CompositorCapabilities {
+     pub supports_surface_for_backdrop: bool,
+     /// Whether external compositor surface supports negative scaling.
+     pub supports_external_compositor_surface_negative_scaling: bool,
++    /// Whether the compositor shows a tile WebRender draws once per eye
++    /// (Compositor::set_tile_stereo) as two views, left eye first.
++    pub supports_stereo_tiles: bool,
+ }
+ 
+ impl Default for CompositorCapabilities {
+@@ -1437,6 +1440,7 @@ impl Default for CompositorCapabilities {
+             max_update_rects: 1,
+             supports_surface_for_backdrop: false,
+             supports_external_compositor_surface_negative_scaling: true,
++            supports_stereo_tiles: false,
+         }
+     }
+ }
+@@ -1558,6 +1562,19 @@ pub trait Compositor {
+     ) {
+     }
+ 
++    /// Before a tile is bound: whether WR draws it once per eye (Sparky
++    /// Stereo OS, crate::stereo). Such a tile is drawn into a buffer twice as
++    /// wide as the tile, the left eye's drawing over the valid rect, the right
++    /// eye's beside it, offset by the valid rect's width; the compositor shows
++    /// it as two views side by side, left eye first.
++    fn set_tile_stereo(
++        &mut self,
++        _device: &mut Device,
++        _id: NativeTileId,
++        _stereo: bool,
++    ) {
++    }
++
+     /// Mark a tile as invalid before any surfaces are queued for
+     /// composition and before it is updated with bind. This is useful
+     /// for early composition, allowing for dependency tracking of which
+diff --git a/gfx/wr/webrender/src/compositor/sw_compositor.rs b/gfx/wr/webrender/src/compositor/sw_compositor.rs
+index 71c3691f6a..f769af306e 100644
+--- a/gfx/wr/webrender/src/compositor/sw_compositor.rs
++++ b/gfx/wr/webrender/src/compositor/sw_compositor.rs
+@@ -188,6 +188,8 @@ pub struct SwTile {
+     invalid: Cell<bool>,
+     /// Graph node for job dependencies of this tile
+     graph_node: SwCompositeGraphNodeRef,
++    /// Drawn once per eye into a buffer twice as wide (crate::stereo).
++    stereo: bool,
+ }
+ 
+ impl SwTile {
+@@ -201,6 +203,7 @@ impl SwTile {
+             overlaps: Cell::new(0),
+             invalid: Cell::new(false),
+             graph_node: SwCompositeGraphNode::new(),
++            stereo: false,
+         }
+     }
+ 
+@@ -1742,6 +1745,19 @@ impl Compositor for SwCompositor {
+         }
+     }
+ 
++    fn set_tile_stereo(&mut self, device: &mut Device, id: NativeTileId, stereo: bool) {
++        // Only the native compositor shows a tile's two views.
++        if !self.use_native_compositor {
++            return;
++        }
++        if let Some(surface) = self.surfaces.get_mut(&id.surface_id) {
++            if let Some(tile) = surface.tiles.iter_mut().find(|t| t.x == id.x && t.y == id.y) {
++                tile.stereo = stereo;
++            }
++        }
++        self.compositor.set_tile_stereo(device, id, stereo);
++    }
++
+     fn attach_external_image(&mut self, device: &mut Device, id: NativeSurfaceId, external_image: ExternalImageId) {
+         if self.use_native_compositor {
+             self.compositor.attach_external_image(device, id, external_image);
+@@ -1786,6 +1802,9 @@ impl Compositor for SwCompositor {
+ 
+                 let mut stride = 0;
+                 let mut buf = ptr::null_mut();
++                // A tile drawn per eye: the right eye's drawing goes beside the
++                // left eye's, in the same rows of the mapped buffer.
++                let eyes = if tile.stereo { 2 } else { 1 };
+                 if self.use_native_compositor {
+                     if let Some(tile_info) = self.compositor.map_tile(device, id, dirty_rect, valid_rect) {
+                         stride = tile_info.stride;
+@@ -1801,11 +1820,11 @@ impl Compositor for SwCompositor {
+                 self.gl.set_texture_buffer(
+                     tile.color_id,
+                     gl::RGBA8,
+-                    valid_rect.width(),
++                    valid_rect.width() * eyes,
+                     valid_rect.height(),
+                     stride,
+                     buf,
+-                    surface.tile_size.width,
++                    surface.tile_size.width * eyes,
+                     surface.tile_size.height,
+                 );
+                 // Reallocate the shared depth buffer to fit the valid rect, but within
+@@ -1820,11 +1839,11 @@ impl Compositor for SwCompositor {
+                 self.gl.set_texture_buffer(
+                     self.depth_id.expect("depth texture should be initialized"),
+                     gl::DEPTH_COMPONENT,
+-                    valid_rect.width(),
++                    valid_rect.width() * eyes,
+                     valid_rect.height(),
+                     0,
+                     ptr::null_mut(),
+-                    self.max_tile_size.width,
++                    self.max_tile_size.width * eyes,
+                     self.max_tile_size.height,
+                 );
+                 surface_info.fbo_id = tile.fbo_id;
+diff --git a/gfx/wr/webrender/src/frame_builder.rs b/gfx/wr/webrender/src/frame_builder.rs
+index e038e7cab3..69f1640c68 100644
+--- a/gfx/wr/webrender/src/frame_builder.rs
++++ b/gfx/wr/webrender/src/frame_builder.rs
+@@ -1220,7 +1220,7 @@ pub fn build_render_pass(
+                     }
+                 }
+             }
+-            SubPassSurface::Persistent { surface: StaticRenderTaskSurface::PictureCache { ref surface, .. }, .. } => {
++            SubPassSurface::Persistent { surface: StaticRenderTaskSurface::PictureCache { ref surface, stereo }, .. } => {
+                 assert_eq!(sub_pass.task_ids.len(), 1);
+                 let task_id = sub_pass.task_ids[0];
+                 let task = &render_tasks[task_id];
+@@ -1241,55 +1241,67 @@ pub fn build_render_pass(
+                             valid_rect = valid_rect.intersection(&surface_size_rect).unwrap_or_default();
+                         }
+ 
+-                        let batcher = AlphaBatchBuilder::new(
+-                            screen_size,
+-                            ctx.break_advanced_blend_batches,
+-                            ctx.batch_lookback_count,
+-                            task_id,
+-                            task_id.into(),
+-                            &ctx.frame_memory,
+-                        );
+-
+-                        let mut batch_builder = BatchBuilder::new(batcher);
+-
+-                        cmd_buffer.iter_prims(&mut |cmd, spatial_node_index, segments| {
+-                            batch_builder.add_prim_to_batch(
+-                                cmd,
+-                                spatial_node_index,
+-                                ctx,
+-                                render_tasks,
+-                                prim_headers,
+-                                transforms,
+-                                pic_task.raster_spatial_node_index,
+-                                pic_task.surface_spatial_node_index,
+-                                z_generator,
+-                                prim_instances,
+-                                gpu_buffer_builder,
+-                                segments,
++                        // A tile that draws a stereo picture is batched once per
++                        // eye: the left eye's drawing, then the right eye's
++                        // (crate::stereo).
++                        let eyes: &[Option<usize>] = if stereo { &[Some(0), Some(1)] } else { &[None] };
++                        let mut containers = Vec::with_capacity(eyes.len());
++                        for eye in eyes {
++                            let batcher = AlphaBatchBuilder::new(
++                                screen_size,
++                                ctx.break_advanced_blend_batches,
++                                ctx.batch_lookback_count,
++                                task_id,
++                                task_id.into(),
++                                &ctx.frame_memory,
+                             );
+-                        });
+ 
+-                        let batcher = batch_builder.finalize();
+-
+-                        let mut batch_containers = ctx.frame_memory.new_vec();
+-                        let mut alpha_batch_container = AlphaBatchContainer::new(
+-                            Some(dirty_rect),
+-                            &ctx.frame_memory
+-                        );
++                            let mut batch_builder = BatchBuilder::new(batcher);
++                            batch_builder.set_stereo_eye(*eye);
++
++                            cmd_buffer.iter_prims(&mut |cmd, spatial_node_index, segments| {
++                                batch_builder.add_prim_to_batch(
++                                    cmd,
++                                    spatial_node_index,
++                                    ctx,
++                                    render_tasks,
++                                    prim_headers,
++                                    transforms,
++                                    pic_task.raster_spatial_node_index,
++                                    pic_task.surface_spatial_node_index,
++                                    z_generator,
++                                    prim_instances,
++                                    gpu_buffer_builder,
++                                    segments,
++                                );
++                            });
++
++                            let batcher = batch_builder.finalize();
++
++                            let mut batch_containers = ctx.frame_memory.new_vec();
++                            let mut alpha_batch_container = AlphaBatchContainer::new(
++                                Some(dirty_rect),
++                                &ctx.frame_memory
++                            );
+ 
+-                        batcher.build(
+-                            &mut batch_containers,
+-                            &mut alpha_batch_container,
+-                            target_rect,
+-                            None,
+-                        );
+-                        debug_assert!(batch_containers.is_empty());
++                            batcher.build(
++                                &mut batch_containers,
++                                &mut alpha_batch_container,
++                                target_rect,
++                                None,
++                            );
++                            debug_assert!(batch_containers.is_empty());
++                            containers.push(alpha_batch_container);
++                        }
++                        let right_eye = if containers.len() > 1 { containers.pop() } else { None };
++                        let alpha_batch_container = containers.pop().unwrap();
+ 
+                         let target = PictureCacheTarget {
+                             surface: surface.clone(),
+                             clear_color: pic_task.clear_color,
+                             kind: PictureCacheTargetKind::Draw {
+                                 alpha_batch_container,
++                                right_eye,
+                             },
+                             dirty_rect,
+                             valid_rect,
+diff --git a/gfx/wr/webrender/src/invalidation/cached_surface.rs b/gfx/wr/webrender/src/invalidation/cached_surface.rs
+index 64ecef0ee2..62a7ffd65b 100644
+--- a/gfx/wr/webrender/src/invalidation/cached_surface.rs
++++ b/gfx/wr/webrender/src/invalidation/cached_surface.rs
+@@ -111,6 +111,7 @@ impl CachedSurface {
+         // for this tile. This is used to minimize the size of the scissor rect
+         // during rasterization and the draw rect during composition of partial tiles.
+         self.local_valid_rect = self.local_valid_rect.union(&info.prim_clip_box);
++        self.current_descriptor.stereo |= info.stereo;
+ 
+         // TODO(gw): The prim_clip_rect can be impacted by the clip rect of the display port,
+         //           which can cause invalidations when a new display list with changed
+@@ -277,6 +278,12 @@ impl CachedSurface {
+             self.invalidate(None, InvalidationReason::ValidRectChanged);
+             state.composite_state.dirty_rects_are_valid = false;
+         }
++        // A tile drawn once per eye, or no longer so: both halves of its
++        // surface are drawn anew.
++        if self.current_descriptor.stereo != self.prev_descriptor.stereo {
++            self.invalidate(None, InvalidationReason::StereoChanged);
++            state.composite_state.dirty_rects_are_valid = false;
++        }
+     }
+ 
+     /// Invalidate this tile. If `invalidation_rect` is None, the entire
+@@ -371,6 +378,9 @@ pub struct PrimitiveDependencyInfo {
+     /// Per-clip data: (clip intern uid, scratch range for clip corners).
+     /// The uid covers the clip's shape/mode; position is captured in the scratch range.
+     pub clips: SmallVec<[(ItemUid, VertRange); 4]>,
++    /// The primitive is a stereo picture drawn into the tile, which is then
++    /// drawn once per eye (crate::stereo).
++    pub stereo: bool,
+ }
+ 
+ impl PrimitiveDependencyInfo {
+@@ -384,6 +394,7 @@ impl PrimitiveDependencyInfo {
+             prim_scratch: VertRange::INVALID,
+             cov_scratch: VertRange::INVALID,
+             clips: smallvec::SmallVec::new(),
++            stereo: false,
+         }
+     }
+ }
+@@ -436,6 +447,9 @@ pub struct CachedSurfaceDescriptor {
+     /// Packed per-prim dependency information
+     pub dep_data: Vec<u8>,
+ 
++    /// A stereo picture is drawn into this surface: it is drawn once per eye.
++    pub stereo: bool,
++
+     /// Per-tile quantized raster-space vert data. VertRanges stored in
+     /// PrimitiveDescriptor and PrimitiveDependency::Clip index into this buffer.
+     pub vert_data: Vec<i32>,
+@@ -449,6 +463,7 @@ impl CachedSurfaceDescriptor {
+             vert_data: Vec::new(),
+             prims: Vec::new(),
+             last_updated_frame_id: FrameId::INVALID,
++            stereo: false,
+         }
+     }
+ 
+@@ -476,6 +491,7 @@ impl CachedSurfaceDescriptor {
+     /// are being rebuilt.
+     pub fn clear(&mut self) {
+         self.local_valid_rect = PictureRect::zero();
++        self.stereo = false;
+         self.prims.clear();
+         self.dep_data.clear();
+         self.vert_data.clear();
+diff --git a/gfx/wr/webrender/src/invalidation/mod.rs b/gfx/wr/webrender/src/invalidation/mod.rs
+index a7231cf629..0b01ad182c 100644
+--- a/gfx/wr/webrender/src/invalidation/mod.rs
++++ b/gfx/wr/webrender/src/invalidation/mod.rs
+@@ -107,6 +107,8 @@ pub enum InvalidationReason {
+     ScaleChanged,
+     // The content of the sampling surface changed
+     SurfaceContentChanged,
++    // A stereo picture came to be drawn into the tile, or left it
++    StereoChanged,
+ }
+ 
+ /// The result of a primitive dependency comparison. Size is a u8
+diff --git a/gfx/wr/webrender/src/lib.rs b/gfx/wr/webrender/src/lib.rs
+index b0b70e1bd7..5a4bd28862 100644
+--- a/gfx/wr/webrender/src/lib.rs
++++ b/gfx/wr/webrender/src/lib.rs
+@@ -131,6 +131,7 @@ mod scene_building;
+ mod screen_capture;
+ mod segment;
+ mod spatial_node;
++mod stereo;
+ mod surface;
+ mod texture_pack;
+ mod texture_cache;
+@@ -178,6 +179,7 @@ extern crate webrender_build;
+ 
+ #[doc(hidden)]
+ pub use crate::composite::{LayerCompositor, CompositorInputConfig, CompositorSurfaceUsage, ClipRadius};
++pub use crate::stereo::{set_stereo_policy, StereoPolicyFn};
+ pub use crate::composite::{CompositorConfig, Compositor, CompositorCapabilities, CompositorSurfaceTransform};
+ pub use crate::composite::{NativeSurfaceId, NativeTileId, NativeSurfaceInfo, PartialPresentCompositor};
+ pub use crate::composite::{MappableCompositor, MappedTileInfo, SWGLCompositeSurfaceInfo, WindowVisibility, WindowProperties};
+diff --git a/gfx/wr/webrender/src/picture.rs b/gfx/wr/webrender/src/picture.rs
+index f33862d1df..38b6ebbee9 100644
+--- a/gfx/wr/webrender/src/picture.rs
++++ b/gfx/wr/webrender/src/picture.rs
+@@ -1991,6 +1991,7 @@ fn prepare_tiled_picture_surface(
+                                 RenderTaskLocation::Static {
+                                     surface: StaticRenderTaskSurface::PictureCache {
+                                         surface,
++                                        stereo: false,
+                                     },
+                                     rect: composite_task_size.into(),
+                                 },
+@@ -2012,11 +2013,23 @@ fn prepare_tiled_picture_surface(
+                             },
+                         );
+                     } else {
++                        // A tile that draws a stereo picture is drawn once per
++                        // eye, when the compositor shows such tiles
++                        // (crate::stereo).
++                        let stereo = tile.cached_surface.current_descriptor.stereo &&
++                            matches!(surface, ResolvedSurfaceTexture::Native { .. }) &&
++                            match frame_state.composite_state.compositor_kind {
++                                CompositorKind::Native { capabilities, .. } => {
++                                    capabilities.supports_stereo_tiles
++                                }
++                                CompositorKind::Draw { .. } | CompositorKind::Layer { .. } => false,
++                            };
+                         let render_task_id = frame_state.rg_builder.add().init(
+                             RenderTask::new(
+                                 RenderTaskLocation::Static {
+                                     surface: StaticRenderTaskSurface::PictureCache {
+                                         surface,
++                                        stereo,
+                                     },
+                                     rect: composite_task_size.into(),
+                                 },
+diff --git a/gfx/wr/webrender/src/prepare.rs b/gfx/wr/webrender/src/prepare.rs
+index 6470850b2c..ef0c03b4c5 100644
+--- a/gfx/wr/webrender/src/prepare.rs
++++ b/gfx/wr/webrender/src/prepare.rs
+@@ -45,6 +45,7 @@ use crate::render_task_cache::{RenderTaskCacheKey, to_cache_size, RenderTaskPare
+ use crate::render_task::{EmptyTask, RenderTask, RenderTaskKind, MAX_BLUR_STD_DEVIATION};
+ use crate::segment::SegmentBuilder;
+ use crate::space::SpaceSnapper;
++use crate::stereo::{place_shape, StereoDecision};
+ use crate::visibility::{DrawState, KindScratchHandle};
+ 
+ 
+@@ -270,12 +271,26 @@ fn prepare_prim_for_render(
+             | PrimitiveKind::RadialGradient { .. }
+             | PrimitiveKind::ConicGradient { .. }
+             | PrimitiveKind::LinearGradient { .. }
+-            | PrimitiveKind::Image { .. }
+             | PrimitiveKind::NormalBorder { .. }
+             | PrimitiveKind::LineDecoration { .. }
+             => {
+                 use_legacy_path = false;
+             }
++            PrimitiveKind::Image { data_handle, .. } => {
++                // A stereo picture is drawn by the brush path, which draws
++                // one eye's view of it (crate::stereo).
++                let image = &data_stores.image[*data_handle];
++                let mark = frame_state
++                    .resource_cache
++                    .get_image_properties(image.kind.key)
++                    .map_or(0, |properties| properties.descriptor.flags.stereo());
++                let shape = place_shape(
++                    prim_instance.unsnapped_prim_rect,
++                    frame_context.spatial_tree,
++                    cluster.spatial_node_index,
++                );
++                use_legacy_path = StereoDecision::decide(mark, shape).is_some();
++            }
+             PrimitiveKind::YuvImage { .. } => {
+                 let prim_info = scratch.frame.draws[prim_instance_index];
+                 use_legacy_path = prim_info.compositor_surface_kind != CompositorSurfaceKind::Underlay;
+diff --git a/gfx/wr/webrender/src/render_target.rs b/gfx/wr/webrender/src/render_target.rs
+index cebd8e1b7f..e416ad821f 100644
+--- a/gfx/wr/webrender/src/render_target.rs
++++ b/gfx/wr/webrender/src/render_target.rs
+@@ -596,6 +596,9 @@ pub struct ResolveOp {
+ pub enum PictureCacheTargetKind {
+     Draw {
+         alpha_batch_container: AlphaBatchContainer,
++        /// A tile drawn once per eye (crate::stereo): the right eye's drawing,
++        /// beside the left eye's, which alpha_batch_container holds.
++        right_eye: Option<AlphaBatchContainer>,
+     },
+     Blit {
+         task_id: RenderTaskId,
+@@ -613,6 +616,13 @@ pub struct PictureCacheTarget {
+     pub valid_rect: DeviceIntRect,
+ }
+ 
++impl PictureCacheTarget {
++    /// Drawn once per eye, side by side (crate::stereo).
++    pub fn is_stereo(&self) -> bool {
++        matches!(self.kind, PictureCacheTargetKind::Draw { right_eye: Some(..), .. })
++    }
++}
++
+ fn add_blur_instances(
+     instances: &mut FastHashMap<TextureSource, FrameVec<BlurInstance>>,
+     blur_direction: BlurDirection,
+diff --git a/gfx/wr/webrender/src/render_task.rs b/gfx/wr/webrender/src/render_task.rs
+index f8d8684de0..3470e67a68 100644
+--- a/gfx/wr/webrender/src/render_task.rs
++++ b/gfx/wr/webrender/src/render_task.rs
+@@ -85,6 +85,8 @@ pub enum StaticRenderTaskSurface {
+     PictureCache {
+         /// Describes either a WR texture or a native OS compositor target
+         surface: ResolvedSurfaceTexture,
++        /// A native tile drawn once per eye, side by side (crate::stereo).
++        stereo: bool,
+     },
+ }
+ 
+diff --git a/gfx/wr/webrender/src/render_task_graph.rs b/gfx/wr/webrender/src/render_task_graph.rs
+index 3302f8793d..8ef612c8f0 100644
+--- a/gfx/wr/webrender/src/render_task_graph.rs
++++ b/gfx/wr/webrender/src/render_task_graph.rs
+@@ -1267,6 +1267,7 @@ fn pc_target(
+                 },
+                 size: DeviceIntSize::new(width, height),
+             },
++            stereo: false,
+         },
+         rect: DeviceIntSize::new(width, height).into(),
+     }
+diff --git a/gfx/wr/webrender/src/renderer/mod.rs b/gfx/wr/webrender/src/renderer/mod.rs
+index 1d3e8c860d..d5e39b4064 100644
+--- a/gfx/wr/webrender/src/renderer/mod.rs
++++ b/gfx/wr/webrender/src/renderer/mod.rs
+@@ -2859,6 +2859,7 @@ impl Renderer {
+         projection: &default::Transform3D<f32>,
+         render_tasks: &RenderTaskGraph,
+         stats: &mut RendererStats,
++        eye: usize,
+     ) {
+         profile_scope!("draw_picture_cache_target");
+         if let Some(history) = &mut self.command_log {
+@@ -2887,9 +2888,12 @@ impl Renderer {
+             self.set_blend(false, framebuffer_kind);
+ 
+             let clear_color = target.clear_color.map(|c| c.to_array());
+-            let scissor_rect = if self.device.get_capabilities().supports_render_target_partial_update
++            // A tile drawn per eye shares its buffer between the eyes: each
++            // clears only its own part.
++            let scissor_rect = if target.is_stereo() ||
++                (self.device.get_capabilities().supports_render_target_partial_update
+                 && (target.dirty_rect != target.valid_rect
+-                    || self.device.get_capabilities().prefers_clear_scissor)
++                    || self.device.get_capabilities().prefers_clear_scissor))
+             {
+                 Some(target.dirty_rect)
+             } else {
+@@ -2943,7 +2947,11 @@ impl Renderer {
+         }
+ 
+         match target.kind {
+-            PictureCacheTargetKind::Draw { ref alpha_batch_container } => {
++            PictureCacheTargetKind::Draw { ref alpha_batch_container, ref right_eye } => {
++                let alpha_batch_container = match (eye, right_eye) {
++                    (1, Some(right_eye)) => right_eye,
++                    _ => alpha_batch_container,
++                };
+                 self.draw_alpha_batch_container(
+                     alpha_batch_container,
+                     draw_target,
+@@ -3996,6 +4004,11 @@ impl Renderer {
+                             let surface_info = match self.current_compositor_kind {
+                                 CompositorKind::Native { .. } => {
+                                     let compositor = self.compositor_config.compositor().unwrap();
++                                    compositor.set_tile_stereo(
++                                        &mut self.device,
++                                        id,
++                                        picture_target.is_stereo(),
++                                    );
+                                     compositor.bind(
+                                         &mut self.device,
+                                         id,
+@@ -4031,8 +4044,29 @@ impl Renderer {
+                         &projection,
+                         &frame.render_tasks,
+                         &mut results.stats,
++                        0,
+                     );
+ 
++                    // A tile drawn once per eye: the right eye beside the
++                    // left, offset by the valid rect's width (crate::stereo).
++                    if picture_target.is_stereo() {
++                        if let DrawTarget::NativeSurface { offset, external_fbo_id, dimensions } = draw_target {
++                            let right = DrawTarget::NativeSurface {
++                                offset: offset + DeviceIntVector2D::new(picture_target.valid_rect.width(), 0),
++                                external_fbo_id,
++                                dimensions,
++                            };
++                            self.draw_picture_cache_target(
++                                picture_target,
++                                right,
++                                &projection,
++                                &frame.render_tasks,
++                                &mut results.stats,
++                                1,
++                            );
++                        }
++                    }
++
+                     // Native OS surfaces must be unbound at the end of drawing to them
+                     if let ResolvedSurfaceTexture::Native { .. } = picture_target.surface {
+                         match self.current_compositor_kind {
+diff --git a/gfx/wr/webrender/src/stereo.rs b/gfx/wr/webrender/src/stereo.rs
+new file mode 100644
+index 0000000000..211e1c0858
+--- /dev/null
++++ b/gfx/wr/webrender/src/stereo.rs
+@@ -0,0 +1,133 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++//! Stereo pictures drawn into picture cache tiles (Sparky Stereo OS).
++//!
++//! An image whose descriptor carries a stereo mark (ImageDescriptorFlags::STEREO)
++//! holds the two views of a stereo picture. Promoted to a compositor surface of
++//! its own, the compositor decides how its views are shown. Drawn into the
++//! page's tiles instead (a rotation, an opacity, a clip that the compositor
++//! cannot take), each tile that shows it is drawn twice, once per eye, into a
++//! surface twice as wide: the left eye's drawing on the left, the right eye's on
++//! the right, every other primitive the same in both. The compositor is told
++//! the tile holds two views side by side, left eye first.
++//!
++//! The decision of how a picture holds its views is the embedder's (Gecko asks
++//! libstereo-policy, as every program of the edition does): it is registered
++//! with set_stereo_policy and asked with the picture's mark and its shape.
++
++use api::units::{LayoutRect, LayoutSize};
++use crate::spatial_tree::{SpatialNodeIndex, SpatialTree};
++use std::sync::atomic::{AtomicUsize, Ordering};
++
++/// The embedder's decision for a stereo mark and a place of `width` by `height`:
++/// 0 for one picture; otherwise bits 0-1 the layout (1 side by side, 2 top and
++/// bottom), bit 2 the right eye first, bits 3-4 the fit (1: a full view shown
++/// at its own shape in the middle of the place's width, 2: of its height),
++/// bit 5 views the embedder drew itself (WebXR, its camera hack), which hold
++/// one scene: drawn once, they show the left eye's view, never both.
++pub type StereoPolicyFn = extern "C" fn(mark: u32, width: f32, height: f32) -> u32;
++
++static STEREO_POLICY: AtomicUsize = AtomicUsize::new(0);
++
++/// Registers the embedder's stereo policy; without one, every image is drawn
++/// as one picture.
++pub fn set_stereo_policy(policy: StereoPolicyFn) {
++    STEREO_POLICY.store(policy as usize, Ordering::Release);
++}
++
++/// The shape of a primitive's place as the page shows it: its local size
++/// scaled by its spatial node's transform. A video's or a canvas's image is
++/// laid out at the picture's own size and scaled to the element's place by
++/// a reference frame; the decision is about the place.
++pub fn place_shape(
++    local: LayoutRect,
++    spatial_tree: &SpatialTree,
++    node: SpatialNodeIndex,
++) -> LayoutRect {
++    let (sx, sy) = spatial_tree
++        .get_relative_transform(node, spatial_tree.root_reference_frame_index())
++        .scale_factors();
++    LayoutRect::from_size(LayoutSize::new(local.width() * sx, local.height() * sy))
++}
++
++#[derive(Copy, Clone, Debug, PartialEq)]
++pub struct StereoDecision {
++    pub top_and_bottom: bool,
++    pub right_first: bool,
++    /// 0: the views fill the place; 1 and 2: one view at its own shape in
++    /// the middle of the place's width (1) or height (2).
++    pub fit: u8,
++    /// Views the embedder drew itself, of one scene.
++    pub embedder_views: bool,
++}
++
++impl StereoDecision {
++    /// The decision for an image's stereo mark shown over a place of the
++    /// given size (place_shape), if it holds two views.
++    pub fn decide(mark: u32, place: LayoutRect) -> Option<StereoDecision> {
++        if mark == 0 {
++            return None;
++        }
++        let policy = STEREO_POLICY.load(Ordering::Acquire);
++        if policy == 0 {
++            return None;
++        }
++        let policy: StereoPolicyFn = unsafe { std::mem::transmute(policy) };
++        let answer = policy(mark, place.width(), place.height());
++        let layout = answer & 0x3;
++        if layout != 1 && layout != 2 {
++            return None;
++        }
++        Some(StereoDecision {
++            top_and_bottom: layout == 2,
++            right_first: answer & 0x4 != 0,
++            fit: ((answer >> 3) & 0x3) as u8,
++            embedder_views: answer & 0x20 != 0,
++        })
++    }
++
++    /// The eye whose view a surface drawn once shows: the left eye's, for
++    /// views the embedder drew of one scene (the pair squeezed into the
++    /// place would be no picture of it); none for other pictures, which show
++    /// as they are (a display in a 3D mode of its own may take them so).
++    pub fn flat_eye(&self) -> Option<usize> {
++        if self.embedder_views {
++            Some(0)
++        } else {
++            None
++        }
++    }
++
++    /// The part of the picture an eye (0 left, 1 right) sees, as fractions
++    /// of the picture: x0, y0, x1, y1.
++    pub fn eye_fraction(&self, eye: usize) -> [f32; 4] {
++        let second = (eye == 1) != self.right_first;
++        let half = if second { 0.5 } else { 0.0 };
++        if self.top_and_bottom {
++            [0.0, half, 1.0, half + 0.5]
++        } else {
++            [half, 0.0, half + 0.5, 1.0]
++        }
++    }
++
++    /// Where an eye's view is drawn in the place.
++    pub fn eye_rect(&self, place: LayoutRect) -> LayoutRect {
++        let mut rect = place;
++        match self.fit {
++            1 => {
++                let width = place.width() / 2.0;
++                rect.min.x += width / 2.0;
++                rect.max.x = rect.min.x + width;
++            }
++            2 => {
++                let height = place.height() / 2.0;
++                rect.min.y += height / 2.0;
++                rect.max.y = rect.min.y + height;
++            }
++            _ => {}
++        }
++        rect
++    }
++}
+diff --git a/gfx/wr/webrender/src/tile_cache/mod.rs b/gfx/wr/webrender/src/tile_cache/mod.rs
+index c6e319b84e..db78197205 100644
+--- a/gfx/wr/webrender/src/tile_cache/mod.rs
++++ b/gfx/wr/webrender/src/tile_cache/mod.rs
+@@ -41,6 +41,7 @@ use crate::resource_cache::{ResourceCache, ImageRequest};
+ use crate::scene_building::SliceFlags;
+ use crate::space::SpaceMapper;
+ use crate::spatial_tree::{SpatialNodeIndex, SpatialTree};
++use crate::stereo::{place_shape, StereoDecision};
+ use crate::surface::{SubpixelMode, SurfaceInfo};
+ use crate::util::{ScaleOffset, MatrixHelpers, MaxRect};
+ use crate::visibility::{FrameVisibilityContext, FrameVisibilityState, DrawState, PrimitiveVisibilityFlags};
+@@ -2471,6 +2472,16 @@ impl TileCacheInstance {
+                     profile.inc(profiler::COMPOSITOR_SURFACE_BLITS);
+                 }
+ 
++                // A stereo picture drawn straight into the tiles: they are
++                // drawn once per eye.
++                if on_picture_surface {
++                    let mark = resource_cache
++                        .get_image_properties(image_data.key)
++                        .map_or(0, |properties| properties.descriptor.flags.stereo());
++                    let shape = place_shape(local_prim_rect, frame_context.spatial_tree, prim_spatial_node_index);
++                    prim_info.stereo |= StereoDecision::decide(mark, shape).is_some();
++                }
++
+                 prim_info.images.push(ImageDependency {
+                     key: image_data.key,
+                     generation: resource_cache.get_image_generation(image_data.key),
+@@ -2594,6 +2605,13 @@ impl TileCacheInstance {
+                 // Underlay with SliceFlags::IS_ATOMIC adds extra invalidation.
+                 // It is for handling cases where underlay is disabled later.
+                 let kind = scratch.frame.draws[draw_idx].compositor_surface_kind;
++                if kind == CompositorSurfaceKind::Blit && on_picture_surface {
++                    let mark = resource_cache
++                        .get_image_properties(prim_data.kind.yuv_key[0])
++                        .map_or(0, |properties| properties.descriptor.flags.stereo());
++                    let shape = place_shape(local_prim_rect, frame_context.spatial_tree, prim_spatial_node_index);
++                    prim_info.stereo |= StereoDecision::decide(mark, shape).is_some();
++                }
+                 if kind == CompositorSurfaceKind::Blit ||
+                     kind == CompositorSurfaceKind::Underlay &&
+                     self.slice_flags.contains(SliceFlags::IS_ATOMIC) {
+-- 
+2.53.0
+

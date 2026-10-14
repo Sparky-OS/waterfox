@@ -1,7 +1,7 @@
 From 0e7b09df7761334248a54e4d470f267c35fa9e6d Mon Sep 17 00:00:00 2001
 From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
 Date: Wed, 14 Oct 2026 04:26:10 -0300
-Subject: [PATCH 18/18] WebXR: offer the flat stereo display where an output
+Subject: [PATCH 18/25] WebXR: offer the flat stereo display where an output
  shows stereo 3D
 
 The flat stereo display (dom.vr.flat.enabled) is the screen as a WebXR

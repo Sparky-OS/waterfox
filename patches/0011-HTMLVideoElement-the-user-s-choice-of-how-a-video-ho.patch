@@ -1,7 +1,7 @@
 From 62ede3a4914e3f02a8a1f3be67b6243975e34433 Mon Sep 17 00:00:00 2001
 From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
 Date: Tue, 13 Oct 2026 14:54:23 -0300
-Subject: [PATCH 11/18] HTMLVideoElement: the user's choice of how a video
+Subject: [PATCH 11/25] HTMLVideoElement: the user's choice of how a video
  holds its views
 
 The video context menu gets a 3D Video submenu: Automatic, Not 3D, Side

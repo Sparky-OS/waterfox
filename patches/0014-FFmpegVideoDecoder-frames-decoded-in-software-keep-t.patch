@@ -1,7 +1,7 @@
 From 71e60fc80ff72ad4b5d25ab7465187c65afabf16 Mon Sep 17 00:00:00 2001
 From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
 Date: Wed, 14 Oct 2026 02:49:48 -0300
-Subject: [PATCH 14/18] FFmpegVideoDecoder: frames decoded in software keep
+Subject: [PATCH 14/25] FFmpegVideoDecoder: frames decoded in software keep
  their SEI mark
 
 Frames decoded in software reach the compositor as YCbCr buffers, either

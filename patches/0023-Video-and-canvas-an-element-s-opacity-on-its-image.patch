@@ -1,0 +1,747 @@
+From 2c0329e8586d762c9cdfa0a3b4d1ce2c24dd8220 Mon Sep 17 00:00:00 2001
+From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
+Date: Wed, 14 Oct 2026 08:53:02 -0300
+Subject: [PATCH 23/25] Video and canvas: an element's opacity on its image
+
+An opacity on a <video> or <canvas> made an off-screen surface of the
+element, drawn once and composited with the opacity. Both are one image,
+so they now take the opacity themselves (CanApplyOpacity), as other
+image items do: the async image pipeline carries it
+(OpUpdateAsyncImagePipeline::opacity) to the image it draws (the image's
+color, DisplayListBuilder::SetImageOpacity), and YUV images gain an
+opacity in WebRender (YuvImageDisplayItem::opacity, brush_yuv_image).
+The image stays in the page's tiles, where a stereo picture is drawn
+once per eye. A video's opacity reaches its image past the empty
+overlays of its controls and captions: a blend container that paints
+nothing takes no opacity (CollectItemsWithOpacity). An image drawn with
+an opacity is never promoted to a compositor surface, which would show
+it opaque.
+
+Assisted-by: Claude Opus 5.5 via Claude Code
+---
+ gfx/layers/ipc/WebRenderMessages.ipdlh      |  4 +++
+ gfx/layers/wr/AsyncImagePipelineManager.cpp |  9 +++++--
+ gfx/layers/wr/AsyncImagePipelineManager.h   | 10 ++++---
+ gfx/layers/wr/WebRenderBridgeParent.cpp     |  2 +-
+ gfx/layers/wr/WebRenderCommandBuilder.cpp   | 10 ++++---
+ gfx/layers/wr/WebRenderUserData.cpp         |  7 ++---
+ gfx/layers/wr/WebRenderUserData.h           |  2 +-
+ gfx/webrender_bindings/WebRenderAPI.cpp     |  4 +++
+ gfx/webrender_bindings/WebRenderAPI.h       |  5 ++++
+ gfx/webrender_bindings/src/bindings.rs      | 30 +++++++++++++++++----
+ gfx/wr/webrender/res/brush_yuv_image.glsl   |  9 +++++++
+ gfx/wr/webrender/src/gpu_types.rs           |  4 ++-
+ gfx/wr/webrender/src/prim_store/image.rs    | 14 ++++++++--
+ gfx/wr/webrender/src/scene_building.rs      |  4 +++
+ gfx/wr/webrender/src/tile_cache/mod.rs      | 20 +++++++++++---
+ gfx/wr/webrender_api/src/display_item.rs    |  3 +++
+ gfx/wr/webrender_api/src/display_list.rs    | 25 +++++++++++++++++
+ layout/generic/nsHTMLCanvasFrame.cpp        | 14 +++++++++-
+ layout/generic/nsVideoFrame.cpp             |  9 +++++++
+ layout/painting/nsDisplayList.cpp           | 28 +++++++++++++++++++
+ 20 files changed, 188 insertions(+), 25 deletions(-)
+
+diff --git a/gfx/layers/ipc/WebRenderMessages.ipdlh b/gfx/layers/ipc/WebRenderMessages.ipdlh
+index 212594007a..c6d8738ff4 100644
+--- a/gfx/layers/ipc/WebRenderMessages.ipdlh
++++ b/gfx/layers/ipc/WebRenderMessages.ipdlh
+@@ -75,6 +75,10 @@ struct OpUpdateAsyncImagePipeline {
+   WrRotation rotation;
+   ImageRendering filter;
+   MixBlendMode mixBlendMode;
++  // The element's CSS opacity, applied to the image itself (the display item
++  // took it from an nsDisplayOpacity), so that the image is drawn straight
++  // into the page's tiles.
++  float opacity;
+ };
+ 
+ struct OpUpdatedAsyncImagePipeline {
+diff --git a/gfx/layers/wr/AsyncImagePipelineManager.cpp b/gfx/layers/wr/AsyncImagePipelineManager.cpp
+index 53d0b1224c..679d78bd7d 100644
+--- a/gfx/layers/wr/AsyncImagePipelineManager.cpp
++++ b/gfx/layers/wr/AsyncImagePipelineManager.cpp
+@@ -203,7 +203,7 @@ void AsyncImagePipelineManager::RemoveAsyncImagePipeline(
+ void AsyncImagePipelineManager::UpdateAsyncImagePipeline(
+     const wr::PipelineId& aPipelineId, const LayoutDeviceRect& aScBounds,
+     const wr::WrRotation aRotation, const wr::ImageRendering& aFilter,
+-    const wr::MixBlendMode& aMixBlendMode) {
++    const wr::MixBlendMode& aMixBlendMode, float aOpacity) {
+   if (mDestroyed) {
+     return;
+   }
+@@ -213,7 +213,7 @@ void AsyncImagePipelineManager::UpdateAsyncImagePipeline(
+     return;
+   }
+   pipeline->mInitialised = true;
+-  pipeline->Update(aScBounds, aRotation, aFilter, aMixBlendMode);
++  pipeline->Update(aScBounds, aRotation, aFilter, aMixBlendMode, aOpacity);
+ }
+ 
+ Maybe<TextureHost::ResourceUpdateOp> AsyncImagePipelineManager::UpdateImageKeys(
+@@ -485,6 +485,10 @@ void AsyncImagePipelineManager::ApplyAsyncImageForPipeline(
+     LayoutDeviceRect rect(0, 0, aPipeline->mCurrentTexture->GetSize().width,
+                           aPipeline->mCurrentTexture->GetSize().height);
+ 
++    // The element's opacity goes on the image, which keeps it in the page's
++    // tiles (a stereo picture there is drawn once per eye).
++    aPipeline->mDLBuilder.SetImageOpacity(aPipeline->mOpacity);
++
+     if (aPipeline->mUseExternalImage) {
+       MOZ_ASSERT(aPipeline->mCurrentTexture->AsWebRenderTextureHost());
+       Range<wr::ImageKey> range_keys(&keys[0], keys.Length());
+@@ -510,6 +514,7 @@ void AsyncImagePipelineManager::ApplyAsyncImageForPipeline(
+                                       wr::ToLayoutRect(rect), true, false,
+                                       aPipeline->mFilter, keys[0]);
+     }
++    aPipeline->mDLBuilder.SetImageOpacity(1.0f);
+   }
+ 
+   spaceAndClipChainHelper.reset();
+diff --git a/gfx/layers/wr/AsyncImagePipelineManager.h b/gfx/layers/wr/AsyncImagePipelineManager.h
+index b5f716f939..94a1960ba1 100644
+--- a/gfx/layers/wr/AsyncImagePipelineManager.h
++++ b/gfx/layers/wr/AsyncImagePipelineManager.h
+@@ -106,7 +106,8 @@ class AsyncImagePipelineManager final {
+                                 const LayoutDeviceRect& aScBounds,
+                                 wr::WrRotation aRotation,
+                                 const wr::ImageRendering& aFilter,
+-                                const wr::MixBlendMode& aMixBlendMode);
++                                const wr::MixBlendMode& aMixBlendMode,
++                                float aOpacity);
+   void ApplyAsyncImagesOfImageBridge(wr::TransactionBuilder& aSceneBuilderTxn,
+                                      wr::TransactionBuilder& aFastTxn);
+   void ApplyAsyncImageForPipeline(
+@@ -199,14 +200,15 @@ class AsyncImagePipelineManager final {
+                        WebRenderImageHost* aImageHost);
+     void Update(const LayoutDeviceRect& aScBounds, wr::WrRotation aRotation,
+                 const wr::ImageRendering& aFilter,
+-                const wr::MixBlendMode& aMixBlendMode) {
++                const wr::MixBlendMode& aMixBlendMode, float aOpacity) {
+       mIsChanged |= !mScBounds.IsEqualEdges(aScBounds) ||
+                     mRotation != aRotation || mFilter != aFilter ||
+-                    mMixBlendMode != aMixBlendMode;
++                    mMixBlendMode != aMixBlendMode || mOpacity != aOpacity;
+       mScBounds = aScBounds;
+       mRotation = aRotation;
+       mFilter = aFilter;
+       mMixBlendMode = aMixBlendMode;
++      mOpacity = aOpacity;
+     }
+ 
+     bool mInitialised;
+@@ -216,6 +218,8 @@ class AsyncImagePipelineManager final {
+     wr::WrRotation mRotation;
+     wr::ImageRendering mFilter;
+     wr::MixBlendMode mMixBlendMode;
++    // The element's CSS opacity, drawn with the image (OpUpdateAsyncImagePipeline).
++    float mOpacity = 1.0f;
+     const RefPtr<WebRenderImageHost> mImageHost;
+     CompositableTextureHostRef mCurrentTexture;
+     nsTArray<wr::ImageKey> mKeys;
+diff --git a/gfx/layers/wr/WebRenderBridgeParent.cpp b/gfx/layers/wr/WebRenderBridgeParent.cpp
+index 0eeb9ac9a7..43b787b530 100644
+--- a/gfx/layers/wr/WebRenderBridgeParent.cpp
++++ b/gfx/layers/wr/WebRenderBridgeParent.cpp
+@@ -1726,7 +1726,7 @@ bool WebRenderBridgeParent::ProcessWebRenderParentCommands(
+ 
+         mLateInit->mAsyncImageManager->UpdateAsyncImagePipeline(
+             op.pipelineId(), op.scBounds(), op.rotation(), op.filter(),
+-            op.mixBlendMode());
++            op.mixBlendMode(), op.opacity());
+         MOZ_ASSERT_IF(IsRootWebRenderBridgeParent(), !pendingRemotetextures);
+         mLateInit->mAsyncImageManager->ApplyAsyncImageForPipeline(
+             op.pipelineId(), aTxn, txnForImageBridge, pendingOps,
+diff --git a/gfx/layers/wr/WebRenderCommandBuilder.cpp b/gfx/layers/wr/WebRenderCommandBuilder.cpp
+index 64b3553fc2..e1a6f7ec34 100644
+--- a/gfx/layers/wr/WebRenderCommandBuilder.cpp
++++ b/gfx/layers/wr/WebRenderCommandBuilder.cpp
+@@ -2296,10 +2296,12 @@ Maybe<wr::ImageKey> WebRenderCommandBuilder::CreateImageKey(
+     // TODO!
+     // We appear to be using the image bridge for a lot (most/all?) of
+     // layers-free image handling and that breaks frame consistency.
++    // An opacity the item took from an nsDisplayOpacity goes on the image.
+     imageData->CreateAsyncImageWebRenderCommands(
+         aBuilder, aContainer, aSc, rect, scBounds,
+         ToWrRotation(aContainer->GetRotation()), aRendering,
+-        wr::MixBlendMode::Normal, !aItem->BackfaceIsHidden());
++        wr::MixBlendMode::Normal, !aItem->BackfaceIsHidden(),
++        aBuilder.GetInheritedOpacity());
+     return Nothing();
+   }
+ 
+@@ -2335,8 +2337,10 @@ bool WebRenderCommandBuilder::PushImage(
+ 
+   auto r = wr::ToLayoutRect(aRect);
+   auto c = wr::ToLayoutRect(aClip);
+-  aBuilder.PushImage(r, c, !aItem->BackfaceIsHidden(), false, rendering,
+-                     key.value());
++  // An opacity the item took from an nsDisplayOpacity goes on the image.
++  aBuilder.PushImage(
++      r, c, !aItem->BackfaceIsHidden(), false, rendering, key.value(), true,
++      wr::ColorF{1.0f, 1.0f, 1.0f, aBuilder.GetInheritedOpacity()});
+ 
+   return true;
+ }
+diff --git a/gfx/layers/wr/WebRenderUserData.cpp b/gfx/layers/wr/WebRenderUserData.cpp
+index 6c52f63761..876a68d1f3 100644
+--- a/gfx/layers/wr/WebRenderUserData.cpp
++++ b/gfx/layers/wr/WebRenderUserData.cpp
+@@ -194,7 +194,7 @@ void WebRenderImageData::CreateAsyncImageWebRenderCommands(
+     const StackingContextHelper& aSc, const LayoutDeviceRect& aBounds,
+     const LayoutDeviceRect& aSCBounds, wr::WrRotation aRotation,
+     const wr::ImageRendering& aFilter, const wr::MixBlendMode& aMixBlendMode,
+-    bool aIsBackfaceVisible) {
++    bool aIsBackfaceVisible, float aOpacity) {
+   MOZ_ASSERT(aContainer->IsAsync());
+ 
+   if (mPipelineId.isSome() && mContainer != aContainer) {
+@@ -226,8 +226,9 @@ void WebRenderImageData::CreateAsyncImageWebRenderCommands(
+   aBuilder.PushIFrame(aBounds, aIsBackfaceVisible, mPipelineId.ref(),
+                       /*ignoreMissingPipelines*/ false);
+ 
+-  WrBridge()->AddWebRenderParentCommand(OpUpdateAsyncImagePipeline(
+-      mPipelineId.value(), aSCBounds, aRotation, aFilter, aMixBlendMode));
++  WrBridge()->AddWebRenderParentCommand(
++      OpUpdateAsyncImagePipeline(mPipelineId.value(), aSCBounds, aRotation,
++                                 aFilter, aMixBlendMode, aOpacity));
+ }
+ 
+ void WebRenderImageData::CreateImageClientIfNeeded() {
+diff --git a/gfx/layers/wr/WebRenderUserData.h b/gfx/layers/wr/WebRenderUserData.h
+index 38356b365a..dc3a349d14 100644
+--- a/gfx/layers/wr/WebRenderUserData.h
++++ b/gfx/layers/wr/WebRenderUserData.h
+@@ -165,7 +165,7 @@ class WebRenderImageData : public WebRenderUserData {
+       const StackingContextHelper& aSc, const LayoutDeviceRect& aBounds,
+       const LayoutDeviceRect& aSCBounds, wr::WrRotation aRotation,
+       const wr::ImageRendering& aFilter, const wr::MixBlendMode& aMixBlendMode,
+-      bool aIsBackfaceVisible);
++      bool aIsBackfaceVisible, float aOpacity = 1.0f);
+ 
+   void CreateImageClientIfNeeded();
+ 
+diff --git a/gfx/webrender_bindings/WebRenderAPI.cpp b/gfx/webrender_bindings/WebRenderAPI.cpp
+index 41c0092894..f1a695b4de 100644
+--- a/gfx/webrender_bindings/WebRenderAPI.cpp
++++ b/gfx/webrender_bindings/WebRenderAPI.cpp
+@@ -1528,6 +1528,10 @@ void DisplayListBuilder::PushConicGradient(
+                             aTileSize, aTileSpacing);
+ }
+ 
++void DisplayListBuilder::SetImageOpacity(float aOpacity) {
++  wr_dp_set_image_opacity(mWrState, aOpacity);
++}
++
+ void DisplayListBuilder::PushImage(
+     const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
+     bool aIsBackfaceVisible, bool aForceAntiAliasing,
+diff --git a/gfx/webrender_bindings/WebRenderAPI.h b/gfx/webrender_bindings/WebRenderAPI.h
+index 82e9800231..4fc3eacbb3 100644
+--- a/gfx/webrender_bindings/WebRenderAPI.h
++++ b/gfx/webrender_bindings/WebRenderAPI.h
+@@ -697,6 +697,11 @@ class DisplayListBuilder final {
+                          const wr::LayoutSize aTileSize,
+                          const wr::LayoutSize aTileSpacing);
+ 
++  // The opacity the images pushed next are drawn with: an image's color, a
++  // YUV image's opacity (an async image pipeline whose element has a CSS
++  // opacity applied to it). 1 draws them as they are.
++  void SetImageOpacity(float aOpacity);
++
+   void PushImage(const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
+                  bool aIsBackfaceVisible, bool aForceAntiAliasing,
+                  wr::ImageRendering aFilter, wr::ImageKey aImage,
+diff --git a/gfx/webrender_bindings/src/bindings.rs b/gfx/webrender_bindings/src/bindings.rs
+index 20dbc831fe..dbf471f7b9 100644
+--- a/gfx/webrender_bindings/src/bindings.rs
++++ b/gfx/webrender_bindings/src/bindings.rs
+@@ -2984,6 +2984,9 @@ impl WebRenderFrameBuilder {
+ pub struct WrState {
+     pipeline_id: WrPipelineId,
+     frame_builder: WebRenderFrameBuilder,
++    /// The opacity the images pushed next are drawn with (an async image
++    /// pipeline whose element has a CSS opacity), wr_dp_set_image_opacity.
++    image_opacity: f32,
+ }
+ 
+ #[no_mangle]
+@@ -2993,6 +2996,7 @@ pub extern "C" fn wr_state_new(pipeline_id: WrPipelineId) -> *mut WrState {
+     let state = Box::new(WrState {
+         pipeline_id,
+         frame_builder: WebRenderFrameBuilder::new(pipeline_id),
++        image_opacity: 1.0,
+     });
+ 
+     Box::into_raw(state)
+@@ -3581,6 +3585,13 @@ pub extern "C" fn wr_dp_push_hit_test(
+     );
+ }
+ 
++/// The opacity the images pushed next are drawn with: an image's color, a YUV
++/// image's opacity. 1 draws them as they are.
++#[no_mangle]
++pub extern "C" fn wr_dp_set_image_opacity(state: &mut WrState, opacity: f32) {
++    state.image_opacity = opacity;
++}
++
+ #[no_mangle]
+ pub extern "C" fn wr_dp_push_image(
+     state: &mut WrState,
+@@ -3623,6 +3634,10 @@ pub extern "C" fn wr_dp_push_image(
+         AlphaType::Alpha
+     };
+ 
++    let color = ColorF {
++        a: color.a * state.image_opacity,
++        ..color
++    };
+     state
+         .frame_builder
+         .dl_builder
+@@ -3705,7 +3720,7 @@ pub extern "C" fn wr_dp_push_yuv_planar_image(
+         ),
+     };
+ 
+-    state.frame_builder.dl_builder.push_yuv_image(
++    state.frame_builder.dl_builder.push_yuv_image_with_opacity(
+         &prim_info,
+         bounds,
+         YuvData::PlanarYCbCr(image_key_0, image_key_1, image_key_2),
+@@ -3713,6 +3728,7 @@ pub extern "C" fn wr_dp_push_yuv_planar_image(
+         color_space,
+         color_range,
+         image_rendering,
++        state.image_opacity,
+     );
+ }
+ 
+@@ -3748,7 +3764,7 @@ pub extern "C" fn wr_dp_push_yuv_NV12_image(
+         ),
+     };
+ 
+-    state.frame_builder.dl_builder.push_yuv_image(
++    state.frame_builder.dl_builder.push_yuv_image_with_opacity(
+         &prim_info,
+         bounds,
+         YuvData::NV12(image_key_0, image_key_1),
+@@ -3756,6 +3772,7 @@ pub extern "C" fn wr_dp_push_yuv_NV12_image(
+         color_space,
+         color_range,
+         image_rendering,
++        state.image_opacity,
+     );
+ }
+ 
+@@ -3791,7 +3808,7 @@ pub extern "C" fn wr_dp_push_yuv_P010_image(
+         ),
+     };
+ 
+-    state.frame_builder.dl_builder.push_yuv_image(
++    state.frame_builder.dl_builder.push_yuv_image_with_opacity(
+         &prim_info,
+         bounds,
+         YuvData::P010(image_key_0, image_key_1),
+@@ -3799,6 +3816,7 @@ pub extern "C" fn wr_dp_push_yuv_P010_image(
+         color_space,
+         color_range,
+         image_rendering,
++        state.image_opacity,
+     );
+ }
+ 
+@@ -3834,7 +3852,7 @@ pub extern "C" fn wr_dp_push_yuv_NV16_image(
+         ),
+     };
+ 
+-    state.frame_builder.dl_builder.push_yuv_image(
++    state.frame_builder.dl_builder.push_yuv_image_with_opacity(
+         &prim_info,
+         bounds,
+         YuvData::NV16(image_key_0, image_key_1),
+@@ -3842,6 +3860,7 @@ pub extern "C" fn wr_dp_push_yuv_NV16_image(
+         color_space,
+         color_range,
+         image_rendering,
++        state.image_opacity,
+     );
+ }
+ 
+@@ -3876,7 +3895,7 @@ pub extern "C" fn wr_dp_push_yuv_interleaved_image(
+         ),
+     };
+ 
+-    state.frame_builder.dl_builder.push_yuv_image(
++    state.frame_builder.dl_builder.push_yuv_image_with_opacity(
+         &prim_info,
+         bounds,
+         YuvData::InterleavedYCbCr(image_key_0),
+@@ -3884,6 +3903,7 @@ pub extern "C" fn wr_dp_push_yuv_interleaved_image(
+         color_space,
+         color_range,
+         image_rendering,
++        state.image_opacity,
+     );
+ }
+ 
+diff --git a/gfx/wr/webrender/res/brush_yuv_image.glsl b/gfx/wr/webrender/res/brush_yuv_image.glsl
+index 5c7bb7ea91..6cd8ccfde9 100644
+--- a/gfx/wr/webrender/res/brush_yuv_image.glsl
++++ b/gfx/wr/webrender/res/brush_yuv_image.glsl
+@@ -21,6 +21,9 @@ flat varying YUV_PRECISION mat3 vRgbFromDebiasedYcbcr;
+ // YUV format. Packed in to vector to work around bug 1630356.
+ flat varying mediump ivec2 vFormat;
+ 
++// The opacity the image is drawn with (YuvImageData.write_prim_gpu_blocks).
++flat varying mediump float vOpacity;
++
+ #ifdef SWGL_DRAW_SPAN
+ flat varying mediump int vRescaleFactor;
+ #endif
+@@ -61,6 +64,7 @@ void brush_vs(
+     vec2 f = (vi.local_pos - rect.p0) / rect_size(rect);
+ 
+     YuvPrimitive prim = fetch_yuv_primitive(prim_address);
++    vOpacity = fetch_from_gpu_buffer_1f(prim_address).w;
+ 
+ #ifdef SWGL_DRAW_SPAN
+     // swgl_commitTextureLinearYUV needs to know the color space specifier and
+@@ -128,6 +132,7 @@ Fragment brush_fs() {
+ #ifdef WR_FEATURE_ALPHA_PASS
+     color *= antialias_brush();
+ #endif
++    color *= vOpacity;
+ 
+     //color.r = float(100+vFormat) / 255.0;
+     //color.g = vYcbcrBias.x;
+@@ -137,6 +142,10 @@ Fragment brush_fs() {
+ 
+ #ifdef SWGL_DRAW_SPAN
+ void swgl_drawSpanRGBA8() {
++    // An image drawn with an opacity takes the fragment shader.
++    if (vOpacity < 1.0) {
++        return;
++    }
+     if (vFormat.x == YUV_FORMAT_PLANAR) {
+         swgl_commitTextureLinearYUV(sColor0, vUv_Y, vUvBounds_Y,
+                                     sColor1, vUv_U, vUvBounds_U,
+diff --git a/gfx/wr/webrender/src/gpu_types.rs b/gfx/wr/webrender/src/gpu_types.rs
+index 096ec148ee..aee155af3d 100644
+--- a/gfx/wr/webrender/src/gpu_types.rs
++++ b/gfx/wr/webrender/src/gpu_types.rs
+@@ -931,6 +931,8 @@ pub struct YuvPrimitive {
+     pub channel_bit_depth: u32,
+     pub color_space: YuvRangedColorSpace,
+     pub yuv_format: YuvFormat,
++    /// The opacity the image is drawn with (brush_yuv_image only).
++    pub opacity: f32,
+ }
+ 
+ impl GpuBufferDataF for YuvPrimitive {
+@@ -940,7 +942,7 @@ impl GpuBufferDataF for YuvPrimitive {
+             pack_as_float(self.channel_bit_depth),
+             pack_as_float(self.color_space as u32),
+             pack_as_float(self.yuv_format as u32),
+-            0.0
++            self.opacity,
+         ]);
+     }
+ }
+diff --git a/gfx/wr/webrender/src/prim_store/image.rs b/gfx/wr/webrender/src/prim_store/image.rs
+index bdddcf25a7..60ce7c8c00 100644
+--- a/gfx/wr/webrender/src/prim_store/image.rs
++++ b/gfx/wr/webrender/src/prim_store/image.rs
+@@ -891,6 +891,8 @@ pub struct YuvImage {
+     pub color_space: YuvColorSpace,
+     pub color_range: ColorRange,
+     pub image_rendering: ImageRendering,
++    /// The opacity the image is drawn with, 255 for an opaque image.
++    pub alpha: u8,
+ }
+ 
+ pub type YuvImageKey = PrimKey<YuvImage>;
+@@ -920,6 +922,7 @@ pub struct YuvImageData {
+     pub color_space: YuvColorSpace,
+     pub color_range: ColorRange,
+     pub image_rendering: ImageRendering,
++    pub alpha: u8,
+ }
+ 
+ impl From<YuvImage> for YuvImageData {
+@@ -932,6 +935,7 @@ impl From<YuvImage> for YuvImageData {
+             color_space: image.color_space,
+             color_range: image.color_range,
+             image_rendering: image.image_rendering,
++            alpha: image.alpha,
+         }
+     }
+ }
+@@ -979,8 +983,13 @@ impl YuvImageData {
+         self.write_prim_gpu_blocks(&mut writer);
+         common.gpu_buffer_address = writer.finish();
+ 
+-    // YUV images never have transparency
+-        common.opacity = PrimitiveOpacity::opaque();
++        // YUV images have no transparency of their own; one drawn with an
++        // opacity is translucent.
++        common.opacity = if self.alpha == 255 {
++            PrimitiveOpacity::opaque()
++        } else {
++            PrimitiveOpacity::translucent()
++        };
+     }
+ 
+     pub fn request_resources(
+@@ -1007,6 +1016,7 @@ impl YuvImageData {
+             channel_bit_depth: self.color_depth.bit_depth(),
+             color_space: self.color_space.with_range(self.color_range),
+             yuv_format: self.format,
++            opacity: self.alpha as f32 / 255.0,
+         });
+     }
+ }
+diff --git a/gfx/wr/webrender/src/scene_building.rs b/gfx/wr/webrender/src/scene_building.rs
+index 77c786e54a..f3f8760c75 100644
+--- a/gfx/wr/webrender/src/scene_building.rs
++++ b/gfx/wr/webrender/src/scene_building.rs
+@@ -1453,6 +1453,7 @@ impl<'a> SceneBuilder<'a> {
+                     info.color_space,
+                     info.color_range,
+                     info.image_rendering,
++                    info.opacity,
+                 );
+             }
+             DisplayItem::Text(ref info) => {
+@@ -3637,9 +3638,11 @@ impl<'a> SceneBuilder<'a> {
+         color_space: YuvColorSpace,
+         color_range: ColorRange,
+         image_rendering: ImageRendering,
++        opacity: f32,
+     ) {
+         let format = yuv_data.get_format();
+         let yuv_key = yuv_planes(&yuv_data);
++        let alpha = (opacity.max(0.0).min(1.0) * 255.0).round() as u8;
+ 
+         self.add_nonshadowable_primitive(
+             spatial_node_index,
+@@ -3653,6 +3656,7 @@ impl<'a> SceneBuilder<'a> {
+                 color_space,
+                 color_range,
+                 image_rendering,
++                alpha,
+             },
+         );
+     }
+diff --git a/gfx/wr/webrender/src/tile_cache/mod.rs b/gfx/wr/webrender/src/tile_cache/mod.rs
+index db78197205..69cb0f00dd 100644
+--- a/gfx/wr/webrender/src/tile_cache/mod.rs
++++ b/gfx/wr/webrender/src/tile_cache/mod.rs
+@@ -2424,6 +2424,12 @@ impl TileCacheInstance {
+                         promotion_result = Err(NotPremultipliedAlpha);
+                     }
+ 
++                    // The compositor shows surfaces as they are: an image drawn
++                    // with an opacity stays in the tiles.
++                    if image_data.color.a < 1.0 {
++                        promotion_result = Err(Translucent);
++                    }
++
+                     if let Ok(kind) = promotion_result {
+                         promotion_result = self.setup_compositor_surfaces_rgb(
+                             prim_instance_index,
+@@ -2501,10 +2507,16 @@ impl TileCacheInstance {
+                         self.yuv_images_remaining -= 1;
+                     }
+ 
+-                    let promotion_attempts =
+-                        [CompositorSurfaceKind::Overlay, CompositorSurfaceKind::Underlay];
++                    // A video drawn with an opacity stays in the tiles: the
++                    // compositor shows surfaces as they are.
++                    let promotion_attempts: &[CompositorSurfaceKind] = if prim_data.kind.alpha == 255 {
++                        &[CompositorSurfaceKind::Overlay, CompositorSurfaceKind::Underlay]
++                    } else {
++                        promotion_result = Err(Translucent);
++                        &[]
++                    };
+ 
+-                    for kind in promotion_attempts {
++                    for &kind in promotion_attempts {
+                         // Since this might be an attempt after an earlier error, clear the flag
+                         // so that we are allowed to report another error.
+                         promotion_result = self.can_promote_to_surface(
+@@ -3346,6 +3358,7 @@ enum SurfacePromotionFailure {
+     ComplexTransform,
+     SliceAtomic,
+     SizeTooLarge,
++    Translucent,
+ }
+ 
+ impl Display for SurfacePromotionFailure {
+@@ -3364,6 +3377,7 @@ impl Display for SurfacePromotionFailure {
+                 SurfacePromotionFailure::UnderlayLowQualityZoom => "underlay not allowed during low-quality pinch zoom",
+                 SurfacePromotionFailure::NotRootTileCache => "is not on a root tile cache",
+                 SurfacePromotionFailure::ComplexTransform => "has a complex transform",
++                SurfacePromotionFailure::Translucent => "is drawn with an opacity",
+                 SurfacePromotionFailure::SliceAtomic => "slice is atomic",
+                 SurfacePromotionFailure::SizeTooLarge => "surface is too large for compositor",
+             }.to_owned()
+diff --git a/gfx/wr/webrender_api/src/display_item.rs b/gfx/wr/webrender_api/src/display_item.rs
+index e601a6df4f..e3f5e3f0d6 100644
+--- a/gfx/wr/webrender_api/src/display_item.rs
++++ b/gfx/wr/webrender_api/src/display_item.rs
+@@ -1941,6 +1941,9 @@ pub struct YuvImageDisplayItem {
+     pub color_space: YuvColorSpace,
+     pub color_range: ColorRange,
+     pub image_rendering: ImageRendering,
++    /// The opacity the image is drawn with, 1 for an opaque image (a video
++    /// whose element has a CSS opacity is drawn with it, as an image's color).
++    pub opacity: f32,
+ }
+ 
+ #[repr(u8)]
+diff --git a/gfx/wr/webrender_api/src/display_list.rs b/gfx/wr/webrender_api/src/display_list.rs
+index 41bacec82f..b1cda9d8e1 100644
+--- a/gfx/wr/webrender_api/src/display_list.rs
++++ b/gfx/wr/webrender_api/src/display_list.rs
+@@ -1278,6 +1278,30 @@ impl DisplayListBuilder {
+         color_space: di::YuvColorSpace,
+         color_range: di::ColorRange,
+         image_rendering: di::ImageRendering,
++    ) {
++        self.push_yuv_image_with_opacity(
++            common,
++            bounds,
++            yuv_data,
++            color_depth,
++            color_space,
++            color_range,
++            image_rendering,
++            1.0,
++        );
++    }
++
++    /// A YUV image drawn with an opacity (1 for an opaque image).
++    pub fn push_yuv_image_with_opacity(
++        &mut self,
++        common: &di::CommonItemProperties,
++        bounds: LayoutRect,
++        yuv_data: di::YuvData,
++        color_depth: ColorDepth,
++        color_space: di::YuvColorSpace,
++        color_range: di::ColorRange,
++        image_rendering: di::ImageRendering,
++        opacity: f32,
+     ) {
+         let (common, offset) = self.normalize_common(common);
+         let item = di::DisplayItem::YuvImage(di::YuvImageDisplayItem {
+@@ -1288,6 +1312,7 @@ impl DisplayListBuilder {
+             color_space,
+             color_range,
+             image_rendering,
++            opacity,
+         });
+         self.push_item(&item);
+     }
+diff --git a/layout/generic/nsHTMLCanvasFrame.cpp b/layout/generic/nsHTMLCanvasFrame.cpp
+index 541bf84ffb..ac7546a815 100644
+--- a/layout/generic/nsHTMLCanvasFrame.cpp
++++ b/layout/generic/nsHTMLCanvasFrame.cpp
+@@ -60,6 +60,15 @@ class nsDisplayCanvas final : public nsPaintedDisplayItem {
+ 
+   NS_DISPLAY_DECL_NAME("nsDisplayCanvas", TYPE_CANVAS)
+ 
++  // The canvas is one image, drawn with the opacity of an nsDisplayOpacity
++  // around it (OpUpdateAsyncImagePipeline, or the image's color): the image
++  // stays in the page's tiles instead of a surface of its own, where
++  // WebRender draws a stereo canvas once per eye.
++  bool CanApplyOpacity(WebRenderLayerManager* aManager,
++                       nsDisplayListBuilder* aBuilder) const override {
++    return true;
++  }
++
+   nsRegion GetOpaqueRegion(nsDisplayListBuilder* aBuilder,
+                            bool* aSnap) const override {
+     *aSnap = false;
+@@ -157,10 +166,13 @@ class nsDisplayCanvas final : public nsPaintedDisplayItem {
+         LayoutDeviceRect scBounds(LayoutDevicePoint(0, 0), bounds.Size());
+         auto filter = wr::ToImageRendering(mFrame->UsedImageRendering());
+         auto mixBlendMode = wr::MixBlendMode::Normal;
++        // An opacity this item took from an nsDisplayOpacity (CanApplyOpacity)
++        // goes on the image.
+         aManager->WrBridge()->AddWebRenderParentCommand(
+             OpUpdateAsyncImagePipeline(data->GetPipelineId().value(), scBounds,
+                                        wr::WrRotation::Degree0, filter,
+-                                       mixBlendMode));
++                                       mixBlendMode,
++                                       aBuilder.GetInheritedOpacity()));
+         break;
+       }
+       case CanvasContextType::ImageBitmap: {
+diff --git a/layout/generic/nsVideoFrame.cpp b/layout/generic/nsVideoFrame.cpp
+index 32c65b7e56..c357b05207 100644
+--- a/layout/generic/nsVideoFrame.cpp
++++ b/layout/generic/nsVideoFrame.cpp
+@@ -578,6 +578,15 @@ class nsDisplayVideo final : public nsPaintedDisplayItem {
+ 
+   NS_DISPLAY_DECL_NAME("Video", TYPE_VIDEO)
+ 
++  // The video is one image, drawn with the opacity of an nsDisplayOpacity
++  // around it (WebRenderCommandBuilder::PushImage): the image stays in the
++  // page's tiles instead of a surface of its own, where WebRender draws a
++  // stereo video once per eye.
++  bool CanApplyOpacity(WebRenderLayerManager* aManager,
++                       nsDisplayListBuilder* aBuilder) const override {
++    return true;
++  }
++
+   already_AddRefed<ImageContainer> GetImageContainer(gfxRect& aDestGFXRect) {
+     auto* f = static_cast<nsVideoFrame*>(Frame());
+     nsRect area = f->InkOverflowRectRelativeToSelf() + ToReferenceFrame();
+diff --git a/layout/painting/nsDisplayList.cpp b/layout/painting/nsDisplayList.cpp
+index f958ef7438..391320462a 100644
+--- a/layout/painting/nsDisplayList.cpp
++++ b/layout/painting/nsDisplayList.cpp
+@@ -5065,6 +5065,27 @@ static const size_t kOpacityMaxListSize = kOpacityMaxChildCount * 2;
+  * item that returns false for CanApplyOpacity() is encountered.
+  * Otherwise returns true.
+  */
++// Only hit-testing information, at any depth of wrap lists and containers.
++static bool PaintsNothing(nsDisplayList* aList) {
++  if (!aList) {
++    return true;
++  }
++  for (nsDisplayItem* i : *aList) {
++    const DisplayItemType type = i->GetType();
++    if (type == DisplayItemType::TYPE_COMPOSITOR_HITTEST_INFO) {
++      continue;
++    }
++    if ((type == DisplayItemType::TYPE_WRAP_LIST ||
++         type == DisplayItemType::TYPE_CONTAINER ||
++         type == DisplayItemType::TYPE_BLEND_CONTAINER) &&
++        PaintsNothing(i->GetChildren())) {
++      continue;
++    }
++    return false;
++  }
++  return true;
++}
++
+ static bool CollectItemsWithOpacity(WebRenderLayerManager* aManager,
+                                     nsDisplayListBuilder* aBuilder,
+                                     nsDisplayList* aList,
+@@ -5082,6 +5103,13 @@ static bool CollectItemsWithOpacity(WebRenderLayerManager* aManager,
+       continue;
+     }
+ 
++    // A blend container that paints nothing (the empty overlays of a video's
++    // controls and captions) takes no opacity.
++    if (type == DisplayItemType::TYPE_BLEND_CONTAINER &&
++        PaintsNothing(i->GetChildren())) {
++      continue;
++    }
++
+     // Descend only into wraplists.
+     if (type == DisplayItemType::TYPE_WRAP_LIST ||
+         type == DisplayItemType::TYPE_CONTAINER) {
+-- 
+2.53.0
+

@@ -1,7 +1,7 @@
 From b09996e31bb4f7da8c2c5bf60506a6ba82234418 Mon Sep 17 00:00:00 2001
 From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
 Date: Mon, 12 Oct 2026 21:05:19 -0300
-Subject: [PATCH 04/18] NativeLayerWayland: declare stereo content on the
+Subject: [PATCH 04/25] NativeLayerWayland: declare stereo content on the
  layer's own surface
 
 With WebRender's native compositor a video or canvas gets a Wayland

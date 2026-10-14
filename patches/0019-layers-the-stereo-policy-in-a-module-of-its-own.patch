@@ -1,0 +1,527 @@
+From 2889b8061b313c335f2ec7c573ab9b16512c217f Mon Sep 17 00:00:00 2001
+From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
+Date: Wed, 14 Oct 2026 06:32:57 -0300
+Subject: [PATCH 19/25] layers: the stereo policy in a module of its own
+
+libstereo-policy, the edition's shared stereo policy in plain C, was
+loaded by NativeLayerWayland alone. It now has a module of its own,
+StereoPolicy.h, with the decision as a function (layers::DecideStereo: a
+picture's mark, where it comes from, the user's Swap Eyes and the
+place's shape give the packing and whether one full view is shown in the
+middle of the place), so that other parts of the browser decide alike:
+the parent process reads a file's Swap Eyes correction through it, and
+WebRender's stereo tiles take the same decision. The library's file
+entry, stereo_policy_file_swap_eyes, is looked up too.
+
+No change in what the layers decide.
+
+Assisted-by: Claude Opus 5.5 via Claude Code
+---
+ gfx/layers/NativeLayerWayland.cpp | 178 +++---------------------------
+ gfx/layers/NativeLayerWayland.h   |  10 +-
+ gfx/layers/StereoPolicy.cpp       | 144 ++++++++++++++++++++++++
+ gfx/layers/StereoPolicy.h         |  86 +++++++++++++++
+ gfx/layers/moz.build              |   2 +
+ 5 files changed, 250 insertions(+), 170 deletions(-)
+ create mode 100644 gfx/layers/StereoPolicy.cpp
+ create mode 100644 gfx/layers/StereoPolicy.h
+
+diff --git a/gfx/layers/NativeLayerWayland.cpp b/gfx/layers/NativeLayerWayland.cpp
+index 2df23bb5a4..291230ebf8 100644
+--- a/gfx/layers/NativeLayerWayland.cpp
++++ b/gfx/layers/NativeLayerWayland.cpp
+@@ -32,6 +32,7 @@
+ #include "mozilla/gfx/DataSurfaceHelpers.h"
+ #include "mozilla/gfx/Logging.h"
+ #include "mozilla/gfx/gfxVars.h"
++#include "mozilla/layers/StereoPolicy.h"
+ #include "mozilla/layers/SurfacePoolWayland.h"
+ #include "mozilla/StaticPrefs_widget.h"
+ #include "mozilla/webrender/RenderThread.h"
+@@ -152,94 +153,6 @@ void RemoveStereoDeclaration(RefPtr<WaylandSurface> aSurface) {
+   }
+ }
+ 
+-// libstereo-policy (Sparky Stereo OS, stereo-policy.h), the stereo policy all
+-// of the edition's programs share, in plain C: which packing a video frame
+-// holds (its own mark first, then the user's choice, then the frame's shape,
+-// with the user's Swap Eyes over whichever decided) and whether its views are
+-// full or half. The browser reads the marks itself and keeps no copy of the
+-// rules.
+-struct StereoPolicy {
+-  // enum stereo_policy_layout and stereo_policy_order of stereo-policy.h.
+-  static constexpr int kLayoutNone = 0;
+-  static constexpr int kSideBySide = 1;
+-  static constexpr int kTopAndBottom = 2;
+-  static constexpr int kLeftFirst = 0;
+-  static constexpr int kRightFirst = 1;
+-
+-  int (*videoLayout)(int aWidth, int aHeight, const char* aMark,
+-                     int aUserLayout, int aUserOrder, int aSwapEyes,
+-                     int* aLayout, int* aOrder, int* aSource);
+-  int (*videoFullViews)(int aWidth, int aHeight, int aLayout);
+-};
+-
+-const StereoPolicy* GetStereoPolicy() {
+-  static const StereoPolicy* sStereoPolicy = []() -> const StereoPolicy* {
+-    void* handle = dlopen("libstereo-policy.so.1", RTLD_NOW | RTLD_LOCAL);
+-    if (!handle) {
+-      LOGS("libstereo-policy.so.1 is missing: %s", dlerror());
+-      return nullptr;
+-    }
+-    static StereoPolicy lib;
+-    lib.videoLayout = reinterpret_cast<decltype(lib.videoLayout)>(
+-        dlsym(handle, "stereo_policy_video_layout"));
+-    lib.videoFullViews = reinterpret_cast<decltype(lib.videoFullViews)>(
+-        dlsym(handle, "stereo_policy_video_full_views"));
+-    if (!lib.videoLayout || !lib.videoFullViews) {
+-      LOGS("libstereo-policy.so.1 lacks its video entries");
+-      return nullptr;
+-    }
+-    return &lib;
+-  }();
+-  return sStereoPolicy;
+-}
+-
+-// A picture's mark as the Stereo3DLayout word the policy reads (RFC 9559
+-// StereoMode and H.264/H.265 Table D-8 packings, with their eye order).
+-const char* StereoLayoutWord(StereoMode aMode) {
+-  switch (aMode) {
+-    case StereoMode::MONO:
+-      return "mono";
+-    case StereoMode::LEFT_RIGHT:
+-      return "sideBySideLeftFirst";
+-    case StereoMode::RIGHT_LEFT:
+-      return "sideBySideRightFirst";
+-    case StereoMode::TOP_BOTTOM:
+-      return "topBottomLeftFirst";
+-    case StereoMode::BOTTOM_TOP:
+-      return "topBottomRightFirst";
+-    case StereoMode::CHECKERBOARD_LEFT_FIRST:
+-      return "checkerboardLeftFirst";
+-    case StereoMode::CHECKERBOARD_RIGHT_FIRST:
+-      return "checkerboardRightFirst";
+-    case StereoMode::ROWS_LEFT_FIRST:
+-      return "rowInterleavedLeftFirst";
+-    case StereoMode::ROWS_RIGHT_FIRST:
+-      return "rowInterleavedRightFirst";
+-    case StereoMode::COLUMNS_LEFT_FIRST:
+-      return "columnInterleavedLeftFirst";
+-    case StereoMode::COLUMNS_RIGHT_FIRST:
+-      return "columnInterleavedRightFirst";
+-    case StereoMode::ANAGLYPH_CYAN_RED:
+-      return "anaglyphCyanRed";
+-    case StereoMode::ANAGLYPH_GREEN_MAGENTA:
+-      return "anaglyphGreenMagenta";
+-    case StereoMode::LACED_LEFT_FIRST:
+-      return "blockLacedLeftFirst";
+-    case StereoMode::LACED_RIGHT_FIRST:
+-      return "blockLacedRightFirst";
+-    default:
+-      return "mono";
+-  }
+-}
+-
+-bool IsSideBySide(StereoMode aMode) {
+-  return aMode == StereoMode::LEFT_RIGHT || aMode == StereoMode::RIGHT_LEFT;
+-}
+-
+-bool IsTopAndBottom(StereoMode aMode) {
+-  return aMode == StereoMode::TOP_BOTTOM || aMode == StereoMode::BOTTOM_TOP;
+-}
+-
+ }  // namespace
+ 
+ #ifdef MOZ_LOGGING
+@@ -1924,86 +1837,27 @@ void NativeLayerWaylandExternal::AttachExternalImage(
+                      : widget::WaylandBufferDMABUF::CreateExternal(surface);
+ }
+ 
+-// How a picture holds two views (Sparky Stereo OS, the same in every program
+-// of the edition, libstereo-policy): the stream's frame packing SEI or the
+-// container's mark, both read by the browser, then the user's choice in the
+-// 3D Video menu, then the frame's shape; the user's Swap Eyes goes over
+-// whichever decided. A mark with the size of one view (Matroska's
+-// DisplayWidth and DisplayHeight), a WebXR session's canvas and the camera
+-// hack's canvas show one view over the place; otherwise the policy tells
+-// whether the views are full (one shown at its own shape in the middle of the
+-// place) or half.
++// How a picture holds two views: libstereo-policy decides
++// (layers::DecideStereo), with the place's shape.
+ void NativeLayerWayland::DecideStereoLocked(const gfx::Size& aShape) {
+-  StereoMode packing = StereoMode::MONO;
+-  StereoFit fit = StereoFit::None;
+-  const bool viewSized = mStereoSource == StereoSource::XR ||
+-                         mStereoSource == StereoSource::CAMERA ||
+-                         mStereoSource == StereoSource::CONTAINER_SIZED;
+-  if (mStereoSource == StereoSource::XR ||
+-      mStereoSource == StereoSource::CAMERA) {
+-    // Drawn by the browser, left eye first.
+-    packing = mStereoMark;
+-  } else if (mStereoSource != StereoSource::NONE || mStereoIsVideo) {
+-    const IntSize shape = gfx::RoundedToInt(aShape);
+-    // The user's choice of "Not 3D" holds no packing, as a "mono" mark.
+-    const bool user = mStereoSource == StereoSource::USER;
+-    const char* mark =
+-        user ? (mStereoMark == StereoMode::MONO ? "mono" : nullptr)
+-        : mStereoSource == StereoSource::NONE ? nullptr
+-                                              : StereoLayoutWord(mStereoMark);
+-    int userLayout = StereoPolicy::kLayoutNone;
+-    int userOrder = StereoPolicy::kLeftFirst;
+-    if (user && mStereoMark != StereoMode::MONO) {
+-      userLayout = IsTopAndBottom(mStereoMark) ? StereoPolicy::kTopAndBottom
+-                                               : StereoPolicy::kSideBySide;
+-      userOrder = mStereoMark == StereoMode::RIGHT_LEFT ||
+-                          mStereoMark == StereoMode::BOTTOM_TOP
+-                      ? StereoPolicy::kRightFirst
+-                      : StereoPolicy::kLeftFirst;
+-    }
+-    int layout = StereoPolicy::kLayoutNone;
+-    int order = StereoPolicy::kLeftFirst;
+-    int source = 0;
+-    if (const auto* lib = GetStereoPolicy()) {
+-      if (lib->videoLayout(shape.width, shape.height, mark, userLayout,
+-                           userOrder, mStereoSwap, &layout, &order,
+-                           &source) == 0) {
+-        const bool rightFirst = order == StereoPolicy::kRightFirst;
+-        packing = layout == StereoPolicy::kSideBySide
+-                      ? (rightFirst ? StereoMode::RIGHT_LEFT
+-                                    : StereoMode::LEFT_RIGHT)
+-                  : layout == StereoPolicy::kTopAndBottom
+-                      ? (rightFirst ? StereoMode::BOTTOM_TOP
+-                                    : StereoMode::TOP_BOTTOM)
+-                      : StereoMode::MONO;
+-        if (!viewSized && packing != StereoMode::MONO &&
+-            lib->videoFullViews(shape.width, shape.height, layout) == 1) {
+-          fit = IsSideBySide(packing) ? StereoFit::HalfWidth
+-                                      : StereoFit::HalfHeight;
+-        }
+-      }
+-    } else if (mStereoSource != StereoSource::NONE) {
+-      // Without the policy: the mark as it is, half views unless their size
+-      // is given.
+-      packing = mStereoSwap ? SwapStereoEyes(mStereoMark) : mStereoMark;
+-    }
+-    if (shape != mStereoPolicyShape || layout != mStereoPolicyLayout ||
+-        order != mStereoPolicyOrder) {
++  const IntSize shape = gfx::RoundedToInt(aShape);
++  const auto decision = DecideStereo(mStereoMark, mStereoSource, mStereoSwap,
++                                     mStereoIsVideo, shape);
++  const StereoMode packing = decision.mPacking;
++  const StereoFit fit = decision.mFit;
++  if (decision.mMark || decision.mUserLayout || decision.mLayout) {
++    if (shape != mStereoPolicyShape || decision.mLayout != mStereoPolicyLayout ||
++        decision.mOrder != mStereoPolicyOrder) {
+       mStereoPolicyShape = shape;
+-      mStereoPolicyLayout = layout;
+-      mStereoPolicyOrder = order;
++      mStereoPolicyLayout = decision.mLayout;
++      mStereoPolicyOrder = decision.mOrder;
+       LOG("NativeLayerWayland::DecideStereoLocked() [%d x %d] mark %s user "
+           "%d/%d swap %d -> stereo-policy layout %d order %d source %d",
+-          shape.width, shape.height, mark ? mark : "(none)", userLayout,
+-          userOrder, mStereoSwap, layout, order, source);
++          shape.width, shape.height, decision.mMark ? decision.mMark : "(none)",
++          decision.mUserLayout, decision.mUserOrder, mStereoSwap,
++          decision.mLayout, decision.mOrder, decision.mSource);
+     }
+   }
+-  // Other arrangements (checkerboard, rows, columns, anaglyph, frame
+-  // sequence) are shown flat.
+-  if (!IsSideBySide(packing) && !IsTopAndBottom(packing)) {
+-    packing = StereoMode::MONO;
+-    fit = StereoFit::None;
+-  }
+   if (packing != mStereoPacking || fit != mStereoFit) {
+     LOG("NativeLayerWayland::DecideStereoLocked() mark %d source %d swap %d "
+         "-> packing %d fit %d",
+diff --git a/gfx/layers/NativeLayerWayland.h b/gfx/layers/NativeLayerWayland.h
+index 3ad23c4cf3..04edd13a2d 100644
+--- a/gfx/layers/NativeLayerWayland.h
++++ b/gfx/layers/NativeLayerWayland.h
+@@ -9,6 +9,7 @@
+ #include "mozilla/Atomics.h"
+ #include "mozilla/Mutex.h"
+ #include "mozilla/layers/NativeLayer.h"
++#include "mozilla/layers/StereoPolicy.h"
+ #include "mozilla/layers/SurfacePoolWayland.h"
+ #include "mozilla/widget/DMABufFormats.h"
+ #include "nsRegion.h"
+@@ -333,14 +334,7 @@ class NativeLayerWayland : public NativeLayer {
+   // Stereo 3D (Sparky Stereo OS). The compositor takes two views full side by
+   // side with the left eye first, declared on the surface; each eye sees its
+   // half of the buffer over the surface's place.
+-  enum class StereoFit : uint8_t {
+-    // The place has the shape of one view.
+-    None,
+-    // The place has the shape of two full size views side by side, or on top
+-    // of each other: one view is shown at its shape, centred in it.
+-    HalfWidth,
+-    HalfHeight,
+-  };
++  using StereoFit = layers::StereoFit;
+   // Decides mStereoPacking and mStereoFit for a place of the given shape.
+   void DecideStereoLocked(const gfx::Size& aShape);
+   // The picture's stereo mark and where it comes from.
+diff --git a/gfx/layers/StereoPolicy.cpp b/gfx/layers/StereoPolicy.cpp
+new file mode 100644
+index 0000000000..f723f85017
+--- /dev/null
++++ b/gfx/layers/StereoPolicy.cpp
+@@ -0,0 +1,144 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "mozilla/layers/StereoPolicy.h"
++
++#include <dlfcn.h>
++
++#include "mozilla/Logging.h"
++
++static mozilla::LazyLogModule sStereoPolicyLog("StereoPolicy");
++
++namespace mozilla::layers {
++
++const StereoPolicy* GetStereoPolicy() {
++  static const StereoPolicy* sStereoPolicy = []() -> const StereoPolicy* {
++    void* handle = dlopen("libstereo-policy.so.1", RTLD_NOW | RTLD_LOCAL);
++    if (!handle) {
++      MOZ_LOG(sStereoPolicyLog, LogLevel::Debug,
++              ("libstereo-policy.so.1 is missing: %s", dlerror()));
++      return nullptr;
++    }
++    static StereoPolicy lib;
++    lib.videoLayout = reinterpret_cast<decltype(lib.videoLayout)>(
++        dlsym(handle, "stereo_policy_video_layout"));
++    lib.videoFullViews = reinterpret_cast<decltype(lib.videoFullViews)>(
++        dlsym(handle, "stereo_policy_video_full_views"));
++    lib.fileSwapEyes = reinterpret_cast<decltype(lib.fileSwapEyes)>(
++        dlsym(handle, "stereo_policy_file_swap_eyes"));
++    if (!lib.videoLayout || !lib.videoFullViews) {
++      MOZ_LOG(sStereoPolicyLog, LogLevel::Debug,
++              ("libstereo-policy.so.1 lacks its video entries"));
++      return nullptr;
++    }
++    return &lib;
++  }();
++  return sStereoPolicy;
++}
++
++const char* StereoLayoutWord(StereoMode aMode) {
++  switch (aMode) {
++    case StereoMode::MONO:
++      return "mono";
++    case StereoMode::LEFT_RIGHT:
++      return "sideBySideLeftFirst";
++    case StereoMode::RIGHT_LEFT:
++      return "sideBySideRightFirst";
++    case StereoMode::TOP_BOTTOM:
++      return "topBottomLeftFirst";
++    case StereoMode::BOTTOM_TOP:
++      return "topBottomRightFirst";
++    case StereoMode::CHECKERBOARD_LEFT_FIRST:
++      return "checkerboardLeftFirst";
++    case StereoMode::CHECKERBOARD_RIGHT_FIRST:
++      return "checkerboardRightFirst";
++    case StereoMode::ROWS_LEFT_FIRST:
++      return "rowInterleavedLeftFirst";
++    case StereoMode::ROWS_RIGHT_FIRST:
++      return "rowInterleavedRightFirst";
++    case StereoMode::COLUMNS_LEFT_FIRST:
++      return "columnInterleavedLeftFirst";
++    case StereoMode::COLUMNS_RIGHT_FIRST:
++      return "columnInterleavedRightFirst";
++    case StereoMode::ANAGLYPH_CYAN_RED:
++      return "anaglyphCyanRed";
++    case StereoMode::ANAGLYPH_GREEN_MAGENTA:
++      return "anaglyphGreenMagenta";
++    case StereoMode::LACED_LEFT_FIRST:
++      return "blockLacedLeftFirst";
++    case StereoMode::LACED_RIGHT_FIRST:
++      return "blockLacedRightFirst";
++    default:
++      return "mono";
++  }
++}
++
++bool IsSideBySide(StereoMode aMode) {
++  return aMode == StereoMode::LEFT_RIGHT || aMode == StereoMode::RIGHT_LEFT;
++}
++
++bool IsTopAndBottom(StereoMode aMode) {
++  return aMode == StereoMode::TOP_BOTTOM || aMode == StereoMode::BOTTOM_TOP;
++}
++
++StereoDecision DecideStereo(StereoMode aMark, StereoSource aSource, bool aSwap,
++                            bool aIsVideo, const gfx::IntSize& aShape) {
++  StereoDecision decision;
++  const bool viewSized = aSource == StereoSource::XR ||
++                         aSource == StereoSource::CAMERA ||
++                         aSource == StereoSource::CONTAINER_SIZED;
++  if (aSource == StereoSource::XR || aSource == StereoSource::CAMERA) {
++    // Drawn by the browser, left eye first.
++    decision.mPacking = aMark;
++  } else if (aSource != StereoSource::NONE || aIsVideo) {
++    // The user's choice of "Not 3D" holds no packing, as a "mono" mark.
++    const bool user = aSource == StereoSource::USER;
++    decision.mMark = user ? (aMark == StereoMode::MONO ? "mono" : nullptr)
++                     : aSource == StereoSource::NONE ? nullptr
++                                                     : StereoLayoutWord(aMark);
++    if (user && aMark != StereoMode::MONO) {
++      decision.mUserLayout = IsTopAndBottom(aMark) ? StereoPolicy::kTopAndBottom
++                                                   : StereoPolicy::kSideBySide;
++      decision.mUserOrder =
++          aMark == StereoMode::RIGHT_LEFT || aMark == StereoMode::BOTTOM_TOP
++              ? StereoPolicy::kRightFirst
++              : StereoPolicy::kLeftFirst;
++    }
++    if (const auto* lib = GetStereoPolicy()) {
++      if (lib->videoLayout(aShape.width, aShape.height, decision.mMark,
++                           decision.mUserLayout, decision.mUserOrder, aSwap,
++                           &decision.mLayout, &decision.mOrder,
++                           &decision.mSource) == 0) {
++        const bool rightFirst = decision.mOrder == StereoPolicy::kRightFirst;
++        decision.mPacking =
++            decision.mLayout == StereoPolicy::kSideBySide
++                ? (rightFirst ? StereoMode::RIGHT_LEFT : StereoMode::LEFT_RIGHT)
++            : decision.mLayout == StereoPolicy::kTopAndBottom
++                ? (rightFirst ? StereoMode::BOTTOM_TOP : StereoMode::TOP_BOTTOM)
++                : StereoMode::MONO;
++        if (!viewSized && decision.mPacking != StereoMode::MONO &&
++            lib->videoFullViews(aShape.width, aShape.height,
++                                decision.mLayout) == 1) {
++          decision.mFit = IsSideBySide(decision.mPacking)
++                              ? StereoFit::HalfWidth
++                              : StereoFit::HalfHeight;
++        }
++      }
++    } else if (aSource != StereoSource::NONE) {
++      // Without the policy: the mark as it is, half views unless their size
++      // is given.
++      decision.mPacking = aSwap ? SwapStereoEyes(aMark) : aMark;
++    }
++  }
++  // Other arrangements (checkerboard, rows, columns, anaglyph, frame
++  // sequence) are shown flat.
++  if (!IsSideBySide(decision.mPacking) && !IsTopAndBottom(decision.mPacking)) {
++    decision.mPacking = StereoMode::MONO;
++    decision.mFit = StereoFit::None;
++  }
++  return decision;
++}
++
++}  // namespace mozilla::layers
+diff --git a/gfx/layers/StereoPolicy.h b/gfx/layers/StereoPolicy.h
+new file mode 100644
+index 0000000000..9c6996ff27
+--- /dev/null
++++ b/gfx/layers/StereoPolicy.h
+@@ -0,0 +1,86 @@
++/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef MOZILLA_LAYERS_STEREOPOLICY_H
++#define MOZILLA_LAYERS_STEREOPOLICY_H
++
++#include <cstdint>
++
++#include "ImageTypes.h"
++#include "mozilla/gfx/Point.h"
++
++namespace mozilla::layers {
++
++// libstereo-policy (Sparky Stereo OS, stereo-policy.h), the stereo policy all
++// of the edition's programs share, in plain C, loaded at run time: which
++// packing a video frame holds (its own mark first, then the user's choice,
++// then the frame's shape, with the user's Swap Eyes over whichever decided),
++// whether its views are full or half, and a file's own Swap Eyes correction.
++// The browser reads the marks itself and keeps no copy of the rules.
++struct StereoPolicy {
++  // enum stereo_policy_layout and stereo_policy_order of stereo-policy.h.
++  static constexpr int kLayoutNone = 0;
++  static constexpr int kSideBySide = 1;
++  static constexpr int kTopAndBottom = 2;
++  static constexpr int kLeftFirst = 0;
++  static constexpr int kRightFirst = 1;
++
++  int (*videoLayout)(int aWidth, int aHeight, const char* aMark,
++                     int aUserLayout, int aUserOrder, int aSwapEyes,
++                     int* aLayout, int* aOrder, int* aSource) = nullptr;
++  int (*videoFullViews)(int aWidth, int aHeight, int aLayout) = nullptr;
++  // The extended attribute user.stereo-policy.swap-eyes of a file: 1, 0, or
++  // -1 when it cannot be read. Null in libraries older than 1.4.
++  int (*fileSwapEyes)(const char* aPath) = nullptr;
++};
++
++// Null without the library.
++const StereoPolicy* GetStereoPolicy();
++
++// A picture's mark as the Stereo3DLayout word the policy reads (RFC 9559
++// StereoMode and H.264/H.265 Table D-8 packings, with their eye order).
++const char* StereoLayoutWord(StereoMode aMode);
++
++bool IsSideBySide(StereoMode aMode);
++bool IsTopAndBottom(StereoMode aMode);
++
++// How the views of a picture fill its place.
++enum class StereoFit : uint8_t {
++  // The place has the shape of one view.
++  None,
++  // The place has the shape of two full size views side by side, or on top
++  // of each other: one view is shown at its shape, centred in it.
++  HalfWidth,
++  HalfHeight,
++};
++
++struct StereoDecision {
++  // LEFT_RIGHT, RIGHT_LEFT, TOP_BOTTOM, BOTTOM_TOP, or MONO for one picture.
++  StereoMode mPacking = StereoMode::MONO;
++  StereoFit mFit = StereoFit::None;
++  // What the policy was asked and answered, for logs.
++  const char* mMark = nullptr;
++  int mUserLayout = StereoPolicy::kLayoutNone;
++  int mUserOrder = StereoPolicy::kLeftFirst;
++  int mLayout = StereoPolicy::kLayoutNone;
++  int mOrder = StereoPolicy::kLeftFirst;
++  int mSource = 0;
++};
++
++// How a picture holds two views (the same in every program of the edition):
++// the stream's frame packing SEI or the container's mark, both read by the
++// browser, then the user's choice in the 3D Video menu, then the frame's
++// shape; the user's Swap Eyes goes over whichever decided. A mark with the
++// size of one view (Matroska's DisplayWidth and DisplayHeight), a WebXR
++// session's canvas and the camera hack's canvas show one view over the place;
++// otherwise the policy tells whether the views are full (one shown at its
++// own shape in the middle of the place) or half. Packings other than side by
++// side and top and bottom are shown flat.
++StereoDecision DecideStereo(StereoMode aMark, StereoSource aSource, bool aSwap,
++                            bool aIsVideo, const gfx::IntSize& aShape);
++
++}  // namespace mozilla::layers
++
++#endif  // MOZILLA_LAYERS_STEREOPOLICY_H
+diff --git a/gfx/layers/moz.build b/gfx/layers/moz.build
+index dcee9ad9e3..a6acb12bfa 100644
+--- a/gfx/layers/moz.build
++++ b/gfx/layers/moz.build
+@@ -257,10 +257,12 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+ if CONFIG["MOZ_WAYLAND"]:
+     EXPORTS.mozilla.layers += [
+         "NativeLayerWayland.h",
++        "StereoPolicy.h",
+         "SurfacePoolWayland.h",
+     ]
+     UNIFIED_SOURCES += [
+         "NativeLayerWayland.cpp",
++        "StereoPolicy.cpp",
+         "SurfacePoolWayland.cpp",
+     ]
+ 
+-- 
+2.53.0
+

@@ -1,0 +1,182 @@
+From c73b873b7cd3222e94632e63cf4c354593426996 Mon Sep 17 00:00:00 2001
+From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
+Date: Wed, 14 Oct 2026 06:32:59 -0300
+Subject: [PATCH 21/25] HTMLMediaElement: a local video file's Swap Eyes
+ correction
+
+A person who corrects a file whose mark has its eyes the wrong way round
+stores the correction with the file: the extended attribute
+user.stereo-policy.swap-eyes, which libstereo-policy reads and writes,
+and which copies and moves that keep extended attributes keep (Dolphin
+and the edition's other programs use it).
+
+A video loaded from a file: URI now takes that correction as its Swap
+Eyes. Content processes cannot read extended attributes, so the file
+content process asks the parent process (PContent.GetStereoFileSwap),
+which answers only that process, only for a file: URI, and reads the
+attribute away from its main thread. The answer applies only if the
+element still loads that file. The 3D Video menu's Swap Eyes then shows
+it, and the viewer may turn it off for this playback.
+
+Assisted-by: Claude Opus 5.5 via Claude Code
+---
+ dom/ipc/ContentParent.cpp                   | 35 +++++++++++++++++++++
+ dom/ipc/ContentParent.h                     |  3 ++
+ dom/ipc/PContent.ipdl                       |  7 +++++
+ dom/media/mediaelement/HTMLMediaElement.cpp | 27 ++++++++++++++++
+ dom/media/mediaelement/HTMLMediaElement.h   |  2 ++
+ 5 files changed, 74 insertions(+)
+
+diff --git a/dom/ipc/ContentParent.cpp b/dom/ipc/ContentParent.cpp
+index 448eb85acd..7513468c7d 100644
+--- a/dom/ipc/ContentParent.cpp
++++ b/dom/ipc/ContentParent.cpp
+@@ -160,6 +160,10 @@
+ #include "mozilla/layers/ImageBridgeParent.h"
+ #include "mozilla/layers/LayerTreeOwnerTracker.h"
+ #include "mozilla/layers/PAPZParent.h"
++#if defined(MOZ_WAYLAND)
++#  include "mozilla/layers/StereoPolicy.h"
++#endif
++#include "nsIFileURL.h"
+ #include "mozilla/loader/ScriptCacheActors.h"
+ #include "mozilla/media/MediaParent.h"
+ #include "mozilla/mozSpellChecker.h"
+@@ -8069,6 +8073,37 @@ IPCResult ContentParent::RecvGetSystemIcon(nsIURI* aURI,
+ #endif
+ }
+ 
++IPCResult ContentParent::RecvGetStereoFileSwap(
++    nsIURI* aURI, GetStereoFileSwapResolver&& aResolver) {
++#if defined(MOZ_WAYLAND)
++  // Only the process that shows local files asks, and only for a file: URI.
++  nsCOMPtr<nsIFileURL> fileURL = do_QueryInterface(aURI);
++  nsCOMPtr<nsIFile> file;
++  nsAutoCString path;
++  const auto* policy = layers::GetStereoPolicy();
++  if (GetRemoteType() != FILE_REMOTE_TYPE || !fileURL || !policy ||
++      !policy->fileSwapEyes ||
++      NS_FAILED(fileURL->GetFile(getter_AddRefs(file))) || !file ||
++      NS_FAILED(file->GetNativePath(path))) {
++    aResolver(-1);
++    return IPC_OK();
++  }
++  // Away from the main thread: the file may be on a slow file system.
++  NS_DispatchBackgroundTask(NS_NewRunnableFunction(
++      "ContentParent::RecvGetStereoFileSwap",
++      [path = std::move(path), policy,
++       resolver = std::move(aResolver)]() mutable {
++        const int32_t swap = policy->fileSwapEyes(path.get());
++        NS_DispatchToMainThread(NS_NewRunnableFunction(
++            "ContentParent::RecvGetStereoFileSwap::Resolve",
++            [swap, resolver = std::move(resolver)]() { resolver(swap); }));
++      }));
++#else
++  aResolver(-1);
++#endif
++  return IPC_OK();
++}
++
+ IPCResult ContentParent::RecvGetSystemGeolocationPermissionBehavior(
+     GetSystemGeolocationPermissionBehaviorResolver&& aResolver) {
+   PermissionObserver::EnsureMonitoringInParent(PermissionName::Geolocation);
+diff --git a/dom/ipc/ContentParent.h b/dom/ipc/ContentParent.h
+index 1e1bf554e8..10788e0ed1 100644
+--- a/dom/ipc/ContentParent.h
++++ b/dom/ipc/ContentParent.h
+@@ -1404,6 +1404,9 @@ class ContentParent final : public PContentParent,
+   mozilla::ipc::IPCResult RecvGetSystemIcon(nsIURI* aURI,
+                                             GetSystemIconResolver&& aResolver);
+ 
++  mozilla::ipc::IPCResult RecvGetStereoFileSwap(
++      nsIURI* aURI, GetStereoFileSwapResolver&& aResolver);
++
+   mozilla::ipc::IPCResult RecvGetSystemGeolocationPermissionBehavior(
+       GetSystemGeolocationPermissionBehaviorResolver&& aResolver);
+ 
+diff --git a/dom/ipc/PContent.ipdl b/dom/ipc/PContent.ipdl
+index 1e6977f667..7c04b883dc 100644
+--- a/dom/ipc/PContent.ipdl
++++ b/dom/ipc/PContent.ipdl
+@@ -1967,6 +1967,13 @@ parent:
+     // implementation in ContentParent::RecvGetSystemIcon for details.
+     async GetSystemIcon(nullable nsIURI aURI) returns (nsresult aResult, ByteBuf? aData);
+ 
++    // Sparky Stereo OS: the Swap Eyes correction a local video file carries
++    // (the extended attribute user.stereo-policy.swap-eyes, which
++    // libstereo-policy reads): 1, 0, or -1 when it cannot be read. Only the
++    // file content process asks; content processes cannot read extended
++    // attributes.
++    async GetStereoFileSwap(nullable nsIURI aURI) returns (int32_t aSwap);
++
+     // Returns the status of the geolocation permission on this system.
+     // May not be accurate if the information is not known.
+     async GetSystemGeolocationPermissionBehavior() returns (SystemGeolocationPermissionBehavior permission);
+diff --git a/dom/media/mediaelement/HTMLMediaElement.cpp b/dom/media/mediaelement/HTMLMediaElement.cpp
+index df54920e8b..6b8cc12df1 100644
+--- a/dom/media/mediaelement/HTMLMediaElement.cpp
++++ b/dom/media/mediaelement/HTMLMediaElement.cpp
+@@ -59,6 +59,7 @@
+ #include "mozilla/MathAlgorithms.h"
+ #include "mozilla/MediaFragmentURIParser.h"
+ #include "mozilla/Preferences.h"
++#include "mozilla/dom/ContentChild.h"
+ #include "mozilla/PresShell.h"
+ #include "mozilla/SVGObserverUtils.h"
+ #include "mozilla/SchedulerGroup.h"
+@@ -3382,6 +3383,8 @@ MediaResult HTMLMediaElement::LoadResource(
+   // Set the media element's CORS mode only when loading a resource
+   mCORSMode = AttrValueToCORSMode(GetParsedAttr(nsGkAtoms::crossorigin));
+ 
++  RequestStereoFileSwap();
++
+   HTMLMediaElement* other = LookupMediaElementURITable(mLoadingSrc);
+   if (other && other->mDecoder) {
+     // Clone it.
+@@ -7045,6 +7048,30 @@ void HTMLMediaElement::SetStereoChoice(const Maybe<StereoMode>& aChoice) {
+   }
+ }
+ 
++// Sparky Stereo OS: a local video file may carry its viewer's Swap Eyes
++// correction (the extended attribute user.stereo-policy.swap-eyes), which
++// the parent process reads; the element takes it as its own Swap Eyes.
++void HTMLMediaElement::RequestStereoFileSwap() {
++  nsCOMPtr<nsIURI> uri = mLoadingSrc;
++  if (!uri || !uri->SchemeIs("file") || !XRE_IsContentProcess()) {
++    return;
++  }
++  ContentChild* child = ContentChild::GetSingleton();
++  if (!child) {
++    return;
++  }
++  child->SendGetStereoFileSwap(uri)->Then(
++      GetMainThreadSerialEventTarget(), __func__,
++      [self = RefPtr{this}, uri](int32_t aSwap) {
++        bool same = false;
++        if (aSwap >= 0 && self->mLoadingSrc &&
++            NS_SUCCEEDED(self->mLoadingSrc->Equals(uri, &same)) && same) {
++          self->SetStereoSwap(aSwap == 1);
++        }
++      },
++      [](mozilla::ipc::ResponseRejectReason) {});
++}
++
+ void HTMLMediaElement::SetStereoSwap(bool aSwap) {
+   mStereoSwap = aSwap;
+   if (mVideoFrameContainer) {
+diff --git a/dom/media/mediaelement/HTMLMediaElement.h b/dom/media/mediaelement/HTMLMediaElement.h
+index 55df55a269..54f92b3fcf 100644
+--- a/dom/media/mediaelement/HTMLMediaElement.h
++++ b/dom/media/mediaelement/HTMLMediaElement.h
+@@ -321,6 +321,8 @@ class HTMLMediaElement : public nsGenericHTMLElement,
+   // any mark and over the picture's shape (Sparky Stereo OS).
+   void SetStereoSwap(bool aSwap);
+   bool StereoSwap() const { return mStereoSwap; }
++  // Asks the parent process for the Swap Eyes correction of a file: video.
++  void RequestStereoFileSwap();
+ 
+   /**
+    * Call this to reevaluate whether we should start/stop due to our owner
+-- 
+2.53.0
+
