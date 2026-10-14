@@ -1473,6 +1473,30 @@ void NativeLayerWaylandRender::AttachExternalImage(
   MOZ_CRASH("NativeLayerWaylandRender::AttachExternalImage() not implemented.");
 }
 
+// WebRender draws a promoted image into this layer (a video that is not a
+// DMABuf, or any video with software WebRender): the layer shows the
+// picture's views as the picture holds them, and is declared the same way.
+void NativeLayerWaylandRender::SetStereoMark(uint32_t aStereoMark) {
+  WaylandSurfaceLock lock(mSurface);
+  StereoMode mode = StereoMode::MONO;
+  StereoSource source = StereoSource::NONE;
+  bool isVideo = false;
+  if (!DecodeStereoMark(aStereoMark, &mode, &source, &isVideo)) {
+    mode = StereoMode::MONO;
+    source = StereoSource::NONE;
+    isVideo = false;
+  }
+  if (mode != mStereoMark || source != mStereoSource ||
+      isVideo != mStereoIsVideo) {
+    LOG("NativeLayerWaylandRender::SetStereoMark() mode %d source %d video %d",
+        int(mode), int(source), isVideo);
+    mStereoMark = mode;
+    mStereoSource = source;
+    mStereoIsVideo = isVideo;
+    mState.mMutatedPlacement = true;
+  }
+}
+
 bool NativeLayerWaylandRender::IsFrontBufferChanged() {
   return mState.mMutatedFrontBuffer && !mDirtyRegion.IsEmpty();
 }
@@ -1790,7 +1814,7 @@ void NativeLayerWaylandExternal::AttachExternalImage(
 // mark, then the user's choice, all read by the browser; for a video without
 // any of them, libstereo-layer's picture policy, last. A WebXR session's
 // canvas holds two views full side by side with the left eye first.
-void NativeLayerWaylandExternal::DecideStereoLocked(const gfx::Size& aShape) {
+void NativeLayerWayland::DecideStereoLocked(const gfx::Size& aShape) {
   StereoMode packing = mStereoMark;
   StereoFit fit = StereoFit::None;
   switch (mStereoSource) {
@@ -1839,7 +1863,7 @@ void NativeLayerWaylandExternal::DecideStereoLocked(const gfx::Size& aShape) {
                                   : StereoFit::HalfHeight;
           }
         }
-        LOG("NativeLayerWaylandExternal::DecideStereoLocked() [%d x %d] "
+        LOG("NativeLayerWayland::DecideStereoLocked() [%d x %d] "
             "stereo-layer layout %d order %d source %d",
             shape.width, shape.height, layout, order, source);
       }
@@ -1855,14 +1879,16 @@ void NativeLayerWaylandExternal::DecideStereoLocked(const gfx::Size& aShape) {
     fit = StereoFit::None;
   }
   if (packing != mStereoPacking || fit != mStereoFit) {
-    LOG("NativeLayerWaylandExternal::DecideStereoLocked() mark %d source %d "
+    LOG("NativeLayerWayland::DecideStereoLocked() mark %d source %d "
         "-> packing %d fit %d",
         int(mStereoMark), int(mStereoSource), int(packing), int(fit));
   }
   mStereoPacking = packing;
   mStereoFit = fit;
-  // Copies are 8 bit RGB: HDR video is not repacked yet.
-  mStereoCanRepack = mStereoIsVideo && !mIsHDR && !mStereoRepackFailed;
+  // Copies are 8 bit RGB: HDR video is not repacked yet. Only layers that
+  // show a decoded picture as it is (external layers) can copy it.
+  mStereoCanRepack = AsNativeLayerWaylandExternal() && mStereoIsVideo &&
+                     !mIsHDR && !mStereoRepackFailed;
 }
 
 // Copies the visible part of each view into its half of a buffer from the

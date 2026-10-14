@@ -685,6 +685,8 @@ pub struct ExternalNativeSurface {
     /// The image generations are used to check if the compositor surface is dirty and
     /// needs to be updated.
     pub image_dependencies: [ImageDependency; 3],
+    /// The stereo mark last given to the compositor for this surface.
+    pub stereo: u32,
 }
 
 /// Wrapper struct around an external surface descriptor with a little more information
@@ -2020,12 +2022,29 @@ impl TileCacheInstance {
                             used_this_frame: true,
                             native_surface_id,
                             image_dependencies: [ImageDependency::INVALID; 3],
+                            stereo: 0,
                         }
                     });
 
                 // Mark that the surface is referenced this frame so that the
                 // backing native surface handle isn't freed.
                 native_surface.used_this_frame = true;
+
+                // A surface WebRender draws the image into carries the image's
+                // stereo mark to the compositor (an external surface gets it
+                // from the attached image itself).
+                if external_image_id.is_none() {
+                    let stereo = resource_cache
+                        .get_image_properties(api_keys[0])
+                        .map_or(0, |properties| properties.descriptor.flags.stereo());
+                    if stereo != native_surface.stereo {
+                        native_surface.stereo = stereo;
+                        resource_cache.set_compositor_surface_stereo(
+                            native_surface.native_surface_id,
+                            stereo,
+                        );
+                    }
+                }
 
                 let update_params = match external_image_id {
                     Some(external_image) => {

@@ -1736,6 +1736,12 @@ impl Compositor for SwCompositor {
         }
     }
 
+    fn set_surface_stereo(&mut self, device: &mut Device, id: NativeSurfaceId, stereo: u32) {
+        if self.use_native_compositor {
+            self.compositor.set_surface_stereo(device, id, stereo);
+        }
+    }
+
     fn attach_external_image(&mut self, device: &mut Device, id: NativeSurfaceId, external_image: ExternalImageId) {
         if self.use_native_compositor {
             self.compositor.attach_external_image(device, id, external_image);

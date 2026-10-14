@@ -3757,6 +3757,9 @@ impl Renderer {
                         NativeSurfaceOperationDetails::AttachExternalImage { id, external_image } => {
                             compositor.attach_external_image(&mut self.device, id, external_image);
                         }
+                        NativeSurfaceOperationDetails::SetSurfaceStereo { id, stereo } => {
+                            compositor.set_surface_stereo(&mut self.device, id, stereo);
+                        }
                     }
                 }
             }

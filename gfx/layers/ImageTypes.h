@@ -150,6 +150,30 @@ enum class StereoSource : uint8_t {
   MAX,
 };
 
+// A picture's stereo mark as WebRender carries it with an image to the
+// compositor surface it draws the image into (ImageDescriptorFlags::STEREO):
+// bit 15 says there is a mark, bits 0 to 4 hold the StereoMode, bits 5 to 7
+// the StereoSource and bit 8 whether the picture is video. 0 means none.
+inline uint32_t EncodeStereoMark(StereoMode aMode, StereoSource aSource,
+                                 bool aIsVideo) {
+  return (1u << 15) | uint32_t(aMode) | (uint32_t(aSource) << 5) |
+         (aIsVideo ? 1u << 8 : 0u);
+}
+
+inline bool DecodeStereoMark(uint32_t aMark, StereoMode* aMode,
+                             StereoSource* aSource, bool* aIsVideo) {
+  const uint32_t mode = aMark & 0x1f;
+  const uint32_t source = (aMark >> 5) & 0x7;
+  if (!(aMark & (1u << 15)) || mode >= uint32_t(StereoMode::MAX) ||
+      source >= uint32_t(StereoSource::MAX)) {
+    return false;
+  }
+  *aMode = StereoMode(mode);
+  *aSource = StereoSource(source);
+  *aIsVideo = !!(aMark & (1u << 8));
+  return true;
+}
+
 namespace layers {
 
 using ContainerFrameID = uint32_t;

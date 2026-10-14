@@ -273,6 +273,23 @@ bitflags! {
         ///
         /// See https://github.com/servo/webrender/pull/2555/
         const ALLOW_MIPMAPS = 2;
+        /// The picture's stereo mark (Sparky Stereo OS), bits 8 to 23, as the
+        /// embedder encodes it for its compositor: which views the image holds
+        /// and where that comes from. WebRender passes it on, unread, to the
+        /// native compositor surface it draws the image into.
+        const STEREO = 0x00ff_ff00;
+    }
+}
+
+impl ImageDescriptorFlags {
+    /// The stereo mark the embedder gave the image, 0 for none.
+    pub fn stereo(&self) -> u32 {
+        (self.bits() & Self::STEREO.bits()) >> 8
+    }
+
+    /// Flags carrying the embedder's stereo mark.
+    pub fn from_stereo(stereo: u32) -> Self {
+        Self::from_bits_retain((stereo << 8) & Self::STEREO.bits())
     }
 }
 

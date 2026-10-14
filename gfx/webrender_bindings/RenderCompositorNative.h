@@ -72,6 +72,7 @@ class RenderCompositorNative : public RenderCompositor {
   void DestroyTile(wr::NativeSurfaceId aId, int32_t aX, int32_t aY) override;
   void AttachExternalImage(wr::NativeSurfaceId aId,
                            wr::ExternalImageId aExternalImage) override;
+  void SetSurfaceStereo(wr::NativeSurfaceId aId, uint32_t aStereo) override;
   void AddSurface(wr::NativeSurfaceId aId,
                   const wr::CompositorSurfaceTransform& aTransform,
                   wr::DeviceIntRect aClipRect,
@@ -125,6 +126,8 @@ class RenderCompositorNative : public RenderCompositor {
     wr::DeviceIntSize mTileSize;
     bool mIsOpaque;
     bool mIsExternal = false;
+    // The stereo mark of the picture WebRender draws into the surface.
+    uint32_t mStereo = 0;
     std::unordered_map<TileKey, RefPtr<layers::NativeLayer>, TileKeyHashFn>
         mNativeLayers;
   };

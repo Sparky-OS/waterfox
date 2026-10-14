@@ -366,6 +366,9 @@ pub struct WrImageDescriptor {
     pub opacity: OpacityType,
     // TODO(gw): Remove this flag (use prim flags instead).
     pub prefer_compositor_surface: bool,
+    // The picture's stereo mark for the compositor (Sparky Stereo OS), 0 for
+    // none; see ImageDescriptorFlags::STEREO.
+    pub stereo: u32,
 }
 
 impl<'a> From<&'a WrImageDescriptor> for ImageDescriptor {
@@ -375,6 +378,7 @@ impl<'a> From<&'a WrImageDescriptor> for ImageDescriptor {
         if desc.opacity == OpacityType::Opaque {
             flags |= ImageDescriptorFlags::IS_OPAQUE;
         }
+        flags |= ImageDescriptorFlags::from_stereo(desc.stereo);
 
         ImageDescriptor {
             size: DeviceIntSize::new(desc.width, desc.height),
@@ -1297,6 +1301,11 @@ extern "C" {
         id: NativeSurfaceId,
         external_image: ExternalImageId,
     );
+    fn wr_compositor_set_surface_stereo(
+        compositor: *mut c_void,
+        id: NativeSurfaceId,
+        stereo: u32,
+    );
     fn wr_compositor_bind(
         compositor: *mut c_void,
         id: NativeTileId,
@@ -1407,6 +1416,12 @@ impl Compositor for WrCompositor {
     fn attach_external_image(&mut self, _device: &mut Device, id: NativeSurfaceId, external_image: ExternalImageId) {
         unsafe {
             wr_compositor_attach_external_image(self.0, id, external_image);
+        }
+    }
+
+    fn set_surface_stereo(&mut self, _device: &mut Device, id: NativeSurfaceId, stereo: u32) {
+        unsafe {
+            wr_compositor_set_surface_stereo(self.0, id, stereo);
         }
     }
 

@@ -253,6 +253,11 @@ class NativeLayer {
 
   virtual void AttachExternalImage(wr::RenderTextureHost* aExternalImage) = 0;
 
+  // The picture this layer shows carries a stereo mark (EncodeStereoMark in
+  // ImageTypes.h), 0 for none: set on layers WebRender draws a promoted image
+  // into. Layers of compositors without stereo ignore it.
+  virtual void SetStereoMark(uint32_t aStereoMark) {}
+
   virtual GpuFence* GetGpuFence() = 0;
 
  protected:

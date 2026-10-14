@@ -82,7 +82,11 @@ pub enum NativeSurfaceOperationDetails {
     AttachExternalImage {
         id: NativeSurfaceId,
         external_image: ExternalImageId,
-    }
+    },
+    SetSurfaceStereo {
+        id: NativeSurfaceId,
+        stereo: u32,
+    },
 }
 
 /// Describes an operation to apply to a native surface
@@ -1543,6 +1547,16 @@ pub trait Compositor {
         id: NativeSurfaceId,
         external_image: ExternalImageId
     );
+
+    /// The surface (one WebRender draws an image into) shows a picture with the
+    /// embedder's stereo mark (ImageDescriptorFlags::stereo), 0 for none.
+    fn set_surface_stereo(
+        &mut self,
+        _device: &mut Device,
+        _id: NativeSurfaceId,
+        _stereo: u32,
+    ) {
+    }
 
     /// Mark a tile as invalid before any surfaces are queued for
     /// composition and before it is updated with bind. This is useful

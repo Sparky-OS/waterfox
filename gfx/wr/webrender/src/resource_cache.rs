@@ -1813,6 +1813,21 @@ impl ResourceCache {
         );
     }
 
+    pub fn set_compositor_surface_stereo(
+        &mut self,
+        id: NativeSurfaceId,
+        stereo: u32,
+    ) {
+        self.pending_native_surface_updates.push(
+            NativeSurfaceOperation {
+                details: NativeSurfaceOperationDetails::SetSurfaceStereo {
+                    id,
+                    stereo,
+                },
+            }
+        );
+    }
+
     pub fn attach_compositor_external_image(
         &mut self,
         id: NativeSurfaceId,

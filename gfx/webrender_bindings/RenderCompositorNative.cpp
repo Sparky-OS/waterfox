@@ -400,8 +400,22 @@ void RenderCompositorNative::CreateTile(wr::NativeSurfaceId aId, int aX,
 
   RefPtr<layers::NativeLayer> layer = mNativeLayerRoot->CreateLayer(
       surface.TileSize(), surface.mIsOpaque, mSurfacePoolHandle);
+  if (surface.mStereo) {
+    layer->SetStereoMark(surface.mStereo);
+  }
   surface.mNativeLayers.insert({TileKey(aX, aY), layer});
   mTotalTilePixelCount += gfx::IntRect({}, layer->GetSize()).Area();
+}
+
+void RenderCompositorNative::SetSurfaceStereo(wr::NativeSurfaceId aId,
+                                              uint32_t aStereo) {
+  auto surfaceCursor = mSurfaces.find(aId);
+  MOZ_RELEASE_ASSERT(surfaceCursor != mSurfaces.end());
+  Surface& surface = surfaceCursor->second;
+  surface.mStereo = aStereo;
+  for (auto& [key, layer] : surface.mNativeLayers) {
+    layer->SetStereoMark(aStereo);
+  }
 }
 
 void RenderCompositorNative::DestroyTile(wr::NativeSurfaceId aId, int aX,

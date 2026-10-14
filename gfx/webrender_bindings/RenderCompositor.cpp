@@ -135,6 +135,13 @@ void wr_compositor_attach_external_image(void* aCompositor,
   compositor->AttachExternalImage(aId, aExternalImage);
 }
 
+void wr_compositor_set_surface_stereo(void* aCompositor,
+                                      wr::NativeSurfaceId aId,
+                                      uint32_t aStereo) {
+  RenderCompositor* compositor = static_cast<RenderCompositor*>(aCompositor);
+  compositor->SetSurfaceStereo(aId, aStereo);
+}
+
 void wr_compositor_start_compositing(void* aCompositor, wr::ColorF aClearColor,
                                      const wr::DeviceIntRect* aDirtyRects,
                                      size_t aNumDirtyRects,

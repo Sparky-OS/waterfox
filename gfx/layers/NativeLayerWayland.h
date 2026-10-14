@@ -342,7 +342,15 @@ class NativeLayerWayland : public NativeLayer {
     HalfHeight,
   };
   // Decides mStereoPacking and mStereoFit for a place of the given shape.
-  virtual void DecideStereoLocked(const gfx::Size& aShape) {}
+  void DecideStereoLocked(const gfx::Size& aShape);
+  // The picture's stereo mark and where it comes from.
+  StereoMode mStereoMark = StereoMode::MONO;
+  StereoSource mStereoSource = StereoSource::NONE;
+  // The last answer of libstereo-layer for a picture without a mark.
+  gfx::IntSize mStereoLayerShape;
+  StereoMode mStereoLayerPacking = StereoMode::MONO;
+  StereoFit mStereoLayerFit = StereoFit::None;
+  bool mStereoRepackFailed = false;
   bool DeclareStereoLocked(const widget::WaylandSurfaceLock& aProofOfLock,
                            bool aDeclare);
   // The arrangement of the two views in the buffer: LEFT_RIGHT, RIGHT_LEFT,
@@ -392,6 +400,7 @@ class NativeLayerWaylandRender final : public NativeLayerWayland {
   void NotifySurfaceReady() override;
   void AttachExternalImage(wr::RenderTextureHost* aExternalImage) override;
   bool IsFrontBufferChanged() override;
+  void SetStereoMark(uint32_t aStereoMark) override;
 
   NativeLayerWaylandRender(NativeLayerRootWayland* aRootLayer,
                            const gfx::IntSize& aSize, bool aIsOpaque,
@@ -437,24 +446,15 @@ class NativeLayerWaylandExternal final : public NativeLayerWayland {
  private:
   ~NativeLayerWaylandExternal() override;
 
-  void DecideStereoLocked(const gfx::Size& aShape) override;
   RefPtr<widget::WaylandBuffer> RepackStereoLocked(
       const widget::WaylandSurfaceLock& aProofOfLock);
   void ReleaseStereoBufferLocked(
       const widget::WaylandSurfaceLock& aProofOfLock);
 
-  // The picture's stereo mark and where it comes from.
-  StereoMode mStereoMark = StereoMode::MONO;
-  StereoSource mStereoSource = StereoSource::NONE;
-  // The last answer of libstereo-layer for a picture without a mark.
-  gfx::IntSize mStereoLayerShape;
-  StereoMode mStereoLayerPacking = StereoMode::MONO;
-  StereoFit mStereoLayerFit = StereoFit::None;
   // The buffer of two views full side by side, left eye first, the surface
   // shows when the picture needs repacking, from the compositor's pool.
   RefPtr<SurfacePoolHandleWayland> mStereoPoolHandle;
   RefPtr<widget::WaylandBuffer> mStereoBuffer;
-  bool mStereoRepackFailed = false;
 
   void DiscardBackbuffersLocked(const widget::WaylandSurfaceLock& aProofOfLock,
                                 bool aForce) override;

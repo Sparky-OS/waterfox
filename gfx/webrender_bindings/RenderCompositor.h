@@ -165,6 +165,9 @@ class RenderCompositor {
   virtual void DestroyTile(wr::NativeSurfaceId, int32_t aX, int32_t aY) {}
   virtual void AttachExternalImage(wr::NativeSurfaceId aId,
                                    wr::ExternalImageId aExternalImage) {}
+  // The picture WebRender draws into the surface carries this stereo mark
+  // (EncodeStereoMark), 0 for none.
+  virtual void SetSurfaceStereo(wr::NativeSurfaceId aId, uint32_t aStereo) {}
   virtual void AddSurface(wr::NativeSurfaceId aId,
                           const wr::CompositorSurfaceTransform& aTransform,
                           wr::DeviceIntRect aClipRect,
