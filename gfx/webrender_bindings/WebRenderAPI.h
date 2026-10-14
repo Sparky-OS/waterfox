@@ -697,6 +697,11 @@ class DisplayListBuilder final {
                          const wr::LayoutSize aTileSize,
                          const wr::LayoutSize aTileSpacing);
 
+  // The opacity the images pushed next are drawn with: an image's color, a
+  // YUV image's opacity (an async image pipeline whose element has a CSS
+  // opacity applied to it). 1 draws them as they are.
+  void SetImageOpacity(float aOpacity);
+
   void PushImage(const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
                  bool aIsBackfaceVisible, bool aForceAntiAliasing,
                  wr::ImageRendering aFilter, wr::ImageKey aImage,

@@ -165,7 +165,7 @@ class WebRenderImageData : public WebRenderUserData {
       const StackingContextHelper& aSc, const LayoutDeviceRect& aBounds,
       const LayoutDeviceRect& aSCBounds, wr::WrRotation aRotation,
       const wr::ImageRendering& aFilter, const wr::MixBlendMode& aMixBlendMode,
-      bool aIsBackfaceVisible);
+      bool aIsBackfaceVisible, float aOpacity = 1.0f);
 
   void CreateImageClientIfNeeded();
 

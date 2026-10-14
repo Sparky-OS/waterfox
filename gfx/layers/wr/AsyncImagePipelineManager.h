@@ -106,7 +106,8 @@ class AsyncImagePipelineManager final {
                                 const LayoutDeviceRect& aScBounds,
                                 wr::WrRotation aRotation,
                                 const wr::ImageRendering& aFilter,
-                                const wr::MixBlendMode& aMixBlendMode);
+                                const wr::MixBlendMode& aMixBlendMode,
+                                float aOpacity);
   void ApplyAsyncImagesOfImageBridge(wr::TransactionBuilder& aSceneBuilderTxn,
                                      wr::TransactionBuilder& aFastTxn);
   void ApplyAsyncImageForPipeline(
@@ -199,14 +200,15 @@ class AsyncImagePipelineManager final {
                        WebRenderImageHost* aImageHost);
     void Update(const LayoutDeviceRect& aScBounds, wr::WrRotation aRotation,
                 const wr::ImageRendering& aFilter,
-                const wr::MixBlendMode& aMixBlendMode) {
+                const wr::MixBlendMode& aMixBlendMode, float aOpacity) {
       mIsChanged |= !mScBounds.IsEqualEdges(aScBounds) ||
                     mRotation != aRotation || mFilter != aFilter ||
-                    mMixBlendMode != aMixBlendMode;
+                    mMixBlendMode != aMixBlendMode || mOpacity != aOpacity;
       mScBounds = aScBounds;
       mRotation = aRotation;
       mFilter = aFilter;
       mMixBlendMode = aMixBlendMode;
+      mOpacity = aOpacity;
     }
 
     bool mInitialised;
@@ -216,6 +218,8 @@ class AsyncImagePipelineManager final {
     wr::WrRotation mRotation;
     wr::ImageRendering mFilter;
     wr::MixBlendMode mMixBlendMode;
+    // The element's CSS opacity, drawn with the image (OpUpdateAsyncImagePipeline).
+    float mOpacity = 1.0f;
     const RefPtr<WebRenderImageHost> mImageHost;
     CompositableTextureHostRef mCurrentTexture;
     nsTArray<wr::ImageKey> mKeys;

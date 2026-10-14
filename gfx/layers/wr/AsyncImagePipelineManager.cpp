@@ -203,7 +203,7 @@ void AsyncImagePipelineManager::RemoveAsyncImagePipeline(
 void AsyncImagePipelineManager::UpdateAsyncImagePipeline(
     const wr::PipelineId& aPipelineId, const LayoutDeviceRect& aScBounds,
     const wr::WrRotation aRotation, const wr::ImageRendering& aFilter,
-    const wr::MixBlendMode& aMixBlendMode) {
+    const wr::MixBlendMode& aMixBlendMode, float aOpacity) {
   if (mDestroyed) {
     return;
   }
@@ -213,7 +213,7 @@ void AsyncImagePipelineManager::UpdateAsyncImagePipeline(
     return;
   }
   pipeline->mInitialised = true;
-  pipeline->Update(aScBounds, aRotation, aFilter, aMixBlendMode);
+  pipeline->Update(aScBounds, aRotation, aFilter, aMixBlendMode, aOpacity);
 }
 
 Maybe<TextureHost::ResourceUpdateOp> AsyncImagePipelineManager::UpdateImageKeys(
@@ -485,6 +485,10 @@ void AsyncImagePipelineManager::ApplyAsyncImageForPipeline(
     LayoutDeviceRect rect(0, 0, aPipeline->mCurrentTexture->GetSize().width,
                           aPipeline->mCurrentTexture->GetSize().height);
 
+    // The element's opacity goes on the image, which keeps it in the page's
+    // tiles (a stereo picture there is drawn once per eye).
+    aPipeline->mDLBuilder.SetImageOpacity(aPipeline->mOpacity);
+
     if (aPipeline->mUseExternalImage) {
       MOZ_ASSERT(aPipeline->mCurrentTexture->AsWebRenderTextureHost());
       Range<wr::ImageKey> range_keys(&keys[0], keys.Length());
@@ -510,6 +514,7 @@ void AsyncImagePipelineManager::ApplyAsyncImageForPipeline(
                                       wr::ToLayoutRect(rect), true, false,
                                       aPipeline->mFilter, keys[0]);
     }
+    aPipeline->mDLBuilder.SetImageOpacity(1.0f);
   }
 
   spaceAndClipChainHelper.reset();

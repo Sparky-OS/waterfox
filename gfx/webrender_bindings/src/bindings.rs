@@ -2984,6 +2984,9 @@ impl WebRenderFrameBuilder {
 pub struct WrState {
     pipeline_id: WrPipelineId,
     frame_builder: WebRenderFrameBuilder,
+    /// The opacity the images pushed next are drawn with (an async image
+    /// pipeline whose element has a CSS opacity), wr_dp_set_image_opacity.
+    image_opacity: f32,
 }
 
 #[no_mangle]
@@ -2993,6 +2996,7 @@ pub extern "C" fn wr_state_new(pipeline_id: WrPipelineId) -> *mut WrState {
     let state = Box::new(WrState {
         pipeline_id,
         frame_builder: WebRenderFrameBuilder::new(pipeline_id),
+        image_opacity: 1.0,
     });
 
     Box::into_raw(state)
@@ -3581,6 +3585,13 @@ pub extern "C" fn wr_dp_push_hit_test(
     );
 }
 
+/// The opacity the images pushed next are drawn with: an image's color, a YUV
+/// image's opacity. 1 draws them as they are.
+#[no_mangle]
+pub extern "C" fn wr_dp_set_image_opacity(state: &mut WrState, opacity: f32) {
+    state.image_opacity = opacity;
+}
+
 #[no_mangle]
 pub extern "C" fn wr_dp_push_image(
     state: &mut WrState,
@@ -3623,6 +3634,10 @@ pub extern "C" fn wr_dp_push_image(
         AlphaType::Alpha
     };
 
+    let color = ColorF {
+        a: color.a * state.image_opacity,
+        ..color
+    };
     state
         .frame_builder
         .dl_builder
@@ -3705,7 +3720,7 @@ pub extern "C" fn wr_dp_push_yuv_planar_image(
         ),
     };
 
-    state.frame_builder.dl_builder.push_yuv_image(
+    state.frame_builder.dl_builder.push_yuv_image_with_opacity(
         &prim_info,
         bounds,
         YuvData::PlanarYCbCr(image_key_0, image_key_1, image_key_2),
@@ -3713,6 +3728,7 @@ pub extern "C" fn wr_dp_push_yuv_planar_image(
         color_space,
         color_range,
         image_rendering,
+        state.image_opacity,
     );
 }
 
@@ -3748,7 +3764,7 @@ pub extern "C" fn wr_dp_push_yuv_NV12_image(
         ),
     };
 
-    state.frame_builder.dl_builder.push_yuv_image(
+    state.frame_builder.dl_builder.push_yuv_image_with_opacity(
         &prim_info,
         bounds,
         YuvData::NV12(image_key_0, image_key_1),
@@ -3756,6 +3772,7 @@ pub extern "C" fn wr_dp_push_yuv_NV12_image(
         color_space,
         color_range,
         image_rendering,
+        state.image_opacity,
     );
 }
 
@@ -3791,7 +3808,7 @@ pub extern "C" fn wr_dp_push_yuv_P010_image(
         ),
     };
 
-    state.frame_builder.dl_builder.push_yuv_image(
+    state.frame_builder.dl_builder.push_yuv_image_with_opacity(
         &prim_info,
         bounds,
         YuvData::P010(image_key_0, image_key_1),
@@ -3799,6 +3816,7 @@ pub extern "C" fn wr_dp_push_yuv_P010_image(
         color_space,
         color_range,
         image_rendering,
+        state.image_opacity,
     );
 }
 
@@ -3834,7 +3852,7 @@ pub extern "C" fn wr_dp_push_yuv_NV16_image(
         ),
     };
 
-    state.frame_builder.dl_builder.push_yuv_image(
+    state.frame_builder.dl_builder.push_yuv_image_with_opacity(
         &prim_info,
         bounds,
         YuvData::NV16(image_key_0, image_key_1),
@@ -3842,6 +3860,7 @@ pub extern "C" fn wr_dp_push_yuv_NV16_image(
         color_space,
         color_range,
         image_rendering,
+        state.image_opacity,
     );
 }
 
@@ -3876,7 +3895,7 @@ pub extern "C" fn wr_dp_push_yuv_interleaved_image(
         ),
     };
 
-    state.frame_builder.dl_builder.push_yuv_image(
+    state.frame_builder.dl_builder.push_yuv_image_with_opacity(
         &prim_info,
         bounds,
         YuvData::InterleavedYCbCr(image_key_0),
@@ -3884,6 +3903,7 @@ pub extern "C" fn wr_dp_push_yuv_interleaved_image(
         color_space,
         color_range,
         image_rendering,
+        state.image_opacity,
     );
 }
 

@@ -75,6 +75,10 @@ struct OpUpdateAsyncImagePipeline {
   WrRotation rotation;
   ImageRendering filter;
   MixBlendMode mixBlendMode;
+  // The element's CSS opacity, applied to the image itself (the display item
+  // took it from an nsDisplayOpacity), so that the image is drawn straight
+  // into the page's tiles.
+  float opacity;
 };
 
 struct OpUpdatedAsyncImagePipeline {

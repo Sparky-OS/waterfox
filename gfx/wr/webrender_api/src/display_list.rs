@@ -1279,6 +1279,30 @@ impl DisplayListBuilder {
         color_range: di::ColorRange,
         image_rendering: di::ImageRendering,
     ) {
+        self.push_yuv_image_with_opacity(
+            common,
+            bounds,
+            yuv_data,
+            color_depth,
+            color_space,
+            color_range,
+            image_rendering,
+            1.0,
+        );
+    }
+
+    /// A YUV image drawn with an opacity (1 for an opaque image).
+    pub fn push_yuv_image_with_opacity(
+        &mut self,
+        common: &di::CommonItemProperties,
+        bounds: LayoutRect,
+        yuv_data: di::YuvData,
+        color_depth: ColorDepth,
+        color_space: di::YuvColorSpace,
+        color_range: di::ColorRange,
+        image_rendering: di::ImageRendering,
+        opacity: f32,
+    ) {
         let (common, offset) = self.normalize_common(common);
         let item = di::DisplayItem::YuvImage(di::YuvImageDisplayItem {
             common,
@@ -1288,6 +1312,7 @@ impl DisplayListBuilder {
             color_space,
             color_range,
             image_rendering,
+            opacity,
         });
         self.push_item(&item);
     }

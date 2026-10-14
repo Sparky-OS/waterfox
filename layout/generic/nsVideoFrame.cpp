@@ -578,6 +578,15 @@ class nsDisplayVideo final : public nsPaintedDisplayItem {
 
   NS_DISPLAY_DECL_NAME("Video", TYPE_VIDEO)
 
+  // The video is one image, drawn with the opacity of an nsDisplayOpacity
+  // around it (WebRenderCommandBuilder::PushImage): the image stays in the
+  // page's tiles instead of a surface of its own, where WebRender draws a
+  // stereo video once per eye.
+  bool CanApplyOpacity(WebRenderLayerManager* aManager,
+                       nsDisplayListBuilder* aBuilder) const override {
+    return true;
+  }
+
   already_AddRefed<ImageContainer> GetImageContainer(gfxRect& aDestGFXRect) {
     auto* f = static_cast<nsVideoFrame*>(Frame());
     nsRect area = f->InkOverflowRectRelativeToSelf() + ToReferenceFrame();

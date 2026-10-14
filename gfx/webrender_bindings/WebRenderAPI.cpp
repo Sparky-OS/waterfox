@@ -1528,6 +1528,10 @@ void DisplayListBuilder::PushConicGradient(
                             aTileSize, aTileSpacing);
 }
 
+void DisplayListBuilder::SetImageOpacity(float aOpacity) {
+  wr_dp_set_image_opacity(mWrState, aOpacity);
+}
+
 void DisplayListBuilder::PushImage(
     const wr::LayoutRect& aBounds, const wr::LayoutRect& aClip,
     bool aIsBackfaceVisible, bool aForceAntiAliasing,

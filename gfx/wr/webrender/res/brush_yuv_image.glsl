@@ -21,6 +21,9 @@ flat varying YUV_PRECISION mat3 vRgbFromDebiasedYcbcr;
 // YUV format. Packed in to vector to work around bug 1630356.
 flat varying mediump ivec2 vFormat;
 
+// The opacity the image is drawn with (YuvImageData.write_prim_gpu_blocks).
+flat varying mediump float vOpacity;
+
 #ifdef SWGL_DRAW_SPAN
 flat varying mediump int vRescaleFactor;
 #endif
@@ -61,6 +64,7 @@ void brush_vs(
     vec2 f = (vi.local_pos - rect.p0) / rect_size(rect);
 
     YuvPrimitive prim = fetch_yuv_primitive(prim_address);
+    vOpacity = fetch_from_gpu_buffer_1f(prim_address).w;
 
 #ifdef SWGL_DRAW_SPAN
     // swgl_commitTextureLinearYUV needs to know the color space specifier and
@@ -128,6 +132,7 @@ Fragment brush_fs() {
 #ifdef WR_FEATURE_ALPHA_PASS
     color *= antialias_brush();
 #endif
+    color *= vOpacity;
 
     //color.r = float(100+vFormat) / 255.0;
     //color.g = vYcbcrBias.x;
@@ -137,6 +142,10 @@ Fragment brush_fs() {
 
 #ifdef SWGL_DRAW_SPAN
 void swgl_drawSpanRGBA8() {
+    // An image drawn with an opacity takes the fragment shader.
+    if (vOpacity < 1.0) {
+        return;
+    }
     if (vFormat.x == YUV_FORMAT_PLANAR) {
         swgl_commitTextureLinearYUV(sColor0, vUv_Y, vUvBounds_Y,
                                     sColor1, vUv_U, vUvBounds_U,

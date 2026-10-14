@@ -2424,6 +2424,12 @@ impl TileCacheInstance {
                         promotion_result = Err(NotPremultipliedAlpha);
                     }
 
+                    // The compositor shows surfaces as they are: an image drawn
+                    // with an opacity stays in the tiles.
+                    if image_data.color.a < 1.0 {
+                        promotion_result = Err(Translucent);
+                    }
+
                     if let Ok(kind) = promotion_result {
                         promotion_result = self.setup_compositor_surfaces_rgb(
                             prim_instance_index,
@@ -2501,10 +2507,16 @@ impl TileCacheInstance {
                         self.yuv_images_remaining -= 1;
                     }
 
-                    let promotion_attempts =
-                        [CompositorSurfaceKind::Overlay, CompositorSurfaceKind::Underlay];
+                    // A video drawn with an opacity stays in the tiles: the
+                    // compositor shows surfaces as they are.
+                    let promotion_attempts: &[CompositorSurfaceKind] = if prim_data.kind.alpha == 255 {
+                        &[CompositorSurfaceKind::Overlay, CompositorSurfaceKind::Underlay]
+                    } else {
+                        promotion_result = Err(Translucent);
+                        &[]
+                    };
 
-                    for kind in promotion_attempts {
+                    for &kind in promotion_attempts {
                         // Since this might be an attempt after an earlier error, clear the flag
                         // so that we are allowed to report another error.
                         promotion_result = self.can_promote_to_surface(
@@ -3346,6 +3358,7 @@ enum SurfacePromotionFailure {
     ComplexTransform,
     SliceAtomic,
     SizeTooLarge,
+    Translucent,
 }
 
 impl Display for SurfacePromotionFailure {
@@ -3364,6 +3377,7 @@ impl Display for SurfacePromotionFailure {
                 SurfacePromotionFailure::UnderlayLowQualityZoom => "underlay not allowed during low-quality pinch zoom",
                 SurfacePromotionFailure::NotRootTileCache => "is not on a root tile cache",
                 SurfacePromotionFailure::ComplexTransform => "has a complex transform",
+                SurfacePromotionFailure::Translucent => "is drawn with an opacity",
                 SurfacePromotionFailure::SliceAtomic => "slice is atomic",
                 SurfacePromotionFailure::SizeTooLarge => "surface is too large for compositor",
             }.to_owned()

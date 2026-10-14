@@ -194,7 +194,7 @@ void WebRenderImageData::CreateAsyncImageWebRenderCommands(
     const StackingContextHelper& aSc, const LayoutDeviceRect& aBounds,
     const LayoutDeviceRect& aSCBounds, wr::WrRotation aRotation,
     const wr::ImageRendering& aFilter, const wr::MixBlendMode& aMixBlendMode,
-    bool aIsBackfaceVisible) {
+    bool aIsBackfaceVisible, float aOpacity) {
   MOZ_ASSERT(aContainer->IsAsync());
 
   if (mPipelineId.isSome() && mContainer != aContainer) {
@@ -226,8 +226,9 @@ void WebRenderImageData::CreateAsyncImageWebRenderCommands(
   aBuilder.PushIFrame(aBounds, aIsBackfaceVisible, mPipelineId.ref(),
                       /*ignoreMissingPipelines*/ false);
 
-  WrBridge()->AddWebRenderParentCommand(OpUpdateAsyncImagePipeline(
-      mPipelineId.value(), aSCBounds, aRotation, aFilter, aMixBlendMode));
+  WrBridge()->AddWebRenderParentCommand(
+      OpUpdateAsyncImagePipeline(mPipelineId.value(), aSCBounds, aRotation,
+                                 aFilter, aMixBlendMode, aOpacity));
 }
 
 void WebRenderImageData::CreateImageClientIfNeeded() {

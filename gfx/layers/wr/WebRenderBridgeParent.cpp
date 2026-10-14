@@ -1726,7 +1726,7 @@ bool WebRenderBridgeParent::ProcessWebRenderParentCommands(
 
         mLateInit->mAsyncImageManager->UpdateAsyncImagePipeline(
             op.pipelineId(), op.scBounds(), op.rotation(), op.filter(),
-            op.mixBlendMode());
+            op.mixBlendMode(), op.opacity());
         MOZ_ASSERT_IF(IsRootWebRenderBridgeParent(), !pendingRemotetextures);
         mLateInit->mAsyncImageManager->ApplyAsyncImageForPipeline(
             op.pipelineId(), aTxn, txnForImageBridge, pendingOps,

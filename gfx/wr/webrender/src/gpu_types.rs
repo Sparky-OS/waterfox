@@ -931,6 +931,8 @@ pub struct YuvPrimitive {
     pub channel_bit_depth: u32,
     pub color_space: YuvRangedColorSpace,
     pub yuv_format: YuvFormat,
+    /// The opacity the image is drawn with (brush_yuv_image only).
+    pub opacity: f32,
 }
 
 impl GpuBufferDataF for YuvPrimitive {
@@ -940,7 +942,7 @@ impl GpuBufferDataF for YuvPrimitive {
             pack_as_float(self.channel_bit_depth),
             pack_as_float(self.color_space as u32),
             pack_as_float(self.yuv_format as u32),
-            0.0
+            self.opacity,
         ]);
     }
 }

@@ -1453,6 +1453,7 @@ impl<'a> SceneBuilder<'a> {
                     info.color_space,
                     info.color_range,
                     info.image_rendering,
+                    info.opacity,
                 );
             }
             DisplayItem::Text(ref info) => {
@@ -3637,9 +3638,11 @@ impl<'a> SceneBuilder<'a> {
         color_space: YuvColorSpace,
         color_range: ColorRange,
         image_rendering: ImageRendering,
+        opacity: f32,
     ) {
         let format = yuv_data.get_format();
         let yuv_key = yuv_planes(&yuv_data);
+        let alpha = (opacity.max(0.0).min(1.0) * 255.0).round() as u8;
 
         self.add_nonshadowable_primitive(
             spatial_node_index,
@@ -3653,6 +3656,7 @@ impl<'a> SceneBuilder<'a> {
                 color_space,
                 color_range,
                 image_rendering,
+                alpha,
             },
         );
     }

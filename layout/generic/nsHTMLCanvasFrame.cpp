@@ -60,6 +60,15 @@ class nsDisplayCanvas final : public nsPaintedDisplayItem {
 
   NS_DISPLAY_DECL_NAME("nsDisplayCanvas", TYPE_CANVAS)
 
+  // The canvas is one image, drawn with the opacity of an nsDisplayOpacity
+  // around it (OpUpdateAsyncImagePipeline, or the image's color): the image
+  // stays in the page's tiles instead of a surface of its own, where
+  // WebRender draws a stereo canvas once per eye.
+  bool CanApplyOpacity(WebRenderLayerManager* aManager,
+                       nsDisplayListBuilder* aBuilder) const override {
+    return true;
+  }
+
   nsRegion GetOpaqueRegion(nsDisplayListBuilder* aBuilder,
                            bool* aSnap) const override {
     *aSnap = false;
@@ -157,10 +166,13 @@ class nsDisplayCanvas final : public nsPaintedDisplayItem {
         LayoutDeviceRect scBounds(LayoutDevicePoint(0, 0), bounds.Size());
         auto filter = wr::ToImageRendering(mFrame->UsedImageRendering());
         auto mixBlendMode = wr::MixBlendMode::Normal;
+        // An opacity this item took from an nsDisplayOpacity (CanApplyOpacity)
+        // goes on the image.
         aManager->WrBridge()->AddWebRenderParentCommand(
             OpUpdateAsyncImagePipeline(data->GetPipelineId().value(), scBounds,
                                        wr::WrRotation::Degree0, filter,
-                                       mixBlendMode));
+                                       mixBlendMode,
+                                       aBuilder.GetInheritedOpacity()));
         break;
       }
       case CanvasContextType::ImageBitmap: {

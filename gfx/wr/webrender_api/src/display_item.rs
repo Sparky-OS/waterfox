@@ -1941,6 +1941,9 @@ pub struct YuvImageDisplayItem {
     pub color_space: YuvColorSpace,
     pub color_range: ColorRange,
     pub image_rendering: ImageRendering,
+    /// The opacity the image is drawn with, 1 for an opaque image (a video
+    /// whose element has a CSS opacity is drawn with it, as an image's color).
+    pub opacity: f32,
 }
 
 #[repr(u8)]

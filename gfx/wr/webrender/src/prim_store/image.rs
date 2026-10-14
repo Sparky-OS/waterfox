@@ -891,6 +891,8 @@ pub struct YuvImage {
     pub color_space: YuvColorSpace,
     pub color_range: ColorRange,
     pub image_rendering: ImageRendering,
+    /// The opacity the image is drawn with, 255 for an opaque image.
+    pub alpha: u8,
 }
 
 pub type YuvImageKey = PrimKey<YuvImage>;
@@ -920,6 +922,7 @@ pub struct YuvImageData {
     pub color_space: YuvColorSpace,
     pub color_range: ColorRange,
     pub image_rendering: ImageRendering,
+    pub alpha: u8,
 }
 
 impl From<YuvImage> for YuvImageData {
@@ -932,6 +935,7 @@ impl From<YuvImage> for YuvImageData {
             color_space: image.color_space,
             color_range: image.color_range,
             image_rendering: image.image_rendering,
+            alpha: image.alpha,
         }
     }
 }
@@ -979,8 +983,13 @@ impl YuvImageData {
         self.write_prim_gpu_blocks(&mut writer);
         common.gpu_buffer_address = writer.finish();
 
-    // YUV images never have transparency
-        common.opacity = PrimitiveOpacity::opaque();
+        // YUV images have no transparency of their own; one drawn with an
+        // opacity is translucent.
+        common.opacity = if self.alpha == 255 {
+            PrimitiveOpacity::opaque()
+        } else {
+            PrimitiveOpacity::translucent()
+        };
     }
 
     pub fn request_resources(
@@ -1007,6 +1016,7 @@ impl YuvImageData {
             channel_bit_depth: self.color_depth.bit_depth(),
             color_space: self.color_space.with_range(self.color_range),
             yuv_format: self.format,
+            opacity: self.alpha as f32 / 255.0,
         });
     }
 }

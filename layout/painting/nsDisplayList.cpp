@@ -5065,6 +5065,27 @@ static const size_t kOpacityMaxListSize = kOpacityMaxChildCount * 2;
  * item that returns false for CanApplyOpacity() is encountered.
  * Otherwise returns true.
  */
+// Only hit-testing information, at any depth of wrap lists and containers.
+static bool PaintsNothing(nsDisplayList* aList) {
+  if (!aList) {
+    return true;
+  }
+  for (nsDisplayItem* i : *aList) {
+    const DisplayItemType type = i->GetType();
+    if (type == DisplayItemType::TYPE_COMPOSITOR_HITTEST_INFO) {
+      continue;
+    }
+    if ((type == DisplayItemType::TYPE_WRAP_LIST ||
+         type == DisplayItemType::TYPE_CONTAINER ||
+         type == DisplayItemType::TYPE_BLEND_CONTAINER) &&
+        PaintsNothing(i->GetChildren())) {
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 static bool CollectItemsWithOpacity(WebRenderLayerManager* aManager,
                                     nsDisplayListBuilder* aBuilder,
                                     nsDisplayList* aList,
@@ -5079,6 +5100,13 @@ static bool CollectItemsWithOpacity(WebRenderLayerManager* aManager,
     const DisplayItemType type = i->GetType();
 
     if (type == DisplayItemType::TYPE_COMPOSITOR_HITTEST_INFO) {
+      continue;
+    }
+
+    // A blend container that paints nothing (the empty overlays of a video's
+    // controls and captions) takes no opacity.
+    if (type == DisplayItemType::TYPE_BLEND_CONTAINER &&
+        PaintsNothing(i->GetChildren())) {
       continue;
     }
 

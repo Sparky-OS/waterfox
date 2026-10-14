@@ -2296,10 +2296,12 @@ Maybe<wr::ImageKey> WebRenderCommandBuilder::CreateImageKey(
     // TODO!
     // We appear to be using the image bridge for a lot (most/all?) of
     // layers-free image handling and that breaks frame consistency.
+    // An opacity the item took from an nsDisplayOpacity goes on the image.
     imageData->CreateAsyncImageWebRenderCommands(
         aBuilder, aContainer, aSc, rect, scBounds,
         ToWrRotation(aContainer->GetRotation()), aRendering,
-        wr::MixBlendMode::Normal, !aItem->BackfaceIsHidden());
+        wr::MixBlendMode::Normal, !aItem->BackfaceIsHidden(),
+        aBuilder.GetInheritedOpacity());
     return Nothing();
   }
 
@@ -2335,8 +2337,10 @@ bool WebRenderCommandBuilder::PushImage(
 
   auto r = wr::ToLayoutRect(aRect);
   auto c = wr::ToLayoutRect(aClip);
-  aBuilder.PushImage(r, c, !aItem->BackfaceIsHidden(), false, rendering,
-                     key.value());
+  // An opacity the item took from an nsDisplayOpacity goes on the image.
+  aBuilder.PushImage(
+      r, c, !aItem->BackfaceIsHidden(), false, rendering, key.value(), true,
+      wr::ColorF{1.0f, 1.0f, 1.0f, aBuilder.GetInheritedOpacity()});
 
   return true;
 }
