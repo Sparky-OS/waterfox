@@ -56,6 +56,12 @@ void WebGLContext::Clear(GLbitfield mask) {
 
   const ScopedDrawCallWrapper wrapper(*this);
   gl->fClear(driverMask);
+  // The camera hack: the right eye's framebuffer is cleared alike.
+  if (StereoCameraDraws()) {
+    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mStereoRightFB->mFB);
+    gl->fClear(driverMask);
+    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mDefaultFB->mFB);
+  }
 }
 
 static GLfloat GLClampFloat(GLfloat val) {

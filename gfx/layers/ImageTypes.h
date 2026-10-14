@@ -147,6 +147,9 @@ enum class StereoSource : uint8_t {
   // A WebXR session's frames: an immersive session on the flat stereo
   // display, or an inline-stereo session's canvas.
   XR,
+  // A WebGL canvas the browser draws once per eye from the page's own camera
+  // (the camera hack, dom/canvas/WebGLStereoCamera.h).
+  CAMERA,
   MAX,
 };
 

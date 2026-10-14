@@ -5,6 +5,7 @@
 #ifndef WEBGL_BUFFER_H_
 #define WEBGL_BUFFER_H_
 
+#include <vector>
 #include <map>
 
 #include "CacheInvalidator.h"
@@ -34,6 +35,10 @@ class WebGLBuffer final : public WebGLContextBoundObject {
 
   GLenum Usage() const { return mUsage; }
   size_t ByteLength() const { return mByteLength; }
+
+  // The camera hack (WebGLStereoCamera.h): a copy of a small uniform buffer's
+  // data, where a page's camera may live (uniform blocks).
+  mutable std::vector<uint8_t> mStereoShadow;
 
   Maybe<uint32_t> GetIndexedFetchMaxVert(GLenum type, uint64_t byteOffset,
                                          uint32_t indexCount) const;

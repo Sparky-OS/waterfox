@@ -5,6 +5,7 @@
 #ifndef WEBGLCONTEXT_H_
 #define WEBGLCONTEXT_H_
 
+#include <functional>
 #include <bitset>
 #include <memory>
 
@@ -505,6 +506,17 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   bool PresentIntoXR(gl::SwapChain& swapChain, const gl::MozFramebuffer& xrFb);
   void PresentFlatXR(const gl::MozFramebuffer& xrFb,
                      layers::TextureType consumerType);
+
+  // The camera hack (WebGLStereoCamera.h): while the canvas presents two
+  // eyes, each draw into the default framebuffer is drawn once per eye, the
+  // left into the default framebuffer and the right into mStereoRightFB, with
+  // the page's camera uniforms replaced by each eye's camera.
+  bool StereoCameraDraws() const;
+  bool EnsureStereoRightFB();
+  void UploadStereoCameras(float aShift) const;
+  void BlitStereoRightToCurDriverFB(const gfx::IntSize& aEyeSize);
+
+  void DrawPerEye(const std::function<void()>& aDraw);
 
  public:
   // Present swaps the front and back buffers of the swap chain for compositing.
@@ -1316,6 +1328,14 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   // by the session's canvas.
   gl::SwapChain mFlatXRSwapChain;
   bool mFlatXRPresenting = false;
+  // The camera hack: the canvas presents two eyes, full side by side.
+  bool mStereoCamera = false;
+  UniquePtr<gl::MozFramebuffer> mStereoRightFB;
+  UniquePtr<gl::MozFramebuffer> mStereoRightResolvedFB;
+  // Draws since the last present: per eye into the default framebuffer, and
+  // once into the page's own framebuffers.
+  uint32_t mStereoEyeDraws = 0;
+  uint32_t mStereoOffscreenDraws = 0;
   gl::SwapChain mSnapshotSwapChain;
 
   RefPtr<layers::RemoteTextureOwnerClient> mRemoteTextureOwner;

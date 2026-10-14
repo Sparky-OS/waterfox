@@ -4,6 +4,8 @@
 
 #include "WebGLBuffer.h"
 
+#include "mozilla/StaticPrefs_webgl.h"
+
 #include "GLContext.h"
 #include "WebGLContext.h"
 #include "mozilla/dom/WebGLRenderingContextBinding.h"
@@ -152,6 +154,15 @@ void WebGLBuffer::BufferData(const GLenum target, const uint64_t size,
   mFetchInvalidator.InvalidateCaches();
   mIndexCache = std::move(newIndexCache);
 
+  mStereoShadow.clear();
+  if (target == LOCAL_GL_UNIFORM_BUFFER && size <= 64 * 1024 &&
+      StaticPrefs::webgl_stereo_camera_enabled()) {
+    mStereoShadow.assign(size, 0);
+    if (uploadData) {
+      memcpy(mStereoShadow.data(), uploadData, size);
+    }
+  }
+
   if (mIndexCache) {
     if (!mIndexRanges.empty()) {
       mContext->GeneratePerfWarning("[%p] Invalidating %u ranges.", this,
@@ -177,6 +188,11 @@ void WebGLBuffer::BufferSubData(GLenum target, uint64_t rawDstByteOffset,
   ////
 
   if (!rawDataLen) return;  // With validation successful, nothing else to do.
+
+  if (!mStereoShadow.empty() &&
+      rawDstByteOffset + rawDataLen <= mStereoShadow.size()) {
+    memcpy(mStereoShadow.data() + rawDstByteOffset, data, rawDataLen);
+  }
 
   const void* uploadData = data;
   if (mIndexCache) {

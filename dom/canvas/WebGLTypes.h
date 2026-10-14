@@ -834,12 +834,16 @@ struct SwapChainOptions final {
   // The canvas presents the frames of an immersive session on the flat
   // stereo display (gfx/vr/service/FlatSession).
   bool flatXR = false;
+  // The camera hack (WebGLStereoCamera.h): the canvas presents both eyes.
+  bool stereoCamera = false;
   // Pad to sizeof(u64):
-  uint32_t padding2 = 0;
+  uint8_t padding2 = 0;
+  uint16_t padding3 = 0;
 
   auto MutTiedFields() {
     return std::tie(remoteTextureId, remoteTextureOwnerId, bgra,
-                    forceAsyncPresent, stereoMode, flatXR, padding2);
+                    forceAsyncPresent, stereoMode, flatXR, stereoCamera,
+                    padding2, padding3);
   }
 };
 

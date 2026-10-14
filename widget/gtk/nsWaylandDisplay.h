@@ -88,6 +88,11 @@ class nsWaylandDisplay {
     return mFractionalScaleManagerV2;
   }
   bool IsPrimarySelectionEnabled() { return mIsPrimarySelectionEnabled; }
+  // The compositor takes stereo content declared on a surface (KWin's
+  // kde_stereo_content_v1, Sparky Stereo OS), which libstereo-declare binds
+  // on its own.
+  bool HasStereoContent() const { return mHasStereoContent; }
+  void SetHasStereoContent() { mHasStereoContent = true; }
 
   wl_pointer* GetPointer() { return mPointer; }
   void SetPointer(wl_pointer* aPointer);
@@ -255,6 +260,7 @@ class nsWaylandDisplay {
   uint32_t mSupportedRanges[sSupportedRangesNum] = {};
 
   bool mIsPrimarySelectionEnabled = false;
+  bool mHasStereoContent = false;
 
   AutoTArray<UniquePtr<MonitorConfig>, 4> mMonitors;
 };

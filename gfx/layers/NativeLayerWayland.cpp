@@ -1819,6 +1819,7 @@ void NativeLayerWayland::DecideStereoLocked(const gfx::Size& aShape) {
   StereoFit fit = StereoFit::None;
   switch (mStereoSource) {
     case StereoSource::XR:
+    case StereoSource::CAMERA:
     case StereoSource::CONTAINER_SIZED:
       // The place has the size of one view.
       break;

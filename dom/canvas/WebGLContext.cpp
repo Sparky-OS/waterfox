@@ -36,6 +36,7 @@
 #include "mozilla/ScopeExit.h"
 #include "mozilla/Services.h"
 #include "mozilla/StaticPrefs_webgl.h"
+#include "mozilla/Logging.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/Document.h"
@@ -96,6 +97,10 @@
 #include "mozilla/dom/WebGLRenderingContextBinding.h"
 
 namespace mozilla {
+
+// The camera hack's per-frame draw counts (WebGLStereoCamera.h).
+static LazyLogModule gWebGLStereoLog("WebGLStereo");
+
 
 WebGLContextOptions::WebGLContextOptions() {
   // Set default alpha state based on preference.
@@ -512,7 +517,159 @@ void WebGLContext::Resize(uvec2 requestedSize) {
   mRequestedSize = requestedSize;
   mDefaultFB = nullptr;
   mResolvedDefaultFB = nullptr;
+  mStereoRightFB = nullptr;
+  mStereoRightResolvedFB = nullptr;
   mResetLayer = true;  // New size means new Layer.
+}
+
+// -
+
+bool WebGLContext::StereoCameraDraws() const {
+  return mStereoCamera && !mBoundDrawFramebuffer && mDefaultFB &&
+         const_cast<WebGLContext*>(this)->EnsureStereoRightFB();
+}
+
+bool WebGLContext::EnsureStereoRightFB() {
+  if (mStereoRightFB) {
+    return true;
+  }
+  if (!mDefaultFB) {
+    return false;
+  }
+  const bool depthStencil = mOptions.depth || mOptions.stencil;
+  mStereoRightFB = gl::MozFramebuffer::Create(gl, mDefaultFB->mSize,
+                                              mDefaultFB->mSamples,
+                                              depthStencil);
+  if (!mStereoRightFB) {
+    GenerateWarning("Stereo camera: the right eye's framebuffer failed.");
+    mStereoCamera = false;
+    return false;
+  }
+  // The right eye starts from what the left eye has so far.
+  gl->fBindFramebuffer(LOCAL_GL_READ_FRAMEBUFFER, mDefaultFB->mFB);
+  gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mStereoRightFB->mFB);
+  const auto& size = mDefaultFB->mSize;
+  if (mScissorTestEnabled) {
+    gl->fDisable(LOCAL_GL_SCISSOR_TEST);
+  }
+  gl->fBlitFramebuffer(0, 0, size.width, size.height, 0, 0, size.width,
+                       size.height, LOCAL_GL_COLOR_BUFFER_BIT,
+                       LOCAL_GL_NEAREST);
+  if (mScissorTestEnabled) {
+    gl->fEnable(LOCAL_GL_SCISSOR_TEST);
+  }
+  DoBindFB(mBoundReadFramebuffer, LOCAL_GL_READ_FRAMEBUFFER);
+  DoBindFB(mBoundDrawFramebuffer, LOCAL_GL_DRAW_FRAMEBUFFER);
+  return true;
+}
+
+void WebGLContext::UploadStereoCameras(const float aShift) const {
+  if (!mActiveProgramLinkInfo) {
+    return;
+  }
+  const auto& link = *mActiveProgramLinkInfo;
+  for (const auto& [loc, camera] : link.stereoCameras) {
+    const auto m = webgl::StereoCameraEye(camera, aShift);
+    gl->fUniformMatrix4fv(static_cast<GLint>(loc), 1, false, m.data());
+  }
+
+  // Cameras in uniform blocks (WebGL 2 engines keep the scene's matrices in
+  // a uniform buffer): read from the buffer's copy, written back per eye.
+  bool rebound = false;
+  for (const auto& block : link.uniformBlocks) {
+    const auto* binding = block.binding;
+    if (!binding || !binding->mBufferBinding ||
+        binding->mBufferBinding->mStereoShadow.empty()) {
+      continue;
+    }
+    const auto& buffer = *binding->mBufferBinding;
+    const auto& shadow = buffer.mStereoShadow;
+    for (const auto index : block.info.activeUniformIndices) {
+      if (index >= link.active.activeUniforms.size()) {
+        continue;
+      }
+      const auto& uniform = link.active.activeUniforms[index];
+      if (uniform.elemType != LOCAL_GL_FLOAT_MAT4 || uniform.elemCount != 1 ||
+          uniform.block_offset < 0) {
+        continue;
+      }
+      const uint64_t stride =
+          uniform.block_matrixStride > 0 ? uniform.block_matrixStride : 16;
+      const uint64_t offset = binding->mRangeStart + uniform.block_offset;
+      const uint64_t length = 3 * stride + 16;
+      if (offset + length > shadow.size()) {
+        continue;
+      }
+      // Column-major, whatever the block's layout.
+      std::array<float, 16> m;
+      for (int i = 0; i < 16; i++) {
+        const int major = uniform.block_isRowMajor ? i % 4 : i / 4;
+        const int minor = uniform.block_isRowMajor ? i / 4 : i % 4;
+        memcpy(&m[i], shadow.data() + offset + major * stride + minor * 4, 4);
+      }
+      const auto camera = webgl::ClassifyStereoCamera(
+          m.data(), uniform.name, StaticPrefs::webgl_stereo_camera_convergence());
+      if (!camera) {
+        continue;
+      }
+      std::vector<uint8_t> bytes(shadow.begin() + offset,
+                                 shadow.begin() + offset + length);
+      if (aShift != 0.0f) {
+        const auto eye = webgl::StereoCameraEye(*camera, aShift);
+        for (int i = 0; i < 16; i++) {
+          const int major = uniform.block_isRowMajor ? i % 4 : i / 4;
+          const int minor = uniform.block_isRowMajor ? i / 4 : i % 4;
+          memcpy(bytes.data() + major * stride + minor * 4, &eye[i], 4);
+        }
+      }
+      gl->fBindBuffer(LOCAL_GL_UNIFORM_BUFFER, buffer.mGLName);
+      gl->fBufferSubData(LOCAL_GL_UNIFORM_BUFFER, offset, length, bytes.data());
+      rebound = true;
+    }
+  }
+  if (rebound) {
+    gl->fBindBuffer(LOCAL_GL_UNIFORM_BUFFER,
+                    mBoundUniformBuffer ? mBoundUniformBuffer->mGLName : 0);
+  }
+}
+
+// The right eye, into the right half of the bound draw framebuffer.
+void WebGLContext::BlitStereoRightToCurDriverFB(const gfx::IntSize& aEyeSize) {
+  // Blits are scissored: the page's scissor box must not cut the right eye
+  // (as in BlitBackbufferToCurDriverFB).
+  if (mScissorTestEnabled) {
+    gl->fDisable(LOCAL_GL_SCISSOR_TEST);
+  }
+  const auto cleanup = MakeScopeExit([&]() {
+    if (mScissorTestEnabled) {
+      gl->fEnable(LOCAL_GL_SCISSOR_TEST);
+    }
+  });
+  GLuint readFb = mStereoRightFB->mFB;
+  if (mStereoRightFB->mSamples) {
+    // A multisampled framebuffer resolves only into the same rectangle.
+    if (!mStereoRightResolvedFB) {
+      mStereoRightResolvedFB =
+          gl::MozFramebuffer::Create(gl, aEyeSize, 0, false);
+    }
+    if (!mStereoRightResolvedFB) {
+      return;
+    }
+    GLint drawFb = 0;
+    gl->fGetIntegerv(LOCAL_GL_DRAW_FRAMEBUFFER_BINDING, &drawFb);
+    gl->fBindFramebuffer(LOCAL_GL_READ_FRAMEBUFFER, mStereoRightFB->mFB);
+    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER,
+                         mStereoRightResolvedFB->mFB);
+    gl->fBlitFramebuffer(0, 0, aEyeSize.width, aEyeSize.height, 0, 0,
+                         aEyeSize.width, aEyeSize.height,
+                         LOCAL_GL_COLOR_BUFFER_BIT, LOCAL_GL_NEAREST);
+    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, drawFb);
+    readFb = mStereoRightResolvedFB->mFB;
+  }
+  gl->fBindFramebuffer(LOCAL_GL_READ_FRAMEBUFFER, readFb);
+  gl->fBlitFramebuffer(0, 0, aEyeSize.width, aEyeSize.height, aEyeSize.width,
+                       0, 2 * aEyeSize.width, aEyeSize.height,
+                       LOCAL_GL_COLOR_BUFFER_BIT, LOCAL_GL_NEAREST);
 }
 
 std::unique_ptr<webgl::FormatUsageAuthority> WebGLContext::CreateFormatUsage(
@@ -1062,7 +1219,7 @@ GLuint GLNameOrZero(const T& t) {
 // The front buffer carries the canvas's stereo mode to the compositor, which
 // declares it on the canvas's own surface.
 static void SetStereoMode(gl::SharedSurface* const surf,
-                          const uint8_t stereoMode) {
+                          const uint8_t stereoMode, const bool camera) {
   if (!surf || surf->mDesc.type != gl::SharedSurfaceType::EGLSurfaceDMABUF) {
     return;
   }
@@ -1070,7 +1227,9 @@ static void SetStereoMode(gl::SharedSurface* const surf,
                         ? StereoMode(stereoMode)
                         : StereoMode::MONO;
   static_cast<gl::SharedSurface_DMABUF*>(surf)->mSurface->SetStereoMode(
-      mode, mode == StereoMode::MONO ? StereoSource::NONE : StereoSource::XR);
+      mode, mode == StereoMode::MONO ? StereoSource::NONE
+            : camera                 ? StereoSource::CAMERA
+                                     : StereoSource::XR);
 }
 #endif
 
@@ -1082,11 +1241,21 @@ bool WebGLContext::PresentInto(gl::SwapChain& swapChain) {
   if (!ValidateAndInitFB(nullptr)) return false;
 
   const auto size = mDefaultFB->mSize;
+  // The camera hack presents both eyes, full side by side, left eye first.
+  const bool stereo = mStereoCamera && EnsureStereoRightFB();
+  const auto presentedSize =
+      stereo ? gfx::IntSize(2 * size.width, size.height) : size;
+  MOZ_LOG(gWebGLStereoLog, LogLevel::Debug,
+          ("present %s: %u draws per eye, %u into the page's framebuffers",
+           stereo ? "two eyes" : "one view", mStereoEyeDraws,
+           mStereoOffscreenDraws));
+  mStereoEyeDraws = 0;
+  mStereoOffscreenDraws = 0;
 
   const auto error = [&]() -> std::optional<std::string> {
     const auto canvasCspace = ToColorSpace2ForOutput(mDrawingBufferColorSpace);
     const auto canvasTF = gfx::TransferFunction::SRGB;
-    auto presenter = swapChain.Acquire(size, canvasCspace, canvasTF);
+    auto presenter = swapChain.Acquire(presentedSize, canvasCspace, canvasTF);
     if (!presenter) {
       return "Swap chain surface creation failed.";
     }
@@ -1118,9 +1287,18 @@ bool WebGLContext::PresentInto(gl::SwapChain& swapChain) {
       }
     }
 
+    if (stereo) {
+      // Each eye as it is; colour management of stereo canvases is not
+      // done yet.
+      colorManage = false;
+    }
+
     if (!colorManage) {
       gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, destFb);
       BlitBackbufferToCurDriverFB();
+      if (stereo) {
+        BlitStereoRightToCurDriverFB(size);
+      }
       return {};
     }
 
@@ -1258,6 +1436,15 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
   bool useAsync = options.remoteTextureOwnerId.IsValid() &&
                   options.remoteTextureId.IsValid();
 
+  // The camera hack: the canvas presents both eyes from now on.
+  if (!xrFb && !webvr && options.stereoCamera != mStereoCamera) {
+    mStereoCamera = options.stereoCamera;
+    if (!mStereoCamera) {
+      mStereoRightFB = nullptr;
+      mStereoRightResolvedFB = nullptr;
+    }
+  }
+
   // The canvas of an immersive session on the flat stereo display shows the
   // session's last frame, copied when it was submitted.
   if (!xrFb && !webvr) {
@@ -1285,7 +1472,8 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
   }
 #ifdef MOZ_WIDGET_GTK
   if (!maybeFB) {
-    SetStereoMode(swapChain->FrontBuffer().get(), options.stereoMode);
+    SetStereoMode(swapChain->FrontBuffer().get(), options.stereoMode,
+                  options.stereoCamera);
   }
 #endif
 
@@ -1966,6 +2154,11 @@ bool WebGLContext::ValidateAndInitFB(const WebGLFramebuffer* const fb,
                             LOCAL_GL_DEPTH_BUFFER_BIT |
                             LOCAL_GL_STENCIL_BUFFER_BIT;
     gl->fClear(bits);
+    if (mStereoRightFB) {
+      gl->fBindFramebuffer(LOCAL_GL_FRAMEBUFFER, mStereoRightFB->mFB);
+      gl->fClear(bits);
+      gl->fBindFramebuffer(LOCAL_GL_FRAMEBUFFER, mDefaultFB->mFB);
+    }
 
     mDefaultFB_IsInvalid = false;
   }

@@ -811,6 +811,8 @@ static void global_registry_handler(void* data, wl_registry* registry,
         WaylandRegistryBind<zwp_idle_inhibit_manager_v1>(
             registry, id, &zwp_idle_inhibit_manager_v1_interface, 1);
     display->SetIdleInhibitManager(idle_inhibit_manager);
+  } else if (iface.EqualsLiteral("kde_stereo_content_manager_v1")) {
+    display->SetHasStereoContent();
   } else if (iface.EqualsLiteral("zwp_relative_pointer_manager_v1")) {
     auto* relative_pointer_manager =
         WaylandRegistryBind<zwp_relative_pointer_manager_v1>(

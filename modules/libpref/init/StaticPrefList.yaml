@@ -20040,6 +20040,27 @@
   value: 30*1000*1000
   mirror: always
 
+# The camera hack (Sparky Stereo OS, dom/canvas/WebGLStereoCamera.h): a WebGL
+# canvas that draws a 3D scene through a camera uniform is presented in
+# stereo, the scene drawn once per eye, full side by side.
+- name: webgl.stereo-camera.enabled
+  type: RelaxedAtomicBool
+  value: false
+  mirror: always
+
+# The separation of the two eyes' views, in percent of the view's width,
+# which a point at infinity shows.
+- name: webgl.stereo-camera.separation
+  type: AtomicFloat
+  value: 2.0f
+  mirror: always
+
+# The zero-parallax distance, as a multiple of the camera's near distance.
+- name: webgl.stereo-camera.convergence
+  type: AtomicFloat
+  value: 5.0f
+  mirror: always
+
 - name: webgl.max-warnings-per-context
   type: RelaxedAtomicUint32
   value: 32

@@ -313,6 +313,13 @@ void gfxPlatformGtk::InitWebRenderConfig() {
 #endif
 
   gfxVars::SetUseWebRenderCompositor(feature.IsEnabled());
+#if defined(MOZ_WAYLAND)
+  // Sparky Stereo OS: pictures get Wayland surfaces of their own and the
+  // compositor takes stereo content declared on a surface; only then may
+  // the browser present two views side by side of its own accord.
+  gfxVars::SetStereoContentDeclaration(
+      feature.IsEnabled() && widget::WaylandDisplayGet()->HasStereoContent());
+#endif
 }
 
 void gfxPlatformGtk::InitPlatformGPUProcessPrefs() {

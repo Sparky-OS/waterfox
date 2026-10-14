@@ -4,6 +4,8 @@
 
 #include "ClientWebGLContext.h"
 
+#include "WebGLStereoCamera.h"
+
 #include <fmt/format.h>
 
 #include <bitset>
@@ -543,6 +545,10 @@ void ClientWebGLContext::Present(WebGLFramebufferJS* const xrFb,
     asyncOptions.stereoMode = uint8_t(StereoMode::LEFT_RIGHT);
   } else if (!xrFb && mInlineStereo) {
     asyncOptions.stereoMode = uint8_t(StereoMode::LEFT_RIGHT);
+  } else if (!xrFb && StereoCameraPresents()) {
+    // The camera hack: both eyes, full side by side, left eye first.
+    asyncOptions.stereoCamera = true;
+    asyncOptions.stereoMode = uint8_t(StereoMode::LEFT_RIGHT);
   }
   Run<RPROC(Present)>(xrFb ? xrFb->mId : 0, type, webvr, asyncOptions);
 }
@@ -566,7 +572,50 @@ uvec2 ClientWebGLContext::PresentedSize() {
   if (mFlatXR && mFlatXRSize.x && mFlatXRSize.y) {
     return mFlatXRSize;
   }
-  return DrawingBufferSize();
+  auto size = DrawingBufferSize();
+  if (StereoCameraPresents()) {
+    size.x *= 2;
+  }
+  return size;
+}
+
+// The camera hack: a uniform buffer that holds a camera (WebGL 2 engines
+// keep the scene's matrices there) starts it too. Any 16-byte aligned mat4
+// is looked at, as the block's layout is the program's.
+void ClientWebGLContext::LookForStereoCamera(const GLenum target,
+                                             const Span<const uint8_t>& aData) {
+  if (mStereoCamera || target != LOCAL_GL_UNIFORM_BUFFER ||
+      aData.size() > 64 * 1024 || !StaticPrefs::webgl_stereo_camera_enabled()) {
+    return;
+  }
+  const float factor = StaticPrefs::webgl_stereo_camera_convergence();
+  for (size_t offset = 0; offset + 64 <= aData.size(); offset += 16) {
+    std::array<float, 16> m;
+    memcpy(m.data(), aData.data() + offset, 64);
+    if (webgl::ClassifyStereoCamera(m.data(), {}, factor)) {
+      mStereoCamera = true;
+      OnStereoCameraStarted();
+      return;
+    }
+  }
+}
+
+void ClientWebGLContext::OnStereoCameraStarted() {
+  // The canvas's frames change size: a new canvas renderer, which only a full
+  // paint of the canvas's frame makes.
+  mResetLayer = true;
+  if (mCanvasElement) {
+    if (nsIFrame* frame = mCanvasElement->GetPrimaryFrame()) {
+      frame->InvalidateFrame();
+    }
+  }
+}
+
+// Only where the two views are declared on a surface of their own: anywhere
+// else the canvas stays as the page drew it.
+bool ClientWebGLContext::StereoCameraPresents() const {
+  return mStereoCamera && !mFlatXR && !mInlineStereo &&
+         gfx::gfxVars::StereoContentDeclaration();
 }
 
 void ClientWebGLContext::SetInlineStereo(const bool inlineStereo) {
@@ -3595,6 +3644,7 @@ void ClientWebGLContext::BufferData(
   const auto& src = maybeSrc.Value();
 
   src.ProcessFixedData<true>([&](const Span<const uint8_t>& aData) {
+    LookForStereoCamera(target, aData);
     Run<RPROC(BufferData)>(target, aData, usage);
   });
 }
@@ -3612,6 +3662,7 @@ void ClientWebGLContext::BufferData(GLenum target,
     if (!range) {
       return;
     }
+    LookForStereoCamera(target, *range);
     Run<RPROC(BufferData)>(target, *range, usage);
   });
 }
@@ -3623,6 +3674,7 @@ void ClientWebGLContext::BufferSubData(GLenum target,
                                        const dom::ArrayBuffer& src) {
   const FuncScope funcScope(*this, "bufferSubData");
   src.ProcessFixedData<true>([&](const Span<const uint8_t>& aData) {
+    LookForStereoCamera(target, aData);
     Run<RPROC(BufferSubData)>(target, dstByteOffset, aData,
                               /* unsynchronized */ false);
   });
@@ -3642,6 +3694,7 @@ void ClientWebGLContext::BufferSubData(GLenum target,
     if (!range) {
       return;
     }
+    LookForStereoCamera(target, *range);
     Run<RPROC(BufferSubData)>(target, dstByteOffset, *range,
                               /* unsynchronized */ false);
   });
@@ -5033,6 +5086,23 @@ void ClientWebGLContext::UniformData(const GLenum funcElemType,
       reinterpret_cast<const webgl::UniformDataVal*>(bytes.begin().get()) +
       elemOffset;
   const auto range = Span{begin, availCount};
+
+  // The camera hack: a page that uploads a camera has a 3D scene; from the
+  // next frame on the canvas presents both eyes.
+  if (!mStereoCamera && funcElemType == LOCAL_GL_FLOAT_MAT4 &&
+      availCount == 16 && StaticPrefs::webgl_stereo_camera_enabled()) {
+    std::array<float, 16> m;
+    const auto* f = reinterpret_cast<const float*>(begin);
+    for (int i = 0; i < 16; i++) {
+      m[i] = transpose ? f[(i % 4) * 4 + i / 4] : f[i];
+    }
+    if (webgl::ClassifyStereoCamera(
+            m.data(), {}, StaticPrefs::webgl_stereo_camera_convergence())) {
+      mStereoCamera = true;
+      const_cast<ClientWebGLContext*>(this)->OnStereoCameraStarted();
+    }
+  }
+
   RunWithGCData<RPROC(UniformData)>(std::move(nogc), locId, transpose, range);
 }
 

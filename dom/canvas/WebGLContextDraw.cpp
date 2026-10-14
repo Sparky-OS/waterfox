@@ -679,6 +679,28 @@ static bool HasInstancedDrawing(const WebGLContext& webgl) {
 
 ////////////////////////////////////////
 
+// The camera hack (WebGLStereoCamera.h): a draw into the default framebuffer
+// is drawn once per eye; draws into the page's own framebuffers (shadow maps,
+// render targets) once.
+void WebGLContext::DrawPerEye(const std::function<void()>& aDraw) {
+  if (!StereoCameraDraws()) {
+    aDraw();
+    if (mBoundDrawFramebuffer) {
+      mStereoOffscreenDraws++;
+    }
+    return;
+  }
+  const float s = StaticPrefs::webgl_stereo_camera_separation() / 100.0f;
+  UploadStereoCameras(-s);
+  aDraw();
+  gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mStereoRightFB->mFB);
+  UploadStereoCameras(s);
+  aDraw();
+  gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mDefaultFB->mFB);
+  UploadStereoCameras(0.0f);
+  mStereoEyeDraws++;
+}
+
 void WebGLContext::DrawArraysInstanced(const GLenum mode, const GLint first,
                                        const GLsizei iVertCount,
                                        const GLsizei instanceCount) {
@@ -841,11 +863,20 @@ void WebGLContext::DrawArraysInstanced(const GLenum mode, const GLint first,
     ScopedDrawCallWrapper wrapper(*this);
 
     if (vertCount && instanceCount) {
-      if (HasInstancedDrawing(*this)) {
-        gl->fDrawArraysInstanced(mode, driverFirst, vertCount, instanceCount);
+      // Transform feedback records the draw once.
+      const auto draw = [&]() {
+        if (HasInstancedDrawing(*this)) {
+          gl->fDrawArraysInstanced(mode, driverFirst, vertCount,
+                                   instanceCount);
+        } else {
+          MOZ_ASSERT(instanceCount == 1);
+          gl->fDrawArrays(mode, driverFirst, vertCount);
+        }
+      };
+      if (mBoundTransformFeedback && mBoundTransformFeedback->mIsActive) {
+        draw();
       } else {
-        MOZ_ASSERT(instanceCount == 1);
-        gl->fDrawArrays(mode, driverFirst, vertCount);
+        DrawPerEye(draw);
       }
     }
   }
@@ -1069,15 +1100,17 @@ void WebGLContext::DrawElementsInstanced(const GLenum mode,
       }
 
       if (indexCount && instanceCount) {
-        if (HasInstancedDrawing(*this)) {
-          gl->fDrawElementsInstanced(mode, indexCount, type,
-                                     reinterpret_cast<GLvoid*>(byteOffset),
-                                     instanceCount);
-        } else {
-          MOZ_ASSERT(instanceCount == 1);
-          gl->fDrawElements(mode, indexCount, type,
-                            reinterpret_cast<GLvoid*>(byteOffset));
-        }
+        DrawPerEye([&]() {
+          if (HasInstancedDrawing(*this)) {
+            gl->fDrawElementsInstanced(mode, indexCount, type,
+                                       reinterpret_cast<GLvoid*>(byteOffset),
+                                       instanceCount);
+          } else {
+            MOZ_ASSERT(instanceCount == 1);
+            gl->fDrawElements(mode, indexCount, type,
+                              reinterpret_cast<GLvoid*>(byteOffset));
+          }
+        });
       }
 
       if (errorScope) {

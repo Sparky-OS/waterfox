@@ -72,6 +72,8 @@ void WebGL2Context::CopyBufferSubData(GLenum readTarget, GLenum writeTarget,
   const ScopedLazyBind writeBind(gl, writeTarget, writeBuffer);
   gl->fCopyBufferSubData(readTarget, writeTarget, readOffset, writeOffset,
                          size);
+  // The camera hack's copy of the destination no longer matches it.
+  writeBuffer->mStereoShadow.clear();
 
   // Update the destination index cache if needed.
   if (writeBuffer->mIndexCache) {

@@ -767,6 +767,9 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
   // framebuffer, both eyes side by side.
   uvec2 mFlatXRSize = {};
   bool mInlineStereo = false;
+  // The camera hack (WebGLStereoCamera.h): the page uploaded a camera, so
+  // the canvas presents both eyes, full side by side.
+  mutable bool mStereoCamera = false;
   uvec2 mRequestedSize = {};
 
  public:
@@ -1108,6 +1111,9 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
   // The size of the frames the canvas shows.
   uvec2 PresentedSize();
   bool IsPresentingFlatXR() const { return mFlatXR; }
+  bool StereoCameraPresents() const;
+  void OnStereoCameraStarted();
+  void LookForStereoCamera(GLenum target, const Span<const uint8_t>& aData);
   // An inline-stereo session draws its left view into the left half of the
   // canvas and its right view into the right half.
   void SetInlineStereo(bool inlineStereo);

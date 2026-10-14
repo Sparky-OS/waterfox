@@ -1394,6 +1394,24 @@ void WebGLContext::UniformData(
   const auto ptr = static_cast<const void*>(data.data());
   (*pfn)(*gl, static_cast<GLint>(loc), elemCount, transpose, ptr);
 
+  // The camera hack: remember the camera the page hands the GPU.
+  if (activeInfo.elemType == LOCAL_GL_FLOAT_MAT4 && !validationInfo.isArray &&
+      elemCount == 1 && StaticPrefs::webgl_stereo_camera_enabled()) {
+    std::array<float, 16> m;
+    const auto* f = reinterpret_cast<const float*>(data.data());
+    for (int i = 0; i < 16; i++) {
+      m[i] = transpose ? f[(i % 4) * 4 + i / 4] : f[i];
+    }
+    const auto camera = webgl::ClassifyStereoCamera(
+        m.data(), activeInfo.name,
+        StaticPrefs::webgl_stereo_camera_convergence());
+    if (camera) {
+      link->stereoCameras[loc] = *camera;
+    } else {
+      link->stereoCameras.erase(loc);
+    }
+  }
+
   // -
 
   if (samplerInfo) {

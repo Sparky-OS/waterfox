@@ -12,6 +12,7 @@
 
 #include "CacheInvalidator.h"
 #include "WebGLObjectModel.h"
+#include "WebGLStereoCamera.h"
 #include "WebGLTypes.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/Vector.h"
@@ -127,6 +128,9 @@ struct LinkedProgramInfo final : public RefCounted<LinkedProgramInfo>,
 
   std::vector<std::unique_ptr<SamplerUniformInfo>> samplerUniforms;
   std::unordered_map<uint32_t, LocationInfo> locationMap;
+
+  // The camera uniforms the page uploaded, by location (WebGLStereoCamera.h).
+  mutable std::unordered_map<uint32_t, StereoCamera> stereoCameras;
 
   mutable std::vector<UniformBlockInfo> uniformBlocks;
 
