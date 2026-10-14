@@ -348,10 +348,10 @@ class NativeLayerWayland : public NativeLayer {
   StereoSource mStereoSource = StereoSource::NONE;
   // The user's "Swap eyes", over the mark and the picture's shape.
   bool mStereoSwap = false;
-  // The last answer of libstereo-layer for a picture without a mark.
-  gfx::IntSize mStereoLayerShape;
-  StereoMode mStereoLayerPacking = StereoMode::MONO;
-  StereoFit mStereoLayerFit = StereoFit::None;
+  // The last answer of libstereo-policy, for its log.
+  gfx::IntSize mStereoPolicyShape;
+  int mStereoPolicyLayout = -1;
+  int mStereoPolicyOrder = -1;
   bool mStereoRepackFailed = false;
   bool DeclareStereoLocked(const widget::WaylandSurfaceLock& aProofOfLock,
                            bool aDeclare);
