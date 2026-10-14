@@ -9,6 +9,7 @@
 #include "mozilla/Atomics.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/layers/NativeLayer.h"
+#include "mozilla/layers/StereoPolicy.h"
 #include "mozilla/layers/SurfacePoolWayland.h"
 #include "mozilla/widget/DMABufFormats.h"
 #include "nsRegion.h"
@@ -333,14 +334,7 @@ class NativeLayerWayland : public NativeLayer {
   // Stereo 3D (Sparky Stereo OS). The compositor takes two views full side by
   // side with the left eye first, declared on the surface; each eye sees its
   // half of the buffer over the surface's place.
-  enum class StereoFit : uint8_t {
-    // The place has the shape of one view.
-    None,
-    // The place has the shape of two full size views side by side, or on top
-    // of each other: one view is shown at its shape, centred in it.
-    HalfWidth,
-    HalfHeight,
-  };
+  using StereoFit = layers::StereoFit;
   // Decides mStereoPacking and mStereoFit for a place of the given shape.
   void DecideStereoLocked(const gfx::Size& aShape);
   // The picture's stereo mark and where it comes from.
