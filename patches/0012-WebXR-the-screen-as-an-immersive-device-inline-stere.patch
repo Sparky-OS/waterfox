@@ -1,0 +1,1478 @@
+From 254da898cdbd987fd76a0364880084ecbcfb4376 Mon Sep 17 00:00:00 2001
+From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
+Date: Tue, 13 Oct 2026 14:54:24 -0300
+Subject: [PATCH 12/12] WebXR: the screen as an immersive device,
+ inline-stereo, and the inline projection
+
+Pages declare stereo only through WebXR: the stereolayout canvas
+attribute is removed.
+
+With dom.vr.flat.enabled, the VR service offers the screen itself as an
+immersive device (FlatSession: "Stereo display"). An "immersive-vr"
+session (WebXR section 3.3) shows its canvas full screen; the session's
+frames go back into that canvas through a swap chain of its own, two
+views side by side with the left eye first, and the canvas's DMABuf
+front buffer is marked so (source XR) and declared to Stereo KWin.
+
+Each eye gets the screen's resolution and an off-axis projection through
+the screen as a window, at the viewer's distance
+(dom.vr.flat.viewer-distance-mm, 700) with the eyes apart by
+dom.vr.flat.eye-separation-mm (64), from the screen's size in
+millimetres. Without controllers the mouse turns the view, the wheel and
+the arrow keys move it; leaving full screen ends the session.
+
+The canvas keeps its element and size for the page; while it shows the
+session's frames, its renderer takes the frames' size, the frames fill
+the canvas's box (each eye's view was made for that box) and they go to
+the compositor as the canvas's own frames do, as DMABuf. The VR service
+takes no texture from the flat display: it only paces the frames.
+A session's canvas need not be in the page (the WebXR samples keep
+theirs detached): for the session the browser puts it at the end of the
+page's root element, full screen, and takes it out again afterwards.
+isSessionSupported("immersive-vr") answers at once on the flat display,
+the screen being always there: pages may wait only briefly for the
+answer before they choose their renderer (StorySplat waits 800 ms, then
+takes WebGPU, which has no WebXR binding).
+
+Without the VR process (Linux), the VR service runs in the browser and
+joins the same shared memory each time it starts; VRManager clears it
+between runtime detection and enumeration, so the browser's states count
+again from 1 and the service took the enumeration request for the
+detection it had already seen, never finding a device. It now forgets
+the last state it saw when it joins again.
+
+Inline sessions take the "inline-stereo" feature (WebXR section 3.4):
+the session has a left and a right view through the output canvas as a
+window, the canvas holds them side by side (XRWebGLLayer.getViewport),
+and its front buffer is marked and declared the same way.
+
+The inline view's projection (section 4.2) is now built as the immersive
+views' are, right handed with -Z forward, from the inline vertical field
+of view and the canvas's aspect, so a point in front of the viewer is in
+front of the camera.
+
+Assisted-by: Claude Opus 5.5 via Claude Code
+---
+ dom/canvas/ClientWebGLContext.cpp        |  57 ++++--
+ dom/canvas/ClientWebGLContext.h          |  14 ++
+ dom/canvas/WebGLContext.cpp              |  42 +++-
+ dom/canvas/WebGLContext.h                |   6 +
+ dom/canvas/WebGLTypes.h                  |  10 +-
+ dom/canvas/XRWebGLLayer.cpp              |  12 +-
+ dom/html/HTMLCanvasElement.cpp           |   5 +
+ dom/html/HTMLCanvasElement.h             |   4 +
+ dom/vr/XRFrame.cpp                       |  54 ++++--
+ dom/vr/XRSession.cpp                     | 236 ++++++++++++++++++++++-
+ dom/vr/XRSession.h                       |  38 ++++
+ dom/vr/XRSystem.cpp                      |  30 +++
+ dom/vr/XRSystem.h                        |   2 +
+ dom/vr/moz.build                         |   2 +-
+ gfx/vr/VRDisplayPresentation.cpp         |   4 +-
+ gfx/vr/VRManager.cpp                     |  17 +-
+ gfx/vr/VRShMem.cpp                       |   9 +-
+ gfx/vr/gfxVR.h                           |   6 +
+ gfx/vr/ipc/VRLayerChild.cpp              |  32 ++-
+ gfx/vr/ipc/VRLayerChild.h                |   4 +-
+ gfx/vr/service/FlatSession.cpp           | 115 +++++++++++
+ gfx/vr/service/FlatSession.h             |  50 +++++
+ gfx/vr/service/VRService.cpp             |  13 ++
+ gfx/vr/service/VRSession.cpp             |   4 +
+ gfx/vr/service/VRSession.h               |   6 +
+ gfx/vr/service/moz.build                 |   5 +
+ layout/generic/nsHTMLCanvasFrame.cpp     |   6 +
+ modules/libpref/init/StaticPrefList.yaml |  20 ++
+ 28 files changed, 750 insertions(+), 53 deletions(-)
+ create mode 100644 gfx/vr/service/FlatSession.cpp
+ create mode 100644 gfx/vr/service/FlatSession.h
+
+diff --git a/dom/canvas/ClientWebGLContext.cpp b/dom/canvas/ClientWebGLContext.cpp
+index 39672a1504..6a31e67d80 100644
+--- a/dom/canvas/ClientWebGLContext.cpp
++++ b/dom/canvas/ClientWebGLContext.cpp
+@@ -30,6 +30,7 @@
+ #include "mozilla/dom/Document.h"
+ #include "mozilla/dom/GeneratePlaceholderCanvasData.h"
+ #include "mozilla/dom/HTMLCanvasElement.h"
++#include "nsIFrame.h"
+ #include "mozilla/dom/ToJSValue.h"
+ #include "mozilla/dom/TypedArray.h"
+ #include "mozilla/dom/WebGLContextEvent.h"
+@@ -524,19 +525,6 @@ webgl::SwapChainOptions ClientWebGLContext::PrepareAsyncSwapChainOptions(
+   return options;
+ }
+ 
+-// The canvas's stereolayout attribute takes the names of WebXR Layers'
+-// XRLayerLayout: "stereo-left-right" and "stereo-top-bottom" declare that the
+-// canvas holds two views; anything else is one view.
+-static StereoMode StereoModeFromLayout(const nsAString& layout) {
+-  if (layout.EqualsLiteral("stereo-left-right")) {
+-    return StereoMode::LEFT_RIGHT;
+-  }
+-  if (layout.EqualsLiteral("stereo-top-bottom")) {
+-    return StereoMode::TOP_BOTTOM;
+-  }
+-  return StereoMode::MONO;
+-}
+-
+ void ClientWebGLContext::Present(WebGLFramebufferJS* const xrFb,
+                                  const layers::TextureType type,
+                                  const bool webvr,
+@@ -548,14 +536,45 @@ void ClientWebGLContext::Present(WebGLFramebufferJS* const xrFb,
+   CancelAutoFlush();
+   webgl::SwapChainOptions asyncOptions =
+       PrepareAsyncSwapChainOptions(xrFb, webvr, options);
+-  if (!xrFb && mCanvasElement) {
+-    nsAutoString layout;
+-    mCanvasElement->GetAttribute(u"stereolayout"_ns, layout);
+-    asyncOptions.stereoMode = uint8_t(StereoModeFromLayout(layout));
++  if (!xrFb && mFlatXR) {
++    // The canvas shows the frames of an immersive session on the flat stereo
++    // display: both eyes side by side, the left eye first.
++    asyncOptions.flatXR = true;
++    asyncOptions.stereoMode = uint8_t(StereoMode::LEFT_RIGHT);
++  } else if (!xrFb && mInlineStereo) {
++    asyncOptions.stereoMode = uint8_t(StereoMode::LEFT_RIGHT);
+   }
+   Run<RPROC(Present)>(xrFb ? xrFb->mId : 0, type, webvr, asyncOptions);
+ }
+ 
++void ClientWebGLContext::SetFlatXR(const bool flatXR, const uvec2 size) {
++  if (mFlatXR == flatXR && (!flatXR || mFlatXRSize == size)) return;
++  mFlatXR = flatXR;
++  mFlatXRSize = size;
++  // The canvas's frames change size: a new canvas renderer, which only a
++  // full paint of the canvas's frame makes.
++  mResetLayer = true;
++  if (mCanvasElement) {
++    if (nsIFrame* frame = mCanvasElement->GetPrimaryFrame()) {
++      frame->InvalidateFrame();
++    }
++  }
++  MarkCanvasDirty();
++}
++
++uvec2 ClientWebGLContext::PresentedSize() {
++  if (mFlatXR && mFlatXRSize.x && mFlatXRSize.y) {
++    return mFlatXRSize;
++  }
++  return DrawingBufferSize();
++}
++
++void ClientWebGLContext::SetInlineStereo(const bool inlineStereo) {
++  if (mInlineStereo == inlineStereo) return;
++  mInlineStereo = inlineStereo;
++  MarkCanvasDirty();
++}
++
+ void ClientWebGLContext::CopyToSwapChain(
+     WebGLFramebufferJS* const fb, const webgl::SwapChainOptions& options) {
+   CancelAutoFlush();
+@@ -656,7 +675,7 @@ bool ClientWebGLContext::UpdateWebRenderCanvasData(
+     return true;
+   }
+ 
+-  const auto& size = DrawingBufferSize();
++  const auto size = PresentedSize();
+ 
+   if (!IsContextLost() && !renderer && mNotLost->mCanvasRenderer &&
+       mNotLost->mCanvasRenderer->GetSize() == gfx::IntSize(size.x, size.y) &&
+@@ -691,7 +710,7 @@ bool ClientWebGLContext::InitializeCanvasRenderer(
+   data.mOriginPos = gl::OriginPos::BottomLeft;
+ 
+   const auto& options = *mInitialOptions;
+-  const auto& size = DrawingBufferSize();
++  const auto size = PresentedSize();
+ 
+   if (IsContextLost()) return false;
+ 
+diff --git a/dom/canvas/ClientWebGLContext.h b/dom/canvas/ClientWebGLContext.h
+index 3332baf811..21330352ab 100644
+--- a/dom/canvas/ClientWebGLContext.h
++++ b/dom/canvas/ClientWebGLContext.h
+@@ -762,6 +762,11 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
+ 
+  private:
+   bool mIsCanvasDirty = false;
++  bool mFlatXR = false;
++  // The size of the frames the canvas shows while mFlatXR: the session's
++  // framebuffer, both eyes side by side.
++  uvec2 mFlatXRSize = {};
++  bool mInlineStereo = false;
+   uvec2 mRequestedSize = {};
+ 
+  public:
+@@ -1097,6 +1102,15 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
+   void CopyToSwapChain(
+       WebGLFramebufferJS*,
+       const webgl::SwapChainOptions& options = webgl::SwapChainOptions());
++  // While an immersive session presents on the flat stereo display, the
++  // canvas shows the session's frames instead of its own drawing buffer.
++  void SetFlatXR(bool flatXR, uvec2 size = {});
++  // The size of the frames the canvas shows.
++  uvec2 PresentedSize();
++  bool IsPresentingFlatXR() const { return mFlatXR; }
++  // An inline-stereo session draws its left view into the left half of the
++  // canvas and its right view into the right half.
++  void SetInlineStereo(bool inlineStereo);
+   void EndOfFrame();
+   Maybe<layers::SurfaceDescriptor> GetFrontBuffer(
+       WebGLFramebufferJS*, const bool webvr = false) override;
+diff --git a/dom/canvas/WebGLContext.cpp b/dom/canvas/WebGLContext.cpp
+index f9c38a7587..f6ffa72221 100644
+--- a/dom/canvas/WebGLContext.cpp
++++ b/dom/canvas/WebGLContext.cpp
+@@ -1069,7 +1069,8 @@ static void SetStereoMode(gl::SharedSurface* const surf,
+   const auto mode = stereoMode < uint8_t(StereoMode::MAX)
+                         ? StereoMode(stereoMode)
+                         : StereoMode::MONO;
+-  static_cast<gl::SharedSurface_DMABUF*>(surf)->mSurface->SetStereoMode(mode);
++  static_cast<gl::SharedSurface_DMABUF*>(surf)->mSurface->SetStereoMode(
++      mode, mode == StereoMode::MONO ? StereoSource::NONE : StereoSource::XR);
+ }
+ #endif
+ 
+@@ -1257,10 +1258,27 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
+   bool useAsync = options.remoteTextureOwnerId.IsValid() &&
+                   options.remoteTextureId.IsValid();
+ 
++  // The canvas of an immersive session on the flat stereo display shows the
++  // session's last frame, copied when it was submitted.
++  if (!xrFb && !webvr) {
++    mFlatXRPresenting = options.flatXR && mFlatXRSwapChain.FrontBuffer();
++    if (mFlatXRPresenting) {
++      swapChain = &mFlatXRSwapChain;
++    }
++  }
++
+   InitSwapChain(*gl, *swapChain, consumerType, useAsync);
+ 
+-  bool valid =
+-      maybeFB ? PresentIntoXR(*swapChain, *maybeFB) : PresentInto(*swapChain);
++  if (maybeFB && options.flatXR) {
++    PresentFlatXR(*maybeFB, consumerType);
++  }
++
++  bool valid = true;
++  if (maybeFB) {
++    valid = PresentIntoXR(*swapChain, *maybeFB);
++  } else if (swapChain != &mFlatXRSwapChain) {
++    valid = PresentInto(*swapChain);
++  }
+   if (!valid) {
+     EnsureContextLostRemoteTextureOwner(options);
+     return;
+@@ -1276,6 +1294,21 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
+   }
+ }
+ 
++void WebGLContext::PresentFlatXR(const gl::MozFramebuffer& fb,
++                                 const layers::TextureType consumerType) {
++  InitSwapChain(*gl, mFlatXRSwapChain, consumerType, true);
++  const auto colorSpace = ToColorSpace2ForOutput(mDrawingBufferColorSpace);
++  auto presenter = mFlatXRSwapChain.Acquire(fb.mSize, colorSpace,
++                                            gfx::TransferFunction::SRGB);
++  if (!presenter) {
++    GenerateWarning("Swap chain surface creation failed.");
++    return;
++  }
++  const ScopedFBRebinder saveFB(this);
++  gl->fBindFramebuffer(LOCAL_GL_FRAMEBUFFER, presenter->Fb());
++  BlitBackbufferToCurDriverFB(nullptr, &fb);
++}
++
+ void WebGLContext::WaitForTxn(layers::RemoteTextureOwnerId ownerId,
+                               layers::RemoteTextureTxnType txnType,
+                               layers::RemoteTextureTxnId txnId) {
+@@ -1528,6 +1561,9 @@ gl::SwapChain* WebGLContext::GetSwapChain(WebGLFramebuffer* const xrFb,
+ Maybe<layers::SurfaceDescriptor> WebGLContext::GetFrontBuffer(
+     WebGLFramebuffer* const xrFb, const bool webvr) {
+   auto* swapChain = GetSwapChain(xrFb, webvr);
++  if (!xrFb && !webvr && mFlatXRPresenting) {
++    swapChain = &mFlatXRSwapChain;
++  }
+   if (!swapChain) return {};
+   const auto& front = swapChain->FrontBuffer();
+   if (!front) return {};
+diff --git a/dom/canvas/WebGLContext.h b/dom/canvas/WebGLContext.h
+index a2f0614872..090a9cc9a7 100644
+--- a/dom/canvas/WebGLContext.h
++++ b/dom/canvas/WebGLContext.h
+@@ -503,6 +503,8 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
+  private:
+   bool PresentInto(gl::SwapChain& swapChain);
+   bool PresentIntoXR(gl::SwapChain& swapChain, const gl::MozFramebuffer& xrFb);
++  void PresentFlatXR(const gl::MozFramebuffer& xrFb,
++                     layers::TextureType consumerType);
+ 
+  public:
+   // Present swaps the front and back buffers of the swap chain for compositing.
+@@ -1310,6 +1312,10 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
+ 
+   gl::SwapChain mSwapChain;
+   gl::SwapChain mWebVRSwapChain;
++  // The frames of an immersive session on the flat stereo display, shown
++  // by the session's canvas.
++  gl::SwapChain mFlatXRSwapChain;
++  bool mFlatXRPresenting = false;
+   gl::SwapChain mSnapshotSwapChain;
+ 
+   RefPtr<layers::RemoteTextureOwnerClient> mRemoteTextureOwner;
+diff --git a/dom/canvas/WebGLTypes.h b/dom/canvas/WebGLTypes.h
+index f6f9f2542b..d0377104d6 100644
+--- a/dom/canvas/WebGLTypes.h
++++ b/dom/canvas/WebGLTypes.h
+@@ -828,16 +828,18 @@ struct SwapChainOptions final {
+   layers::RemoteTextureOwnerId remoteTextureOwnerId;
+   bool bgra = false;
+   bool forceAsyncPresent = false;
+-  // A StereoMode: how the canvas holds the two views of a stereoscopic
+-  // picture, as its element's stereolayout attribute declares.
++  // A StereoMode: how the presented picture holds the two views of a
++  // stereoscopic picture.
+   uint8_t stereoMode = 0;
++  // The canvas presents the frames of an immersive session on the flat
++  // stereo display (gfx/vr/service/FlatSession).
++  bool flatXR = false;
+   // Pad to sizeof(u64):
+-  uint8_t padding1 = 0;
+   uint32_t padding2 = 0;
+ 
+   auto MutTiedFields() {
+     return std::tie(remoteTextureId, remoteTextureOwnerId, bgra,
+-                    forceAsyncPresent, stereoMode, padding1, padding2);
++                    forceAsyncPresent, stereoMode, flatXR, padding2);
+   }
+ };
+ 
+diff --git a/dom/canvas/XRWebGLLayer.cpp b/dom/canvas/XRWebGLLayer.cpp
+index 5fa6362aea..7404cc7869 100644
+--- a/dom/canvas/XRWebGLLayer.cpp
++++ b/dom/canvas/XRWebGLLayer.cpp
+@@ -139,10 +139,14 @@ already_AddRefed<XRWebGLLayer> XRWebGLLayer::Constructor(
+                  std::min((float)aXRWebGLLayerInitDict.mFramebufferScaleFactor,
+                           maxScale));
+ 
+-    options.width =
+-        (int32_t)ceilf(2.0f * displayState.eyeResolution.width * scaleFactor);
+-    options.height =
+-        (int32_t)ceilf(displayState.eyeResolution.height * scaleFactor);
++    // On the flat stereo display each eye gets the screen's resolution.
++    gfx::IntSize eyeResolution(displayState.eyeResolution.width,
++                               displayState.eyeResolution.height);
++    if (aSession.IsFlat()) {
++      eyeResolution = aSession.GetWindowViews().mEyeResolution;
++    }
++    options.width = (int32_t)ceilf(2.0f * eyeResolution.width * scaleFactor);
++    options.height = (int32_t)ceilf(eyeResolution.height * scaleFactor);
+     framebuffer = gl->CreateOpaqueFramebuffer(options);
+ 
+     if (!framebuffer) {
+diff --git a/dom/html/HTMLCanvasElement.cpp b/dom/html/HTMLCanvasElement.cpp
+index 96479d6fad..63175684c9 100644
+--- a/dom/html/HTMLCanvasElement.cpp
++++ b/dom/html/HTMLCanvasElement.cpp
+@@ -1545,6 +1545,11 @@ void HTMLCanvasElement::OnDeviceReset() {
+   }
+ }
+ 
++bool HTMLCanvasElement::IsPresentingFlatXR() {
++  ClientWebGLContext* webgl = GetWebGLContext();
++  return webgl && webgl->IsPresentingFlatXR();
++}
++
+ ClientWebGLContext* HTMLCanvasElement::GetWebGLContext() {
+   if (GetCurrentContextType() != CanvasContextType::WebGL1 &&
+       GetCurrentContextType() != CanvasContextType::WebGL2) {
+diff --git a/dom/html/HTMLCanvasElement.h b/dom/html/HTMLCanvasElement.h
+index 1c6d3e31d9..992c9e7055 100644
+--- a/dom/html/HTMLCanvasElement.h
++++ b/dom/html/HTMLCanvasElement.h
+@@ -349,6 +349,10 @@ class HTMLCanvasElement final : public nsGenericHTMLElement,
+ 
+  public:
+   ClientWebGLContext* GetWebGLContext();
++  // The canvas shows the frames of an immersive WebXR session on the flat
++  // stereo display (Sparky Stereo OS): each eye's view has the shape of the
++  // canvas's box.
++  bool IsPresentingFlatXR();
+   webgpu::CanvasContext* GetWebGPUContext();
+ 
+   bool IsOffscreen() const { return !!mOffscreenCanvas; }
+diff --git a/dom/vr/XRFrame.cpp b/dom/vr/XRFrame.cpp
+index 8407e68fce..0aa1a02b06 100644
+--- a/dom/vr/XRFrame.cpp
++++ b/dom/vr/XRFrame.cpp
+@@ -76,6 +76,16 @@ already_AddRefed<XRViewerPose> XRFrame::GetViewerPose(
+         sensorState.pose.orientation[0], sensorState.pose.orientation[1],
+         sensorState.pose.orientation[2], sensorState.pose.orientation[3]);
+ 
++    // The flat stereo display: the viewer sits in front of the screen, turned
++    // and moved by the mouse and keys, and each eye looks through the screen.
++    const bool flat = mSession->IsFlat();
++    XRSession::WindowViews windowViews;
++    if (flat) {
++      viewerPosition = mSession->FlatPosition();
++      viewerOrientation = mSession->FlatOrientation();
++      windowViews = mSession->GetWindowViews();
++    }
++
+     gfx::Matrix4x4Double headTransform;
+     headTransform.SetRotationFromQuaternion(viewerOrientation);
+     headTransform.PostTranslate(viewerPosition);
+@@ -90,7 +100,8 @@ already_AddRefed<XRViewerPose> XRFrame::GetViewerPose(
+     viewerPose = mSession->PooledViewerPose(headTransform, emulatedPosition);
+ 
+     auto updateEye = [&](int32_t viewIndex, gfx::VRDisplayState::Eye eye) {
+-      auto offset = displayInfo.GetEyeTranslation(eye);
++      auto offset = flat ? windowViews.mOffset[eye]
++                         : displayInfo.GetEyeTranslation(eye);
+       auto eyeFromHead = gfx::Matrix4x4Double::Translation(
+           gfx::PointDouble3D(offset.x, offset.y, offset.z));
+       auto eyeTransform = eyeFromHead * headTransform;
+@@ -99,7 +110,9 @@ already_AddRefed<XRViewerPose> XRFrame::GetViewerPose(
+       gfx::PointDouble3D eyeScale;
+       eyeTransform.Decompose(eyePosition, eyeRotation, eyeScale);
+ 
+-      const gfx::VRFieldOfView fov = displayInfo.mDisplayState.eyeFOV[eye];
++      const gfx::VRFieldOfView fov = flat
++                                         ? windowViews.mFieldOfView[eye]
++                                         : displayInfo.mDisplayState.eyeFOV[eye];
+       gfx::Matrix4x4 projection =
+           fov.ConstructProjectionMatrix(depthNear, depthFar, true);
+       viewerPose->GetEye(viewIndex)->Update(eyePosition, eyeRotation,
+@@ -108,6 +121,23 @@ already_AddRefed<XRViewerPose> XRFrame::GetViewerPose(
+ 
+     updateEye(0, gfx::VRDisplayState::Eye_Left);
+     updateEye(1, gfx::VRDisplayState::Eye_Right);
++  } else if (mSession->IsInlineStereo()) {
++    // inline-stereo (WebXR section 3.4): a left and a right view, through the
++    // output canvas as a window from the viewer's seat (section 4.2: "MUST
++    // compute per-view projection matrices using the output canvas
++    // geometry"). The views share the canvas, left half and right half
++    // (XRWebGLLayer::GetViewport), and the canvas is declared to hold both.
++    const XRSession::WindowViews windowViews = mSession->GetWindowViews();
++    viewerPose =
++        mSession->PooledViewerPose(gfx::Matrix4x4Double(), emulatedPosition);
++    for (int32_t eye = 0; eye < gfx::VRDisplayState::NumEyes; eye++) {
++      const gfx::Point3D& offset = windowViews.mOffset[eye];
++      viewerPose->GetEye(eye)->Update(
++          gfx::PointDouble3D(offset.x, offset.y, offset.z),
++          gfx::QuaternionDouble(),
++          windowViews.mFieldOfView[eye].ConstructProjectionMatrix(
++              depthNear, depthFar, true));
++    }
+   } else {
+     auto inlineVerticalFov = renderState->GetInlineVerticalFieldOfView();
+     const double fov =
+@@ -180,22 +210,20 @@ void XRFrame::StartInputSourceEvent() { mActive = true; }
+ 
+ void XRFrame::EndInputSourceEvent() { mActive = false; }
+ 
++// The inline view's projection (WebXR section 4.2: from the inline vertical
++// field of view and the output canvas's aspect), built as the immersive
++// views' are (VRFieldOfView::ConstructProjectionMatrix, right handed, -z
++// forward), so a point in front of the viewer is in front of the camera.
+ gfx::Matrix4x4 XRFrame::ConstructInlineProjection(float aFov, float aAspect,
+                                                   float aNear, float aFar) {
+-  gfx::Matrix4x4 m;
+-  const float depth = aFar - aNear;
+-  const float invDepth = 1 / depth;
+   if (aFov == 0) {
+     aFov = 0.5f * M_PI;
+   }
+-
+-  m._22 = 1.0f / tan(0.5f * aFov);
+-  m._11 = -m._22 / aAspect;
+-  m._33 = depth * invDepth;
+-  m._43 = (-aFar * aNear) * invDepth;
+-  m._34 = 1.0f;
+-
+-  return m;
++  const double vertical = 0.5 * aFov / kRadPerDegree;
++  const double horizontal =
++      atan(tan(0.5 * aFov) * aAspect) / kRadPerDegree;
++  return gfx::VRFieldOfView(vertical, horizontal, vertical, horizontal)
++      .ConstructProjectionMatrix(aNear, aFar, true);
+ }
+ 
+ }  // namespace mozilla::dom
+diff --git a/dom/vr/XRSession.cpp b/dom/vr/XRSession.cpp
+index 8f607b4abb..54e40b7484 100644
+--- a/dom/vr/XRSession.cpp
++++ b/dom/vr/XRSession.cpp
+@@ -24,10 +24,24 @@
+ #include "mozilla/dom/Promise.h"
+ #include "mozilla/dom/XRInputSourceEvent.h"
+ #include "mozilla/dom/XRSessionEvent.h"
++#include <algorithm>
++
++#include "mozilla/StaticPrefs_dom.h"
++#include "mozilla/dom/DOMRect.h"
++#include "mozilla/dom/Element.h"
++#include "mozilla/dom/ElementBinding.h"
++#include "mozilla/dom/HTMLCanvasElement.h"
++#include "mozilla/dom/KeyboardEvent.h"
++#include "mozilla/dom/MouseEvent.h"
++#include "mozilla/dom/WheelEvent.h"
++#include "mozilla/widget/Screen.h"
++#include "mozilla/widget/ScreenManager.h"
+ #include "nsGlobalWindowInner.h"
++#include "nsIDOMEventListener.h"
+ #include "nsIObserverService.h"
+ #include "nsISupportsPrimitives.h"
+ #include "nsRefreshDriver.h"
++#include "ClientWebGLContext.h"
+ 
+ /**
+  * Maximum instances of XRFrame and XRViewerPose objects
+@@ -37,6 +51,36 @@ const uint32_t kMaxPoolSize = 16;
+ 
+ namespace mozilla::dom {
+ 
++namespace {
++
++// The viewer's input on the flat stereo display, which has no controllers.
++class FlatInputListener final : public nsIDOMEventListener {
++ public:
++  NS_DECL_ISUPPORTS
++
++  explicit FlatInputListener(XRSession* aSession) : mSession(aSession) {}
++
++  NS_IMETHOD HandleEvent(Event* aEvent) override {
++    if (mSession) {
++      mSession->HandleFlatInput(*aEvent);
++    }
++    return NS_OK;
++  }
++
++  void Disconnect() { mSession = nullptr; }
++
++ private:
++  ~FlatInputListener() = default;
++  XRSession* mSession;
++};
++
++NS_IMPL_ISUPPORTS(FlatInputListener, nsIDOMEventListener)
++
++constexpr nsLiteralString kFlatInputEvents[] = {u"mousemove"_ns, u"wheel"_ns,
++                                               u"keydown"_ns};
++
++}  // namespace
++
+ NS_IMPL_CYCLE_COLLECTION_CLASS(XRSession)
+ 
+ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(XRSession,
+@@ -47,6 +91,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(XRSession,
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mInputSources)
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mViewerPosePool)
+   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFramePool)
++  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFlatCanvas)
+ 
+   for (uint32_t i = 0; i < tmp->mFrameRequestCallbacks.Length(); ++i) {
+     NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mFrameRequestCallbacks[i]");
+@@ -62,6 +107,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(XRSession, DOMEventTargetHelper)
+   NS_IMPL_CYCLE_COLLECTION_UNLINK(mInputSources)
+   NS_IMPL_CYCLE_COLLECTION_UNLINK(mViewerPosePool)
+   NS_IMPL_CYCLE_COLLECTION_UNLINK(mFramePool)
++  NS_IMPL_CYCLE_COLLECTION_UNLINK(mFlatCanvas)
+ 
+   tmp->mFrameRequestCallbacks.Clear();
+ 
+@@ -285,14 +331,180 @@ void XRSession::ApplyPendingRenderState() {
+     if (!IsImmersive() && baseLayer->mCompositionDisabled) {
+       mActiveRenderState->SetCompositionDisabled(true);
+       mActiveRenderState->SetOutputCanvas(baseLayer->GetCanvas());
++      // An inline-stereo session draws both views into the canvas, left and
++      // right halves; the canvas is declared to hold them.
++      if (mInlineStereo) {
++        if (const auto& webgl = baseLayer->GetCanvas()->GetWebGLContext()) {
++          webgl->SetInlineStereo(true);
++        }
++      }
+     } else {
+       mActiveRenderState->SetCompositionDisabled(false);
+       mActiveRenderState->SetOutputCanvas(nullptr);
+       mDisplayPresentation->UpdateXRWebGLLayer(baseLayer);
++      if (IsFlat()) {
++        StartFlatPresentation(baseLayer->GetCanvas());
++      }
+     }
+   }  // if (baseLayer)
+ }
+ 
++bool XRSession::IsFlat() const {
++  return mDisplayClient && mDisplayClient->GetDisplayInfo()
++                                   .mDisplayState.eightCC ==
++                               gfx::kVRFlatDisplayEightCC;
++}
++
++// An immersive session has exclusive access to the device's display
++// (WebXR section 3.3): on the flat stereo display that is the whole screen,
++// so the session's canvas, which shows its frames, goes full screen.
++void XRSession::StartFlatPresentation(HTMLCanvasElement* aCanvas) {
++  if (!aCanvas || mFlatCanvas == aCanvas) {
++    return;
++  }
++  StopFlatPresentation();
++  mFlatCanvas = aCanvas;
++  mFlatFullscreen = false;
++  IgnoredErrorResult rv;
++  // A session's canvas need not be in the page (the WebXR samples keep theirs
++  // detached). On the flat display it is what the viewer sees, so for the
++  // session the browser puts it at the end of the page's root element, full
++  // screen, and takes it out again when the session ends.
++  if (!aCanvas->IsInComposedDoc()) {
++    nsGlobalWindowInner* win = GetOwnerWindow();
++    Document* doc = win ? win->GetExtantDoc() : nullptr;
++    Element* root = doc ? doc->GetRootElement() : nullptr;
++    if (root && aCanvas->OwnerDoc() == doc) {
++      root->AppendChild(*aCanvas, rv);
++      mFlatCanvasInserted = !rv.Failed();
++    }
++  }
++  RefPtr<Promise> promise =
++      aCanvas->RequestFullscreen(FullscreenOptions(), CallerType::System, rv);
++  if (nsGlobalWindowInner* win = GetOwnerWindow()) {
++    mFlatInput = new FlatInputListener(this);
++    for (const auto& type : kFlatInputEvents) {
++      win->AddEventListener(type, mFlatInput, true);
++    }
++  }
++}
++
++void XRSession::StopFlatPresentation() {
++  if (mFlatInput) {
++    if (nsGlobalWindowInner* win = GetOwnerWindow()) {
++      for (const auto& type : kFlatInputEvents) {
++        win->RemoveEventListener(type, mFlatInput, true);
++      }
++    }
++    static_cast<FlatInputListener*>(mFlatInput.get())->Disconnect();
++    mFlatInput = nullptr;
++  }
++  if (mFlatCanvas) {
++    Document* doc = mFlatCanvas->OwnerDoc();
++    if (doc->GetUnretargetedFullscreenElement() == mFlatCanvas) {
++      Document::AsyncExitFullscreen(doc);
++    }
++    if (mFlatCanvasInserted) {
++      mFlatCanvas->Remove();
++      mFlatCanvasInserted = false;
++    }
++    mFlatCanvas = nullptr;
++  }
++}
++
++XRSession::WindowViews XRSession::GetWindowViews() const {
++  // The window: its size in device pixels and in millimetres.
++  RefPtr<widget::Screen> screen =
++      widget::ScreenManager::GetSingleton().GetPrimaryScreen();
++  double dpi = screen ? screen->GetDPI() : 0.0;
++  if (dpi <= 0.0) {
++    dpi = 96.0;
++  }
++  gfx::IntSize pixels;
++  HTMLCanvasElement* canvas =
++      mActiveRenderState ? mActiveRenderState->GetOutputCanvas() : nullptr;
++  if (!IsImmersive() && canvas) {
++    const double scale =
++        canvas->OwnerDoc()->GetPresContext()
++            ? canvas->OwnerDoc()->GetPresContext()->CSSToDevPixelScale().scale
++            : 1.0;
++    RefPtr<DOMRect> rect = canvas->GetBoundingClientRect();
++    pixels = gfx::IntSize(NSToIntRound(float(rect->Width() * scale)),
++                          NSToIntRound(float(rect->Height() * scale)));
++  } else if (screen) {
++    pixels = screen->GetRect().Size().ToUnknownSize();
++  }
++  if (pixels.IsEmpty()) {
++    pixels = gfx::IntSize(1920, 1080);
++  }
++  const double width = pixels.width * 25.4 / dpi;
++  const double height = pixels.height * 25.4 / dpi;
++  const double distance = StaticPrefs::dom_vr_flat_viewer_distance_mm();
++  const double separation = StaticPrefs::dom_vr_flat_eye_separation_mm();
++
++  // Each eye's frustum through the window: the window's edge on the eye's
++  // own side is nearer to it by half the separation, the other edge farther.
++  // VRFieldOfView takes up, right, down, left, in degrees.
++  const double ownSide =
++      atan((width - separation) / 2.0 / distance) / kRadPerDegree;
++  const double otherSide =
++      atan((width + separation) / 2.0 / distance) / kRadPerDegree;
++  const double vertical = atan(height / 2.0 / distance) / kRadPerDegree;
++  WindowViews views;
++  views.mFieldOfView[gfx::VRDisplayState::Eye_Left] =
++      gfx::VRFieldOfView(vertical, otherSide, vertical, ownSide);
++  views.mFieldOfView[gfx::VRDisplayState::Eye_Right] =
++      gfx::VRFieldOfView(vertical, ownSide, vertical, otherSide);
++  const float offset = float(separation / 2000.0);
++  views.mOffset[gfx::VRDisplayState::Eye_Left] = gfx::Point3D(-offset, 0, 0);
++  views.mOffset[gfx::VRDisplayState::Eye_Right] = gfx::Point3D(offset, 0, 0);
++  views.mEyeResolution = pixels;
++  return views;
++}
++
++gfx::QuaternionDouble XRSession::FlatOrientation() const {
++  // Turn about the vertical axis, then tilt about the viewer's own x axis.
++  const gfx::QuaternionDouble yaw(0.0, sin(mFlatYaw / 2.0), 0.0,
++                                  cos(mFlatYaw / 2.0));
++  const gfx::QuaternionDouble pitch(sin(mFlatPitch / 2.0), 0.0, 0.0,
++                                    cos(mFlatPitch / 2.0));
++  return yaw * pitch;
++}
++
++void XRSession::HandleFlatInput(Event& aEvent) {
++  if (!mFlatCanvas) {
++    return;
++  }
++  // A step along the ground in the direction the viewer faces.
++  const auto move = [&](double aForward, double aRight) {
++    mFlatPosition.x += aRight * cos(mFlatYaw) - aForward * sin(mFlatYaw);
++    mFlatPosition.z += -aRight * sin(mFlatYaw) - aForward * cos(mFlatYaw);
++  };
++  if (aEvent.WidgetEventPtr()->mClass == eWheelEventClass) {
++    auto* wheel = static_cast<WheelEvent*>(&aEvent);
++    move(-wheel->DeltaY(CallerType::System) * 0.002, 0.0);
++  } else if (MouseEvent* mouse = aEvent.AsMouseEvent()) {
++    // Dragging with the main button turns the viewer.
++    if (mouse->Buttons() & 1) {
++      mFlatYaw -= mouse->MovementX() * 0.004;
++      mFlatPitch = std::clamp(mFlatPitch - mouse->MovementY() * 0.004, -1.4,
++                              1.4);
++    }
++  } else if (KeyboardEvent* key = aEvent.AsKeyboardEvent()) {
++    nsAutoString name;
++    key->GetKey(name);
++    if (name.EqualsLiteral("ArrowUp") || name.EqualsLiteral("w")) {
++      move(0.1, 0.0);
++    } else if (name.EqualsLiteral("ArrowDown") || name.EqualsLiteral("s")) {
++      move(-0.1, 0.0);
++    } else if (name.EqualsLiteral("ArrowLeft") || name.EqualsLiteral("a")) {
++      move(0.0, -0.1);
++    } else if (name.EqualsLiteral("ArrowRight") || name.EqualsLiteral("d")) {
++      move(0.0, 0.1);
++    }
++  }
++}
++
+ void XRSession::WillRefresh(mozilla::TimeStamp aTime) {
+   // Inline sessions are driven by nsRefreshDriver directly,
+   // unlike immersive sessions, which are driven VRDisplayClient.
+@@ -312,6 +524,20 @@ void XRSession::StartFrame() {
+   }
+   ApplyPendingRenderState();
+ 
++  // Leaving full screen (Escape) leaves the immersive session on the flat
++  // display.
++  if (mFlatCanvas) {
++    const bool fullscreen =
++        mFlatCanvas->OwnerDoc()->GetUnretargetedFullscreenElement() ==
++        mFlatCanvas;
++    if (fullscreen) {
++      mFlatFullscreen = true;
++    } else if (mFlatFullscreen) {
++      ExitPresentInternal();
++      return;
++    }
++  }
++
+   XRWebGLLayer* baseLayer = mActiveRenderState->GetBaseLayer();
+   if (!baseLayer) {
+     return;
+@@ -468,6 +694,14 @@ void XRSession::Shutdown() {
+ }
+ 
+ void XRSession::ExitPresentInternal() {
++  StopFlatPresentation();
++  if (mInlineStereo && mActiveRenderState) {
++    if (HTMLCanvasElement* canvas = mActiveRenderState->GetOutputCanvas()) {
++      if (const auto& webgl = canvas->GetWebGLContext()) {
++        webgl->SetInlineStereo(false);
++      }
++    }
++  }
+   if (mInputSources) {
+     mInputSources->Clear(this);
+   }
+@@ -526,7 +760,7 @@ RefPtr<XRViewerPose> XRSession::PooledViewerPose(
+     RefPtr<XRRigidTransform> transform =
+         new XRRigidTransform(static_cast<EventTarget*>(this), aTransform);
+     nsTArray<RefPtr<XRView>> views;
+-    if (IsImmersive()) {
++    if (IsImmersive() || mInlineStereo) {
+       views.AppendElement(new XRView(GetParentObject(), XREye::Left));
+       views.AppendElement(new XRView(GetParentObject(), XREye::Right));
+     } else {
+diff --git a/dom/vr/XRSession.h b/dom/vr/XRSession.h
+index 677b80f9d6..1bc54c3269 100644
+--- a/dom/vr/XRSession.h
++++ b/dom/vr/XRSession.h
+@@ -5,11 +5,14 @@
+ #ifndef mozilla_dom_XRSession_h_
+ #define mozilla_dom_XRSession_h_
+ 
++#include <array>
++
+ #include "gfxVR.h"
+ #include "mozilla/DOMEventTargetHelper.h"
+ #include "mozilla/dom/WebXRBinding.h"
+ #include "nsRefreshObservers.h"
+ 
++class nsIDOMEventListener;
+ class nsRefreshDriver;
+ 
+ namespace mozilla {
+@@ -19,6 +22,8 @@ class VRDisplayPresentation;
+ }  // namespace gfx
+ namespace dom {
+ 
++class Event;
++class HTMLCanvasElement;
+ class XRSystem;
+ enum class XREye : uint8_t;
+ enum class XRReferenceSpaceType : uint8_t;
+@@ -102,6 +107,26 @@ class XRSession final : public DOMEventTargetHelper, public nsARefreshObserver {
+                                         bool aEmulatedPosition);
+   bool CanReportPoses() const;
+ 
++  // The flat stereo display (gfx/vr/service/FlatSession) and inline-stereo:
++  // each eye looks through a window from the viewer's seat, the screen for an
++  // immersive session and the output canvas for an inline-stereo one. The
++  // frustums share that window, the screen plane, and each eye sits half the
++  // separation to its side (WebXR is in metres).
++  struct WindowViews {
++    std::array<gfx::VRFieldOfView, gfx::VRDisplayState::NumEyes> mFieldOfView;
++    std::array<gfx::Point3D, gfx::VRDisplayState::NumEyes> mOffset;
++    gfx::IntSize mEyeResolution;
++  };
++  bool IsFlat() const;
++  bool IsInlineStereo() const { return mInlineStereo; }
++  void SetInlineStereo(bool aInlineStereo) { mInlineStereo = aInlineStereo; }
++  WindowViews GetWindowViews() const;
++  // With no controllers, the viewer turns with the mouse and moves with the
++  // keys and the wheel; this is the viewer's pose in the session's space.
++  gfx::QuaternionDouble FlatOrientation() const;
++  const gfx::PointDouble3D& FlatPosition() const { return mFlatPosition; }
++  void HandleFlatInput(Event& aEvent);
++
+   // nsARefreshObserver
+   MOZ_CAN_RUN_SCRIPT
+   void WillRefresh(mozilla::TimeStamp aTime) override;
+@@ -113,6 +138,8 @@ class XRSession final : public DOMEventTargetHelper, public nsARefreshObserver {
+   void Shutdown();
+   void ExitPresentInternal();
+   void ApplyPendingRenderState();
++  void StartFlatPresentation(HTMLCanvasElement* aCanvas);
++  void StopFlatPresentation();
+   RefPtr<XRFrame> PooledFrame();
+   RefPtr<XRSystem> mXRSystem;
+   bool mShutdown;
+@@ -148,6 +175,17 @@ class XRSession final : public DOMEventTargetHelper, public nsARefreshObserver {
+   uint32_t mViewerPosePoolIndex;
+   nsTArray<RefPtr<XRFrame>> mFramePool;
+   uint32_t mFramePoolIndex;
++
++  bool mInlineStereo = false;
++  // The canvas an immersive session on the flat display shows full screen.
++  RefPtr<HTMLCanvasElement> mFlatCanvas;
++  bool mFlatFullscreen = false;
++  // The session's canvas was not in the page: the browser put it there.
++  bool mFlatCanvasInserted = false;
++  RefPtr<nsIDOMEventListener> mFlatInput;
++  double mFlatYaw = 0.0;
++  double mFlatPitch = 0.0;
++  gfx::PointDouble3D mFlatPosition;
+ };
+ 
+ }  // namespace dom
+diff --git a/dom/vr/XRSystem.cpp b/dom/vr/XRSystem.cpp
+index a1968895a9..72301beb1a 100644
+--- a/dom/vr/XRSystem.cpp
++++ b/dom/vr/XRSystem.cpp
+@@ -108,6 +108,20 @@ already_AddRefed<Promise> XRSystem::IsSessionSupported(XRSessionMode aMode,
+     return promise.forget();
+   }
+ 
++  // The flat stereo display is the screen itself: always there, nothing to
++  // detect. Pages that wait only briefly for the answer (and choose their
++  // renderer by it) get it at once.
++  if (aMode == XRSessionMode::Immersive_vr &&
++      StaticPrefs::dom_vr_flat_enabled()) {
++    if (FeaturePolicyBlocked()) {
++      promise->MaybeRejectWithSecurityError(
++          "The xr-spatial-tracking feature policy is required.");
++    } else {
++      promise->MaybeResolve(true);
++    }
++    return promise.forget();
++  }
++
+   if (mIsSessionSupportedRequests.IsEmpty()) {
+     gfx::VRManagerChild* vm = gfx::VRManagerChild::Get();
+     vm->DetectRuntimes();
+@@ -164,8 +178,18 @@ already_AddRefed<Promise> XRSystem::RequestSession(
+     requiredReferenceSpaceTypes.AppendElement(XRReferenceSpaceType::Local);
+   }
+ 
++  // inline-stereo (WebXR section 3.4): two views for an inline session, on a
++  // display that shows them in stereo, the flat stereo display.
++  const bool canInlineStereo =
++      aMode == XRSessionMode::Inline && StaticPrefs::dom_vr_flat_enabled();
++  bool inlineStereo = false;
++
+   if (aOptions.mRequiredFeatures.WasPassed()) {
+     for (const nsString& val : aOptions.mRequiredFeatures.Value()) {
++      if (val.EqualsLiteral("inline-stereo") && canInlineStereo) {
++        inlineStereo = true;
++        continue;
++      }
+       Maybe<XRReferenceSpaceType> type =
+           StringToEnum<XRReferenceSpaceType>(val);
+       if (type.isNothing()) {
+@@ -179,6 +203,10 @@ already_AddRefed<Promise> XRSystem::RequestSession(
+ 
+   if (aOptions.mOptionalFeatures.WasPassed()) {
+     for (const nsString& val : aOptions.mOptionalFeatures.Value()) {
++      if (val.EqualsLiteral("inline-stereo") && canInlineStereo) {
++        inlineStereo = true;
++        continue;
++      }
+       Maybe<XRReferenceSpaceType> type =
+           StringToEnum<XRReferenceSpaceType>(val);
+       if (type.isSome()) {
+@@ -202,6 +230,7 @@ already_AddRefed<Promise> XRSystem::RequestSession(
+   RefPtr<RequestSessionRequest> request = new RequestSessionRequest(
+       aMode, presentationGroup, promise, requiredReferenceSpaceTypes,
+       optionalReferenceSpaceTypes);
++  request->mInlineStereo = inlineStereo;
+   if (request->WantsHardware()) {
+     QueueSessionRequestWithEnumeration(request);
+   } else {
+@@ -336,6 +365,7 @@ void XRSystem::ResolveSessionRequests(
+         } else {
+           session = XRSession::CreateInlineSession(GetOwnerWindow(), this,
+                                                    enabledReferenceSpaceTypes);
++          session->SetInlineStereo(request->mInlineStereo);
+           mInlineSessions.AppendElement(session);
+         }
+         request->mPromise->MaybeResolve(session);
+diff --git a/dom/vr/XRSystem.h b/dom/vr/XRSystem.h
+index 1bc7a4c0c7..b29272184a 100644
+--- a/dom/vr/XRSystem.h
++++ b/dom/vr/XRSystem.h
+@@ -49,6 +49,8 @@ class RequestSessionRequest {
+   bool NeedsHardware() const;
+   XRSessionMode GetSessionMode() const;
+   uint32_t GetPresentationGroup() const;
++  // The inline-stereo feature (WebXR section 3.4) was granted.
++  bool mInlineStereo = false;
+ 
+  private:
+   ~RequestSessionRequest() = default;
+diff --git a/dom/vr/moz.build b/dom/vr/moz.build
+index 7d5bc457d8..d29271be5e 100644
+--- a/dom/vr/moz.build
++++ b/dom/vr/moz.build
+@@ -59,7 +59,7 @@ UNIFIED_SOURCES = [
+ include("/ipc/chromium/chromium-config.mozbuild")
+ 
+ FINAL_LIBRARY = "xul"
+-LOCAL_INCLUDES += ["/dom/base"]
++LOCAL_INCLUDES += ["/dom/base", "/dom/canvas"]
+ 
+ MOCHITEST_MANIFESTS += ["test/mochitest/mochitest.toml"]
+ REFTEST_MANIFESTS += ["test/reftest/reftest.list"]
+diff --git a/gfx/vr/VRDisplayPresentation.cpp b/gfx/vr/VRDisplayPresentation.cpp
+index bf62808e1a..1eed1e05d4 100644
+--- a/gfx/vr/VRDisplayPresentation.cpp
++++ b/gfx/vr/VRDisplayPresentation.cpp
+@@ -53,7 +53,9 @@ void VRDisplayPresentation::UpdateXRWebGLLayer(dom::XRWebGLLayer* aLayer) {
+   Rect rightBounds(0.5, 0.0, 0.5, 1.0);
+ 
+   vrLayer->Initialize(canvasElement, leftBounds, rightBounds);
+-  vrLayer->SetXRFramebuffer(aLayer->GetFramebuffer());
++  vrLayer->SetXRFramebuffer(
++      aLayer->GetFramebuffer(),
++      gfx::IntSize(aLayer->FramebufferWidth(), aLayer->FramebufferHeight()));
+ }
+ 
+ uint32_t VRDisplayPresentation::GetGroup() const { return mGroup; }
+diff --git a/gfx/vr/VRManager.cpp b/gfx/vr/VRManager.cpp
+index a8fedc1720..209cfe355d 100644
+--- a/gfx/vr/VRManager.cpp
++++ b/gfx/vr/VRManager.cpp
+@@ -1337,12 +1337,24 @@ bool VRManager::SubmitFrame(const layers::SurfaceDescriptor& aTexture,
+   if (mState != VRManagerState::Active) {
+     return false;
+   }
+-#if defined(XP_WIN) || defined(XP_MACOSX) || defined(MOZ_WIDGET_ANDROID)
++#if defined(XP_WIN) || defined(XP_MACOSX) || defined(MOZ_WIDGET_ANDROID) || \
++    defined(MOZ_WIDGET_GTK)
+   MOZ_ASSERT(mBrowserState.layerState[0].type ==
+              VRLayerType::LayerType_Stereo_Immersive);
+   VRLayer_Stereo_Immersive& layer =
+       mBrowserState.layerState[0].layer_stereo_immersive;
+ 
++#  if defined(MOZ_WIDGET_GTK)
++  // Only the flat stereo display runs here: the session's canvas shows the
++  // frame itself (VRLayerChild), so the service gets no texture and only
++  // paces the frames.
++  if (mDisplayInfo.mDisplayState.eightCC != kVRFlatDisplayEightCC) {
++    return false;
++  }
++  layer.textureType = VRLayerTextureType::LayerTextureType_None;
++  layer.textureSize.width = 0;
++  layer.textureSize.height = 0;
++#  else
+   switch (aTexture.type()) {
+ #  if defined(XP_WIN)
+     case SurfaceDescriptor::TSurfaceDescriptorD3D10: {
+@@ -1396,6 +1408,7 @@ bool VRManager::SubmitFrame(const layers::SurfaceDescriptor& aTexture,
+       return false;
+     }
+   }
++#  endif  // defined(MOZ_WIDGET_GTK)
+ 
+   layer.frameId = aFrameId;
+   layer.inputFrameId =
+@@ -1452,7 +1465,7 @@ void VRManager::SubmitFrameInternal(const layers::SurfaceDescriptor& aTexture,
+     mCurrentSubmitTask = nullptr;
+   }
+ 
+-#if defined(XP_WIN) || defined(XP_MACOSX)
++#if defined(XP_WIN) || defined(XP_MACOSX) || defined(MOZ_WIDGET_GTK)
+ 
+   /**
+    * Trigger the next VSync immediately after we are successfully
+diff --git a/gfx/vr/VRShMem.cpp b/gfx/vr/VRShMem.cpp
+index d48fabc548..8346696f37 100644
+--- a/gfx/vr/VRShMem.cpp
++++ b/gfx/vr/VRShMem.cpp
+@@ -322,7 +322,14 @@ bool VRShMem::JoinShMem() {
+ #endif
+ 
+   if (HasExternalShmem()) {
+-    // An ExternalShmem is already set. No need to override and rejoin
++    // An ExternalShmem is already set. No need to override and rejoin.
++    // Without the VR process the service joins it again each time it starts,
++    // after VRManager cleared it (OpenShmem): the browser's states count
++    // again from 1, so the last one seen is forgotten, or the next state
++    // (enumeration after runtime detection) would look already seen.
++#if !defined(MOZ_WIDGET_ANDROID)
++    mBrowserGeneration = 0;
++#endif
+     return true;
+   }
+ 
+diff --git a/gfx/vr/gfxVR.h b/gfx/vr/gfxVR.h
+index d87fc5df8f..b3ba93ca60 100644
+--- a/gfx/vr/gfxVR.h
++++ b/gfx/vr/gfxVR.h
+@@ -38,6 +38,12 @@ class VRManagerPromise;
+ // conservative value.
+ static const int kVRMaxLatencyFrames = 100;
+ 
++// The flat stereo display (gfx/vr/service/FlatSession): the screen itself as
++// an immersive XR device, its frames shown by the session's canvas, both
++// eyes side by side, declared to the compositor.
++static constexpr uint64_t kVRFlatDisplayEightCC =
++    GFX_VR_EIGHTCC('F', 'l', 'a', 't', ' ', ' ', ' ', ' ');
++
+ struct VRDisplayInfo {
+   uint32_t mDisplayID;
+   uint32_t mPresentingGroups;
+diff --git a/gfx/vr/ipc/VRLayerChild.cpp b/gfx/vr/ipc/VRLayerChild.cpp
+index 1b212df7f0..079a479db7 100644
+--- a/gfx/vr/ipc/VRLayerChild.cpp
++++ b/gfx/vr/ipc/VRLayerChild.cpp
+@@ -4,6 +4,8 @@
+ 
+ #include "VRLayerChild.h"
+ 
++#include <algorithm>
++
+ #include "mozilla/dom/HTMLCanvasElement.h"
+ #include "mozilla/layers/ImageBridgeChild.h"
+ #include "mozilla/layers/LayersMessages.h"  // for TimedTexture
+@@ -37,8 +39,10 @@ void VRLayerChild::Initialize(dom::HTMLCanvasElement* aCanvasElement,
+   mCanvasElement = aCanvasElement;
+ }
+ 
+-void VRLayerChild::SetXRFramebuffer(WebGLFramebufferJS* fb) {
++void VRLayerChild::SetXRFramebuffer(WebGLFramebufferJS* fb,
++                                    const gfx::IntSize& aSize) {
+   mFramebuffer = fb;
++  mFramebufferSize = aSize;
+ }
+ 
+ static constexpr bool kIsAndroid =
+@@ -91,8 +95,27 @@ void VRLayerChild::SubmitFrame(const VRDisplayInfo& aDisplayInfo) {
+       texType = layers::TextureType::AndroidNativeWindow;
+     }
+ 
+-    webgl->Present(mFramebuffer, texType, true);
+-    mThisFrameTextureDesc = webgl->GetFrontBuffer(mFramebuffer, true);
++    // On the flat stereo display the session's canvas shows the frame:
++    // both eyes side by side, declared to the compositor. The frame goes to
++    // the compositor as the canvas's own frames do (DMABuf on Wayland).
++    const bool flat =
++        aDisplayInfo.mDisplayState.eightCC == kVRFlatDisplayEightCC;
++    if (flat) {
++      texType = webgl->GetTexTypeForSwapChain();
++    }
++    webgl::SwapChainOptions options;
++    options.flatXR = flat;
++    webgl->Present(mFramebuffer, texType, true, options);
++    if (flat) {
++      // The VR service takes no texture from the flat display: it only
++      // paces the frames.
++      mThisFrameTextureDesc = Some(layers::SurfaceDescriptor(null_t()));
++      webgl->SetFlatXR(true, {uint32_t(std::max(mFramebufferSize.width, 0)),
++                              uint32_t(std::max(mFramebufferSize.height, 0))});
++      webgl->MarkCanvasDirty();
++    } else {
++      mThisFrameTextureDesc = webgl->GetFrontBuffer(mFramebuffer, true);
++    }
+   }
+ 
+   mLastSubmittedFrameId = frameId;
+@@ -110,6 +133,9 @@ void VRLayerChild::ClearSurfaces() {
+   mThisFrameTextureDesc = Nothing();
+   mLastFrameTextureDesc = Nothing();
+   const auto& webgl = mCanvasElement->GetWebGLContext();
++  if (webgl) {
++    webgl->SetFlatXR(false);
++  }
+   if (!mFramebuffer && webgl) {
+     webgl->ClearVRSwapChain();
+   }
+diff --git a/gfx/vr/ipc/VRLayerChild.h b/gfx/vr/ipc/VRLayerChild.h
+index 5b4a0aaed9..242e4668d9 100644
+--- a/gfx/vr/ipc/VRLayerChild.h
++++ b/gfx/vr/ipc/VRLayerChild.h
+@@ -38,7 +38,8 @@ class VRLayerChild final : public PVRLayerChild {
+   void Initialize(dom::HTMLCanvasElement* aCanvasElement,
+                   const gfx::Rect& aLeftEyeRect,
+                   const gfx::Rect& aRightEyeRect);
+-  void SetXRFramebuffer(WebGLFramebufferJS*);
++  void SetXRFramebuffer(WebGLFramebufferJS*,
++                        const gfx::IntSize& aSize = gfx::IntSize());
+   void SubmitFrame(const VRDisplayInfo& aDisplayInfo);
+ 
+  private:
+@@ -50,6 +51,7 @@ class VRLayerChild final : public PVRLayerChild {
+   gfx::Rect mLeftEyeRect;
+   gfx::Rect mRightEyeRect;
+   RefPtr<WebGLFramebufferJS> mFramebuffer;
++  gfx::IntSize mFramebufferSize;
+ 
+   Maybe<layers::SurfaceDescriptor> mThisFrameTextureDesc;
+   Maybe<layers::SurfaceDescriptor> mLastFrameTextureDesc;
+diff --git a/gfx/vr/service/FlatSession.cpp b/gfx/vr/service/FlatSession.cpp
+new file mode 100644
+index 0000000000..66a222e33a
+--- /dev/null
++++ b/gfx/vr/service/FlatSession.cpp
+@@ -0,0 +1,115 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "FlatSession.h"
++
++#include <string.h>
++
++#include "gfxVR.h"
++#include "mozilla/StaticPrefs_dom.h"
++#include "prthread.h"
++
++namespace mozilla::gfx {
++
++// The frames are paced at the display's usual rate.
++static constexpr double kFrameInterval = 1000.0 / 60.0;
++
++FlatSession::FlatSession() = default;
++
++FlatSession::~FlatSession() { Shutdown(); }
++
++bool FlatSession::Initialize(mozilla::gfx::VRSystemState& aSystemState,
++                             bool aDetectRuntimesOnly) {
++  if (!StaticPrefs::dom_vr_enabled() || !StaticPrefs::dom_vr_flat_enabled()) {
++    return false;
++  }
++  if (aDetectRuntimesOnly) {
++    aSystemState.displayState.capabilityFlags |=
++        VRDisplayCapabilityFlags::Cap_ImmersiveVR;
++    return false;
++  }
++
++  VRDisplayState& state = aSystemState.displayState;
++  strncpy(state.displayName.data(), "Stereo display", kVRDisplayNameMaxLen - 1);
++  state.eightCC = kVRFlatDisplayEightCC;
++  state.capabilityFlags = VRDisplayCapabilityFlags::Cap_Orientation |
++                          VRDisplayCapabilityFlags::Cap_Position |
++                          VRDisplayCapabilityFlags::Cap_Present |
++                          VRDisplayCapabilityFlags::Cap_StageParameters |
++                          VRDisplayCapabilityFlags::Cap_ImmersiveVR;
++  state.blendMode = VRDisplayBlendMode::Opaque;
++
++  // The content process replaces the eyes' fields of view and resolution
++  // with the window the screen makes (dom/vr/XRSession.cpp); these stand for
++  // a 16:9 screen until then.
++  const float eyeOffset =
++      0.0005f * float(StaticPrefs::dom_vr_flat_eye_separation_mm());
++  for (uint32_t eye = 0; eye < VRDisplayState::NumEyes; eye++) {
++    state.eyeFOV[eye] = VRFieldOfView(16.9, 26.3, 16.9, 26.3);
++    state.eyeTranslation[eye].x =
++        eye == VRDisplayState::Eye_Left ? -eyeOffset : eyeOffset;
++  }
++  state.eyeResolution.width = 1920;
++  state.eyeResolution.height = 1080;
++  state.nativeFramebufferScaleFactor = 1.0f;
++  state.isConnected = true;
++  state.isMounted = true;
++
++  // A seated viewer: the eyes 1.2 m above the floor.
++  state.stageSize.width = 2.0f;
++  state.stageSize.height = 2.0f;
++  memset(state.sittingToStandingTransform.data(), 0,
++         sizeof(state.sittingToStandingTransform));
++  state.sittingToStandingTransform[0] = 1.0f;
++  state.sittingToStandingTransform[5] = 1.0f;
++  state.sittingToStandingTransform[10] = 1.0f;
++  state.sittingToStandingTransform[13] = 1.2f;
++  state.sittingToStandingTransform[15] = 1.0f;
++
++  VRHMDSensorState& sensor = aSystemState.sensorState;
++  sensor.flags = VRDisplayCapabilityFlags::Cap_Orientation |
++                 VRDisplayCapabilityFlags::Cap_Position;
++  sensor.pose.orientation = {0.0f, 0.0f, 0.0f, 1.0f};
++  sensor.pose.position = {0.0f, 0.0f, 0.0f};
++  return true;
++}
++
++void FlatSession::Shutdown() {}
++
++void FlatSession::ProcessEvents(mozilla::gfx::VRSystemState& aSystemState) {
++  // Nothing to poll: avoid spinning the service thread between frames.
++  PR_Sleep(PR_MillisecondsToInterval(1));
++}
++
++void FlatSession::StartFrame(mozilla::gfx::VRSystemState& aSystemState) {
++  const TimeStamp now = TimeStamp::Now();
++  if (!mLastFrameStart.IsNull()) {
++    const double elapsed = (now - mLastFrameStart).ToMilliseconds();
++    if (elapsed < kFrameInterval) {
++      PR_Sleep(PR_MillisecondsToInterval(uint32_t(kFrameInterval - elapsed)));
++    }
++  }
++  mLastFrameStart = TimeStamp::Now();
++}
++
++bool FlatSession::StartPresentation() {
++  mLastFrameStart = TimeStamp();
++  return true;
++}
++
++void FlatSession::StopPresentation() {}
++
++bool FlatSession::SubmitFrameWithoutTexture(
++    const mozilla::gfx::VRLayer_Stereo_Immersive& aLayer) {
++  return true;
++}
++
++void FlatSession::VibrateHaptic(uint32_t aControllerIdx, uint32_t aHapticIndex,
++                                float aIntensity, float aDuration) {}
++
++void FlatSession::StopVibrateHaptic(uint32_t aControllerIdx) {}
++
++void FlatSession::StopAllHaptics() {}
++
++}  // namespace mozilla::gfx
+diff --git a/gfx/vr/service/FlatSession.h b/gfx/vr/service/FlatSession.h
+new file mode 100644
+index 0000000000..2be8903e2f
+--- /dev/null
++++ b/gfx/vr/service/FlatSession.h
+@@ -0,0 +1,50 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef GFX_VR_SERVICE_FLATSESSION_H
++#define GFX_VR_SERVICE_FLATSESSION_H
++
++#include "VRSession.h"
++
++#include "mozilla/TimeStamp.h"
++#include "moz_external_vr.h"
++
++namespace mozilla {
++namespace gfx {
++
++// The flat stereo display: the screen itself as an immersive XR device, with
++// no headset and no runtime. The viewer sits in front of the screen, which is
++// the window both eyes look through; the content process places each eye's
++// frustum through that window (dom/vr/XRSession) and the session's canvas
++// shows the frame, both eyes side by side, declared to the compositor. This
++// session only reports the device and paces the frames.
++class FlatSession : public VRSession {
++ public:
++  FlatSession();
++  virtual ~FlatSession();
++
++  bool Initialize(mozilla::gfx::VRSystemState& aSystemState,
++                  bool aDetectRuntimesOnly) override;
++  void Shutdown() override;
++  void ProcessEvents(mozilla::gfx::VRSystemState& aSystemState) override;
++  void StartFrame(mozilla::gfx::VRSystemState& aSystemState) override;
++  bool StartPresentation() override;
++  void StopPresentation() override;
++  void VibrateHaptic(uint32_t aControllerIdx, uint32_t aHapticIndex,
++                     float aIntensity, float aDuration) override;
++  void StopVibrateHaptic(uint32_t aControllerIdx) override;
++  void StopAllHaptics() override;
++
++ protected:
++  bool SubmitFrameWithoutTexture(
++      const mozilla::gfx::VRLayer_Stereo_Immersive& aLayer) override;
++
++ private:
++  TimeStamp mLastFrameStart;
++};
++
++}  // namespace gfx
++}  // namespace mozilla
++
++#endif  // GFX_VR_SERVICE_FLATSESSION_H
+diff --git a/gfx/vr/service/VRService.cpp b/gfx/vr/service/VRService.cpp
+index 4990dc2bb2..423c9b9285 100644
+--- a/gfx/vr/service/VRService.cpp
++++ b/gfx/vr/service/VRService.cpp
+@@ -9,6 +9,9 @@
+ #include "../VRShMem.h"
+ #include "../gfxVRMutex.h"
+ #include "PuppetSession.h"
++#if defined(MOZ_WIDGET_GTK)
++#  include "FlatSession.h"
++#endif
+ #include "mozilla/BackgroundHangMonitor.h"
+ #include "mozilla/StaticPrefs_dom.h"
+ #include "nsThread.h"
+@@ -186,6 +189,16 @@ void VRService::ServiceInitialize() {
+       session = nullptr;
+     }
+   } else {
++#if defined(MOZ_WIDGET_GTK)
++    // The flat stereo display, when enabled, is the screen itself.
++    if (StaticPrefs::dom_vr_flat_enabled()) {
++      session = MakeUnique<FlatSession>();
++      if (!session->Initialize(mSystemState,
++                               mBrowserState.detectRuntimesOnly)) {
++        session = nullptr;
++      }
++    }
++#endif
+     // We try Oculus first to ensure we use Oculus
+     // devices trough the most native interface
+     // when possible.
+diff --git a/gfx/vr/service/VRSession.cpp b/gfx/vr/service/VRSession.cpp
+index bbd207086b..000eee9a44 100644
+--- a/gfx/vr/service/VRSession.cpp
++++ b/gfx/vr/service/VRSession.cpp
+@@ -152,6 +152,10 @@ bool VRSession::SubmitFrame(
+ 
+ #endif
+ 
++  if (aLayer.textureType == VRLayerTextureType::LayerTextureType_None) {
++    return SubmitFrameWithoutTexture(aLayer);
++  }
++
+   return false;
+ }
+ 
+diff --git a/gfx/vr/service/VRSession.h b/gfx/vr/service/VRSession.h
+index c49c02d949..7728626fd8 100644
+--- a/gfx/vr/service/VRSession.h
++++ b/gfx/vr/service/VRSession.h
+@@ -82,6 +82,12 @@ class VRSession {
+   virtual bool SubmitFrame(const mozilla::gfx::VRLayer_Stereo_Immersive& aLayer,
+                            const VRLayerTextureHandle& aTexture) = 0;
+ #endif
++  // A display that shows the frame itself, outside the service (FlatSession):
++  // the layer carries no texture.
++  virtual bool SubmitFrameWithoutTexture(
++      const mozilla::gfx::VRLayer_Stereo_Immersive& aLayer) {
++    return false;
++  }
+   void SetControllerSelectionAndSqueezeFrameId(
+       VRControllerState& controllerState, uint64_t aFrameId);
+ };
+diff --git a/gfx/vr/service/moz.build b/gfx/vr/service/moz.build
+index c6f2bce33a..9aa077584e 100644
+--- a/gfx/vr/service/moz.build
++++ b/gfx/vr/service/moz.build
+@@ -24,6 +24,11 @@ if CONFIG["OS_TARGET"] != "Android":
+     ]
+     include("/ipc/chromium/chromium-config.mozbuild")
+ 
++if CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
++    UNIFIED_SOURCES += [
++        "FlatSession.cpp",
++    ]
++
+ # Build OpenVR on Windows, Linux, and macOS desktop targets.
+ # TARGET_OS shadows target.os in our configure system, so we can check that to
+ # get Windows and macOS, but not Linux. For Linux we check OS_TARGET which
+diff --git a/layout/generic/nsHTMLCanvasFrame.cpp b/layout/generic/nsHTMLCanvasFrame.cpp
+index b6d6f6043c..541bf84ffb 100644
+--- a/layout/generic/nsHTMLCanvasFrame.cpp
++++ b/layout/generic/nsHTMLCanvasFrame.cpp
+@@ -371,6 +371,12 @@ nsIFrame::SizeComputationResult nsHTMLCanvasFrame::ComputeSize(
+ }
+ 
+ nsRect nsHTMLCanvasFrame::GetDestRect(const nsRect& aFrameContentBox) const {
++  if (auto* canvas = HTMLCanvasElement::FromNodeOrNull(GetContent());
++      canvas && canvas->IsPresentingFlatXR()) {
++    // The views of an immersive session on the flat stereo display were made
++    // for this box: each fills it.
++    return aFrameContentBox;
++  }
+   const CSSIntSize canvasSizeInPx = GetCanvasSize();
+   IntrinsicSize intrinsicSize = IntrinsicSizeFromCanvasSize(canvasSizeInPx);
+   AspectRatio intrinsicRatio = IntrinsicRatioFromCanvasSize(canvasSizeInPx);
+diff --git a/modules/libpref/init/StaticPrefList.yaml b/modules/libpref/init/StaticPrefList.yaml
+index d479712d8d..308323ef41 100644
+--- a/modules/libpref/init/StaticPrefList.yaml
++++ b/modules/libpref/init/StaticPrefList.yaml
+@@ -5714,6 +5714,26 @@
+ # alive after the browser and content no longer are using the
+ # hardware.  If a VR multitasking environment, this should be set
+ # very low or set to 0.
++# The flat stereo display: the screen itself offered as an immersive WebXR
++# device. Each eye's view goes through the screen as a window, seen from the
++# viewer's seat (both distances in millimetres), and the session's canvas
++# shows both eyes side by side, declared to a compositor that shows each eye
++# its half (gfx/vr/service/FlatSession.cpp). It also offers inline-stereo.
++- name: dom.vr.flat.enabled
++  type: RelaxedAtomicBool
++  value: false
++  mirror: always
++
++- name: dom.vr.flat.viewer-distance-mm
++  type: RelaxedAtomicUint32
++  value: 700
++  mirror: always
++
++- name: dom.vr.flat.eye-separation-mm
++  type: RelaxedAtomicUint32
++  value: 64
++  mirror: always
++
+ - name: dom.vr.inactive.timeout
+   type: RelaxedAtomicInt32
+   value: 5000
+-- 
+2.53.0
+

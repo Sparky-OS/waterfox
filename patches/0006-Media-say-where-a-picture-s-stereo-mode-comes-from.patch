@@ -1,0 +1,314 @@
+From 76fb424438760aad34b0b650dcaa02b344ad9e8d Mon Sep 17 00:00:00 2001
+From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
+Date: Tue, 13 Oct 2026 14:54:19 -0300
+Subject: [PATCH 06/12] Media: say where a picture's stereo mode comes from
+
+StereoMode now names every arrangement a file or stream may give: the
+values of Matroska's StereoMode (RFC 9559, section 5.1.4.1.28.3, Table 5)
+and the frame packing SEI's arrangements (H.264 and H.265, Table D-8):
+side by side, top and bottom, checkerboard, rows, columns, frame
+sequence, each with either eye first, and the two anaglyph pairs.
+
+StereoSource tells where a picture's mode comes from, in the order the
+edition reads them: the stream's frame packing SEI, the container's mark
+(with the size of one view, Matroska's DisplayWidth and DisplayHeight,
+RFC 9559 section 18.10, or without it), the user's choice, a WebXR
+session. Whether the size of a view is known decides whether the views
+are taken for half or full size.
+
+VideoInfo carries both from the demuxer, and DMABuf surfaces carry both
+to the compositor in their descriptor.
+
+Assisted-by: Claude Opus 5.5 via Claude Code
+---
+ dom/media/MediaInfo.cpp                       |  6 ++-
+ dom/media/MediaInfo.h                         |  5 +++
+ dom/media/ipc/MediaIPCUtils.h                 |  2 +
+ .../platforms/ffmpeg/FFmpegVideoFramePool.h   |  5 ++-
+ gfx/ipc/GfxMessageUtils.h                     |  6 +++
+ gfx/layers/ImageTypes.h                       | 39 +++++++++++++++++++
+ gfx/layers/ipc/LayersSurfaces.ipdlh           |  2 +
+ widget/gtk/DMABufSurface.cpp                  |  8 +++-
+ widget/gtk/DMABufSurface.h                    |  9 ++++-
+ widget/tests/gtest/TestDMABufSurface.cpp      |  5 ++-
+ 10 files changed, 77 insertions(+), 10 deletions(-)
+
+diff --git a/dom/media/MediaInfo.cpp b/dom/media/MediaInfo.cpp
+index 42fe9630cd..39776069b7 100644
+--- a/dom/media/MediaInfo.cpp
++++ b/dom/media/MediaInfo.cpp
+@@ -61,7 +61,8 @@ nsCString TrackInfo::ToString() const {
+ 
+ bool VideoInfo::operator==(const VideoInfo& rhs) const {
+   return (TrackInfo::IsEqualTo(rhs) && mDisplay == rhs.mDisplay &&
+-          mStereoMode == rhs.mStereoMode && mImage == rhs.mImage &&
++          mStereoMode == rhs.mStereoMode &&
++          mStereoSource == rhs.mStereoSource && mImage == rhs.mImage &&
+           *mCodecSpecificConfig == *rhs.mCodecSpecificConfig &&
+           *mExtraData == *rhs.mExtraData && mRotation == rhs.mRotation &&
+           mColorDepth == rhs.mColorDepth && mImageRect == rhs.mImageRect &&
+@@ -105,7 +106,8 @@ nsCString VideoInfo::ToString() const {
+   rv.Append(TrackInfo::ToString());
+   rv.AppendLiteral(" VideoInfo: ");
+   rv.AppendPrintf("display size: %dx%d", mDisplay.Width(), mDisplay.Height());
+-  rv.AppendPrintf(", stereo mode: %d", static_cast<int>(mStereoMode));
++  rv.AppendPrintf(", stereo mode: %d (source %d)", static_cast<int>(mStereoMode),
++                  static_cast<int>(mStereoSource));
+   rv.AppendPrintf(", image size: %dx%d", mImage.Width(), mImage.Height());
+   if (mCodecSpecificConfig) {
+     rv.AppendPrintf(", codec specific config: %zu bytes",
+diff --git a/dom/media/MediaInfo.h b/dom/media/MediaInfo.h
+index 58fd8930b7..ffa506823b 100644
+--- a/dom/media/MediaInfo.h
++++ b/dom/media/MediaInfo.h
+@@ -343,6 +343,7 @@ class VideoInfo : public TrackInfo {
+       : TrackInfo(kVideoTrack, u"2"_ns, u"main"_ns, u""_ns, u""_ns, true, 2),
+         mDisplay(aSize),
+         mStereoMode(StereoMode::MONO),
++        mStereoSource(StereoSource::NONE),
+         mImage(aSize),
+         mCodecSpecificConfig(new MediaByteBuffer),
+         mExtraData(new MediaByteBuffer),
+@@ -363,6 +364,7 @@ class VideoInfo : public TrackInfo {
+     }
+     mDisplay = aOther.mDisplay;
+     mStereoMode = aOther.mStereoMode;
++    mStereoSource = aOther.mStereoSource;
+     mImage = aOther.mImage;
+     mRotation = aOther.mRotation;
+     mColorDepth = aOther.mColorDepth;
+@@ -463,6 +465,9 @@ class VideoInfo : public TrackInfo {
+ 
+   // Indicates the frame layout for single track stereo videos.
+   StereoMode mStereoMode;
++  // Where mStereoMode comes from: the container's mark, with or without the
++  // size of one view, or none.
++  StereoSource mStereoSource;
+ 
+   // Size of the decoded video's image.
+   gfx::IntSize mImage;
+diff --git a/dom/media/ipc/MediaIPCUtils.h b/dom/media/ipc/MediaIPCUtils.h
+index f4c0b574b8..6ea81badd9 100644
+--- a/dom/media/ipc/MediaIPCUtils.h
++++ b/dom/media/ipc/MediaIPCUtils.h
+@@ -32,6 +32,7 @@ struct ParamTraits<mozilla::VideoInfo> {
+     // VideoInfo
+     WriteParam(aWriter, aParam.mDisplay);
+     WriteParam(aWriter, aParam.mStereoMode);
++    WriteParam(aWriter, aParam.mStereoSource);
+     WriteParam(aWriter, aParam.mImage);
+     WriteParam(aWriter, aParam.mImageRect);
+     WriteParam(aWriter, *aParam.mCodecSpecificConfig);
+@@ -51,6 +52,7 @@ struct ParamTraits<mozilla::VideoInfo> {
+     return ReadParam(aReader, &aResult->mMimeType) &&
+            ReadParam(aReader, &aResult->mDisplay) &&
+            ReadParam(aReader, &aResult->mStereoMode) &&
++           ReadParam(aReader, &aResult->mStereoSource) &&
+            ReadParam(aReader, &aResult->mImage) &&
+            ReadParam(aReader, &aResult->mImageRect) &&
+            ReadParam(aReader, aResult->mCodecSpecificConfig.get()) &&
+diff --git a/dom/media/platforms/ffmpeg/FFmpegVideoFramePool.h b/dom/media/platforms/ffmpeg/FFmpegVideoFramePool.h
+index 94a7b11848..e4e2424000 100644
+--- a/dom/media/platforms/ffmpeg/FFmpegVideoFramePool.h
++++ b/dom/media/platforms/ffmpeg/FFmpegVideoFramePool.h
+@@ -82,8 +82,9 @@ class VideoFrameSurface<LIBAV_VER> {
+   void SetWPChromaLocation(uint32_t aWPChromaLocation) {
+     mSurface->GetAsDMABufSurfaceYUV()->SetWPChromaLocation(aWPChromaLocation);
+   }
+-  void SetStereoMode(mozilla::StereoMode aStereoMode) {
+-    mSurface->SetStereoMode(aStereoMode);
++  void SetStereoMode(mozilla::StereoMode aStereoMode,
++                     mozilla::StereoSource aStereoSource) {
++    mSurface->SetStereoMode(aStereoMode, aStereoSource);
+   }
+   void SetVulkanCopySlotIndex(int32_t aSlotIndex) {
+     mVulkanCopySlotIndex = aSlotIndex;
+diff --git a/gfx/ipc/GfxMessageUtils.h b/gfx/ipc/GfxMessageUtils.h
+index c328b25d28..782e10a106 100644
+--- a/gfx/ipc/GfxMessageUtils.h
++++ b/gfx/ipc/GfxMessageUtils.h
+@@ -676,6 +676,12 @@ struct ParamTraits<mozilla::StereoMode>
+                                       mozilla::StereoMode::MONO,
+                                       mozilla::StereoMode::MAX> {};
+ 
++template <>
++struct ParamTraits<mozilla::StereoSource>
++    : public ContiguousEnumSerializer<mozilla::StereoSource,
++                                      mozilla::StereoSource::NONE,
++                                      mozilla::StereoSource::MAX> {};
++
+ template <>
+ struct ParamTraits<mozilla::gfx::ChromaSubsampling>
+     : public ContiguousEnumSerializerInclusive<
+diff --git a/gfx/layers/ImageTypes.h b/gfx/layers/ImageTypes.h
+index d1c3a7acff..4b48fca33b 100644
+--- a/gfx/layers/ImageTypes.h
++++ b/gfx/layers/ImageTypes.h
+@@ -102,12 +102,51 @@ enum class ImageFormat {
+   DCOMP_SURFACE,
+ };
+ 
++// How a picture holds the two views of a stereoscopic picture: every packing
++// of the Matroska StereoMode (RFC 9559 section 5.1.4.1.28.3, Table 5) and of
++// the H.264 and H.265 frame packing arrangement (Table D-8), with its eye
++// order.
+ enum class StereoMode {
+   MONO,
+   LEFT_RIGHT,
+   RIGHT_LEFT,
+   BOTTOM_TOP,
+   TOP_BOTTOM,
++  CHECKERBOARD_LEFT_FIRST,
++  CHECKERBOARD_RIGHT_FIRST,
++  ROWS_LEFT_FIRST,
++  ROWS_RIGHT_FIRST,
++  COLUMNS_LEFT_FIRST,
++  COLUMNS_RIGHT_FIRST,
++  ANAGLYPH_CYAN_RED,
++  ANAGLYPH_GREEN_MAGENTA,
++  // Both eyes laced in one block (Matroska) or in alternate frames (Table
++  // D-8, frame alternation).
++  LACED_LEFT_FIRST,
++  LACED_RIGHT_FIRST,
++  MAX,
++};
++
++// Where a picture's StereoMode comes from, which also tells whether the size
++// of one view is known.
++enum class StereoSource : uint8_t {
++  // No mark: the picture is taken for one view unless the user or, last, its
++  // shape says otherwise.
++  NONE,
++  // The container's mark, with the size of one view (Matroska's StereoMode
++  // with its DisplayWidth and DisplayHeight, RFC 9559 section 18.10).
++  CONTAINER_SIZED,
++  // The container's mark without the size of a view (the MP4 st3d box, or
++  // Matroska's StereoMode without DisplayWidth and DisplayHeight).
++  CONTAINER,
++  // The stream's own mark, the frame packing SEI (H.264 D.2.26, H.265
++  // D.3.16), without the size of a view.
++  STREAM,
++  // The user's choice.
++  USER,
++  // A WebXR session's frames: an immersive session on the flat stereo
++  // display, or an inline-stereo session's canvas.
++  XR,
+   MAX,
+ };
+ 
+diff --git a/gfx/layers/ipc/LayersSurfaces.ipdlh b/gfx/layers/ipc/LayersSurfaces.ipdlh
+index f6d1519427..2b53a3b964 100644
+--- a/gfx/layers/ipc/LayersSurfaces.ipdlh
++++ b/gfx/layers/ipc/LayersSurfaces.ipdlh
+@@ -10,6 +10,7 @@ include "mozilla/layers/WebRenderMessageUtils.h";
+ using gfxPoint from "gfxPoint.h";
+ using nsIntRegion from "nsRegion.h";
+ using mozilla::StereoMode from "ImageTypes.h";
++using mozilla::StereoSource from "ImageTypes.h";
+ using struct mozilla::null_t from "mozilla/ipc/IPCCore.h";
+ using mozilla::WindowsHandle from "mozilla/ipc/IPCTypes.h";
+ using mozilla::gfx::YUVColorSpace from "mozilla/gfx/Types.h";
+@@ -101,6 +102,7 @@ namespace layers {
+   nullable FileHandleWrapper semaphoreFd;
+   bool semaphoreFdIsSyncFd;
+   StereoMode stereoMode;
++  StereoSource stereoSource;
+ };
+ 
+ [Comparable] struct SurfaceTextureDescriptor {
+diff --git a/widget/gtk/DMABufSurface.cpp b/widget/gtk/DMABufSurface.cpp
+index be89904e42..0b363ce17e 100644
+--- a/widget/gtk/DMABufSurface.cpp
++++ b/widget/gtk/DMABufSurface.cpp
+@@ -1132,6 +1132,7 @@ bool DMABufSurfaceRGBA::ImportSurfaceDescriptor(
+   mUID = desc.uid();
+   mPID = desc.pid();
+   mStereoMode = desc.stereoMode();
++  mStereoSource = desc.stereoSource();
+ 
+   LOGDMABUF(
+       "DMABufSurfaceRGBA::ImportSurfaceDescriptor() UID %d size %d x %d\n",
+@@ -1206,7 +1207,8 @@ bool DMABufSurfaceRGBA::Serialize(
+       mColorRange, mozilla::gfx::ColorSpace2::UNKNOWN,
+       mozilla::gfx::TransferFunction::Default, 0, fenceFDs, mUID,
+       mCanRecycle ? getpid() : 0, refCountFDs,
+-      /* semaphoreFd */ nullptr, /* semaphoreFdIsSyncFd */ false, mStereoMode);
++      /* semaphoreFd */ nullptr, /* semaphoreFdIsSyncFd */ false, mStereoMode,
++      mStereoSource);
+   return true;
+ }
+ 
+@@ -2083,6 +2085,7 @@ bool DMABufSurfaceYUV::ImportSurfaceDescriptor(
+   mUID = aDesc.uid();
+   mPID = aDesc.pid();
+   mStereoMode = aDesc.stereoMode();
++  mStereoSource = aDesc.stereoSource();
+ 
+   LOGDMABUF("DMABufSurfaceYUV::ImportSurfaceDescriptor() UID %d", mUID);
+ 
+@@ -2160,7 +2163,8 @@ bool DMABufSurfaceYUV::Serialize(
+       height, widthBytes, heightBytes, format, strides, offsets,
+       GetYUVColorSpace(), mColorRange, mColorPrimaries, mTransferFunction,
+       mWPChromaLocation, fenceFDs, mUID, mCanRecycle ? getpid() : 0,
+-      refCountFDs, mSemaphoreFd, mSemaphoreFdIsSyncFd, mStereoMode);
++      refCountFDs, mSemaphoreFd, mSemaphoreFdIsSyncFd, mStereoMode,
++      mStereoSource);
+   return true;
+ }
+ 
+diff --git a/widget/gtk/DMABufSurface.h b/widget/gtk/DMABufSurface.h
+index 3d74e0652f..25cc0181a9 100644
+--- a/widget/gtk/DMABufSurface.h
++++ b/widget/gtk/DMABufSurface.h
+@@ -168,11 +168,15 @@ class DMABufSurface {
+     mColorRange = aColorRange;
+   };
+ 
+-  // How the surface holds the two views of a stereoscopic picture, if any.
+-  void SetStereoMode(mozilla::StereoMode aStereoMode) {
++  // How the surface holds the two views of a stereoscopic picture, if any,
++  // and where that comes from.
++  void SetStereoMode(mozilla::StereoMode aStereoMode,
++                     mozilla::StereoSource aStereoSource) {
+     mStereoMode = aStereoMode;
++    mStereoSource = aStereoSource;
+   }
+   mozilla::StereoMode GetStereoMode() const { return mStereoMode; }
++  mozilla::StereoSource GetStereoSource() const { return mStereoSource; }
+ 
+   void FenceSet();
+   void FenceWait();
+@@ -344,6 +348,7 @@ class DMABufSurface {
+   mozilla::gfx::ColorRange mColorRange = mozilla::gfx::ColorRange::LIMITED;
+ 
+   mozilla::StereoMode mStereoMode = mozilla::StereoMode::MONO;
++  mozilla::StereoSource mStereoSource = mozilla::StereoSource::NONE;
+ 
+   mozilla::gfx::YUVColorSpace mColorSpace =
+       mozilla::gfx::YUVColorSpace::Default;
+diff --git a/widget/tests/gtest/TestDMABufSurface.cpp b/widget/tests/gtest/TestDMABufSurface.cpp
+index e0c93d3a26..4573c273b9 100644
+--- a/widget/tests/gtest/TestDMABufSurface.cpp
++++ b/widget/tests/gtest/TestDMABufSurface.cpp
+@@ -44,7 +44,7 @@ static SurfaceDescriptor MakeRGBADescriptor(RefPtr<FileHandleWrapper> fd) {
+       height, format, strides, offsets, gfx::YUVColorSpace::BT601,
+       gfx::ColorRange::LIMITED, gfx::ColorSpace2::UNKNOWN,
+       gfx::TransferFunction::Default, 0, fence, 1, 0, refCount, nullptr, false,
+-      StereoMode::MONO));
++      StereoMode::MONO, StereoSource::NONE));
+ }
+ 
+ // Matches what DMABufSurfaceYUV::Serialize() produces for a two-plane 128×128
+@@ -67,7 +67,8 @@ static SurfaceDescriptor MakeYUVDescriptor(RefPtr<FileHandleWrapper> fd0,
+       height, widthAligned, heightAligned, format, strides, offsets,
+       gfx::YUVColorSpace::BT601, gfx::ColorRange::LIMITED,
+       gfx::ColorSpace2::UNKNOWN, gfx::TransferFunction::Default, 0, fence, 1, 0,
+-      refCount, nullptr, false, StereoMode::LEFT_RIGHT));
++      refCount, nullptr, false, StereoMode::LEFT_RIGHT,
++      StereoSource::CONTAINER_SIZED));
+ }
+ 
+ // Run 3 serialize → import cycles for a single-plane RGBA surface.
+-- 
+2.53.0
+

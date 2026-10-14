@@ -1,0 +1,63 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Exec=sparky-stereo-browser %u
+Terminal=false
+X-MultipleArgs=false
+Icon=sparky-stereo-browser
+StartupWMClass=sparky-stereo-browser
+Categories=Network;WebBrowser;
+MimeType=application/json;application/pdf;application/rdf+xml;application/rss+xml;application/x-xpinstall;application/xhtml+xml;application/xml;audio/flac;audio/ogg;audio/webm;image/avif;image/gif;image/jpeg;image/png;image/svg+xml;image/webp;text/html;text/xml;video/ogg;video/webm;x-scheme-handler/chrome;x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/mailto;
+StartupNotify=true
+Actions=new-window;new-private-window;open-profile-manager;
+Name=Sparky Stereo Browser
+Comment=Browse the Web
+Comment[pl]=Przeglądaj strony WWW
+Comment[pt_BR]=Navegue na Web
+Comment[fr]=Naviguer sur le Web
+Comment[ja]=ウェブを閲覧します
+Comment[ko]=웹을 탐색합니다
+Comment[zh_CN]=浏览互联网
+Comment[zh_TW]=瀏覽網際網路
+GenericName=Web Browser
+GenericName[pl]=Przeglądarka WWW
+GenericName[pt_BR]=Navegador Web
+GenericName[fr]=Navigateur Web
+GenericName[ja]=ウェブブラウザー
+GenericName[ko]=웹 브라우저
+GenericName[zh_CN]=网页浏览器
+GenericName[zh_TW]=網頁瀏覽器
+Keywords=Internet;WWW;Browser;Web;Explorer;Waterfox;Firefox;
+
+[Desktop Action new-window]
+Exec=sparky-stereo-browser --new-window %u
+Name=New Window
+Name[pl]=Nowe okno
+Name[pt_BR]=Nova janela
+Name[fr]=Nouvelle fenêtre
+Name[ja]=新しいウィンドウ
+Name[ko]=새 창
+Name[zh_CN]=新建窗口
+Name[zh_TW]=開新視窗
+
+[Desktop Action new-private-window]
+Exec=sparky-stereo-browser --private-window %u
+Name=New Private Window
+Name[pl]=Nowe okno prywatne
+Name[pt_BR]=Nova janela privativa
+Name[fr]=Nouvelle fenêtre de navigation privée
+Name[ja]=新しいプライベートウィンドウ
+Name[ko]=새 사생활 보호 창
+Name[zh_CN]=新建隐私浏览窗口
+Name[zh_TW]=開新隱私視窗
+
+[Desktop Action open-profile-manager]
+Exec=sparky-stereo-browser --ProfileManager
+Name=Open Profile Manager
+Name[pl]=Otwórz menedżera profili
+Name[pt_BR]=Abrir gerenciador de perfis
+Name[fr]=Ouvrir le gestionnaire de profils
+Name[ja]=プロファイルマネージャーを開く
+Name[ko]=프로필 관리자 열기
+Name[zh_CN]=打开配置文件管理器
+Name[zh_TW]=開啟設定檔管理員

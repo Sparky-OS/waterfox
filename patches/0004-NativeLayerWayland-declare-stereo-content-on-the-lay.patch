@@ -1,0 +1,331 @@
+From b09996e31bb4f7da8c2c5bf60506a6ba82234418 Mon Sep 17 00:00:00 2001
+From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
+Date: Mon, 12 Oct 2026 21:05:19 -0300
+Subject: [PATCH 04/12] NativeLayerWayland: declare stereo content on the
+ layer's own surface
+
+With WebRender's native compositor a video or canvas gets a Wayland
+surface of its own, and its buffer can be larger than its place through
+wp_viewport. When that buffer holds two views full side by side with the
+left eye first, declare it on that surface with libstereo-declare
+(Sparky Stereo OS: KWin's kde_stereo_content_v1), so the compositor shows
+each eye its half over the element's place while the page stays flat.
+
+The helper keeps its state per thread, so it is used on the render thread
+only, with an event queue of its own there; a layer released on another
+thread removes its declaration on the render thread.
+
+A video without a mark in its file goes through the stereo-layer picture
+policy (file marks first, then the user's choice, then the picture's
+shape) through the small wrapper installed beside the browser. When the
+policy finds a side by side picture by its shape, the element has the
+shape of both views, so one view is shown at its own shape, centred in
+the element's place.
+
+Both libraries are loaded on first use; without them nothing changes.
+
+Assisted-by: Claude Opus 5.5 via Claude Code
+---
+ gfx/layers/NativeLayerWayland.cpp | 194 ++++++++++++++++++++++++++++++
+ gfx/layers/NativeLayerWayland.h   |  15 +++
+ widget/gtk/WaylandSurface.h       |   4 +
+ 3 files changed, 213 insertions(+)
+
+diff --git a/gfx/layers/NativeLayerWayland.cpp b/gfx/layers/NativeLayerWayland.cpp
+index c5bf8da172..5e946ffbd8 100644
+--- a/gfx/layers/NativeLayerWayland.cpp
++++ b/gfx/layers/NativeLayerWayland.cpp
+@@ -38,6 +38,7 @@
+ #include "mozilla/widget/WaylandSurface.h"
+ #include "mozilla/StaticPrefs_widget.h"
+ #include "ScopedGLHelpers.h"
++#include "nsThreadUtils.h"
+ 
+ #ifdef MOZ_LOGGING
+ #  undef LOG
+@@ -82,6 +83,122 @@ using gfx::Rect;
+ using gfx::SamplingFilter;
+ using gfx::Size;
+ 
++namespace {
++
++// libstereo-declare (Sparky Stereo OS) declares that a wl_surface holds two
++// views, as KWin's kde_stereo_content_v1 takes them. Its state is per thread,
++// so it is used on the render thread only, on an event queue of its own.
++struct StereoDeclare {
++  // enum stereo_layout, stereo_class and stereo_subclass of stereo-declare.h
++  static constexpr int kSideBySideFull = 3;
++  static constexpr int kClassNone = 0;
++  static constexpr int kClassVideo = 2;
++  static constexpr unsigned kVideoLegacy = 1;
++
++  int (*init)(wl_display*, wl_event_queue*);
++  unsigned (*supported)();
++  int (*declare)(wl_surface*, int, int, unsigned);
++  int (*remove)(wl_surface*);
++};
++
++const StereoDeclare* GetStereoDeclare() {
++  MOZ_ASSERT(wr::RenderThread::IsInRenderThread());
++  static const StereoDeclare* sStereoDeclare = []() -> const StereoDeclare* {
++    void* handle = dlopen("libstereo-declare.so.1", RTLD_NOW | RTLD_LOCAL);
++    if (!handle) {
++      LOGS("libstereo-declare.so.1 is missing: %s", dlerror());
++      return nullptr;
++    }
++    static StereoDeclare lib;
++    lib.init = reinterpret_cast<decltype(lib.init)>(
++        dlsym(handle, "stereo_declare_wayland_init"));
++    lib.supported = reinterpret_cast<decltype(lib.supported)>(
++        dlsym(handle, "stereo_supported_wayland"));
++    lib.declare = reinterpret_cast<decltype(lib.declare)>(
++        dlsym(handle, "stereo_declare_wayland"));
++    lib.remove = reinterpret_cast<decltype(lib.remove)>(
++        dlsym(handle, "stereo_remove_wayland"));
++    if (!lib.init || !lib.supported || !lib.declare || !lib.remove) {
++      return nullptr;
++    }
++    wl_display* display = WaylandDisplayGetWLDisplay();
++    wl_event_queue* queue = wl_display_create_queue(display);
++    if (!queue || lib.init(display, queue) != 0) {
++      return nullptr;
++    }
++    wl_display_roundtrip_queue(display, queue);
++    LOGS("Stereo content declaration supported: %u", lib.supported());
++    return lib.supported() ? &lib : nullptr;
++  }();
++  return sStereoDeclare;
++}
++
++// A layer released elsewhere removes its declaration on the render thread.
++// The surface stays alive until then.
++void RemoveStereoDeclaration(RefPtr<WaylandSurface> aSurface) {
++  if (!wr::RenderThread::IsInRenderThread()) {
++    nsCOMPtr<nsIThread> thread = wr::RenderThread::GetRenderThread();
++    if (thread) {
++      thread->Dispatch(NS_NewRunnableFunction(
++          "RemoveStereoDeclaration", [surface = std::move(aSurface)]() {
++            RemoveStereoDeclaration(surface);
++          }));
++    }
++    return;
++  }
++  if (const auto* lib = GetStereoDeclare()) {
++    lib->remove(aSurface->GetWlSurface());
++  }
++}
++
++// The stereo-layer picture policy (Sparky Stereo OS) through the small C
++// wrapper installed beside the browser: file marks first, then the user's
++// choice, then the picture's shape. Gecko's StereoMode is the file mark.
++using StereoPolicyFunc = int (*)(int aWidth, int aHeight, const char* aMark,
++                                 int* aLayout, int* aOrder, int* aSource);
++
++StereoPolicyFunc GetStereoPolicy() {
++  static StereoPolicyFunc sStereoPolicy = []() -> StereoPolicyFunc {
++    Dl_info info;
++    if (!dladdr(reinterpret_cast<void*>(&GetStereoPolicy), &info) ||
++        !info.dli_fname) {
++      return nullptr;
++    }
++    nsAutoCString path(info.dli_fname);
++    int32_t slash = path.RFindChar('/');
++    if (slash < 0) {
++      return nullptr;
++    }
++    path.Truncate(slash + 1);
++    path.AppendLiteral("libstereo-policy.so");
++    void* handle = dlopen(path.get(), RTLD_NOW | RTLD_LOCAL);
++    if (!handle) {
++      LOGS("%s is missing: %s", path.get(), dlerror());
++      return nullptr;
++    }
++    return reinterpret_cast<StereoPolicyFunc>(
++        dlsym(handle, "sparky_stereo_policy_layout"));
++  }();
++  return sStereoPolicy;
++}
++
++const char* StereoMark(StereoMode aMode) {
++  switch (aMode) {
++    case StereoMode::LEFT_RIGHT:
++      return "sideBySideLeftFirst";
++    case StereoMode::RIGHT_LEFT:
++      return "sideBySideRightFirst";
++    case StereoMode::TOP_BOTTOM:
++      return "topBottomLeftFirst";
++    case StereoMode::BOTTOM_TOP:
++      return "topBottomRightFirst";
++    default:
++      return "";
++  }
++}
++
++}  // namespace
++
+ #ifdef MOZ_LOGGING
+ nsAutoCString NativeLayerRootWayland::GetDebugTag() const {
+   nsAutoCString tag;
+@@ -763,6 +880,9 @@ NativeLayerWayland::~NativeLayerWayland() {
+   LOG("NativeLayerWayland::~NativeLayerWayland() IsMapped %d",
+       mSurface->IsMapped());
+   MOZ_RELEASE_ASSERT(!mSurface->IsMapped(), "Releasing mapped surface!");
++  if (mStereoDeclared) {
++    RemoveStereoDeclaration(mSurface);
++  }
+ }
+ 
+ bool NativeLayerWayland::IsMapped() { return mSurface->IsMapped(); }
+@@ -960,6 +1080,12 @@ void NativeLayerWayland::UpdateLayerPlacementLocked(
+           ? gfx::RoundedToInt(surfaceRectClipped)
+           : gfx::RoundedToInt(surfaceRectClipped / UnknownScaleFactor(mScale));
+   auto rect = DesktopIntRect::FromUnknownRect(unscaledRect);
++  if (mStereoFitOneView) {
++    // Each eye sees its half of the buffer over the whole surface: one view
++    // keeps its shape, centred in the place of the two.
++    rect.x += rect.width / 4;
++    rect.width /= 2;
++  }
+   mSurface->MoveLocked(aProofOfLock, rect.TopLeft());
+   mSurface->SetViewPortDestLocked(aProofOfLock, rect.Size());
+ 
+@@ -1490,6 +1616,7 @@ void NativeLayerWaylandExternal::AttachExternalImage(
+ 
+   auto surface = mTextureHost->GetSurface();
+   mIsHDR = surface->IsHDRSurface();
++  UpdateStereoContentLocked(lock, surface);
+ 
+   LOG("NativeLayerWaylandExternal::AttachExternalImage() host [%p] "
+       "DMABufSurface [%p] DMABuf UID %d [%d x %d] HDR %d Opaque %d recycle "
+@@ -1503,6 +1630,73 @@ void NativeLayerWaylandExternal::AttachExternalImage(
+                      : widget::WaylandBufferDMABUF::CreateExternal(surface);
+ }
+ 
++// A picture that holds two views, full side by side with the left eye first,
++// is declared on the layer's own surface; KWin then shows each eye its half.
++// Other packings are not declared yet.
++void NativeLayerWaylandExternal::UpdateStereoContentLocked(
++    const WaylandSurfaceLock& aProofOfLock, DMABufSurface* aSurface) {
++  const bool isVideo = !!aSurface->GetAsDMABufSurfaceYUV();
++  StereoMode mode = aSurface->GetStereoMode();
++  bool fitOneView = false;
++  if (isVideo) {
++    if (mSize != mStereoPolicySize || mode != mStereoPolicyMark) {
++      mStereoPolicySize = mSize;
++      mStereoPolicyMark = mode;
++      mStereoPolicyMode = mode;
++      mStereoPolicyFitOneView = false;
++      int layout = 0, order = 0, source = 0;
++      if (auto policy = GetStereoPolicy();
++          policy && policy(mSize.width, mSize.height, StereoMark(mode), &layout,
++                           &order, &source) == 0) {
++        // Picture::Layout SideBySide = 1, TopAndBottom = 2;
++        // Picture::EyeOrder RightFirst = 1; Picture::Source Shape = 5.
++        mStereoPolicyMode =
++            layout == 1
++                ? (order ? StereoMode::RIGHT_LEFT : StereoMode::LEFT_RIGHT)
++            : layout == 2
++                ? (order ? StereoMode::BOTTOM_TOP : StereoMode::TOP_BOTTOM)
++                : StereoMode::MONO;
++        // Without a mark the picture's place has the shape of both views.
++        mStereoPolicyFitOneView = layout == 1 && source == 5;
++      }
++      LOG("NativeLayerWaylandExternal::UpdateStereoContentLocked() [%d x %d] "
++          "mark %d policy %d fit %d",
++          mSize.width, mSize.height, static_cast<int>(mode),
++          static_cast<int>(mStereoPolicyMode), mStereoPolicyFitOneView);
++    }
++    mode = mStereoPolicyMode;
++    fitOneView = mStereoPolicyFitOneView;
++  }
++
++  const bool declare = mode == StereoMode::LEFT_RIGHT;
++  if (!declare) {
++    fitOneView = false;
++  }
++  if (declare != mStereoDeclared) {
++    const auto* lib = GetStereoDeclare();
++    if (!lib) {
++      return;
++    }
++    wl_surface* surface = mSurface->GetWlSurface();
++    const int ret =
++        declare ? lib->declare(surface, StereoDeclare::kSideBySideFull,
++                               isVideo ? StereoDeclare::kClassVideo
++                                       : StereoDeclare::kClassNone,
++                               isVideo ? StereoDeclare::kVideoLegacy : 0)
++                : lib->remove(surface);
++    LOG("NativeLayerWaylandExternal::UpdateStereoContentLocked() %s: %d",
++        declare ? "declared full side by side" : "removed", ret);
++    if (ret) {
++      return;
++    }
++    mStereoDeclared = declare;
++  }
++  if (fitOneView != mStereoFitOneView) {
++    mStereoFitOneView = fitOneView;
++    mState.mMutatedPlacement = true;
++  }
++}
++
+ void NativeLayerWaylandExternal::DiscardBackbuffersLocked(
+     const WaylandSurfaceLock& aProofOfLock, bool aForce) {
+   LOG("NativeLayerWaylandRender::DiscardBackbuffersLocked()");
+diff --git a/gfx/layers/NativeLayerWayland.h b/gfx/layers/NativeLayerWayland.h
+index 81055e8865..2b892dbe96 100644
+--- a/gfx/layers/NativeLayerWayland.h
++++ b/gfx/layers/NativeLayerWayland.h
+@@ -5,6 +5,7 @@
+ #ifndef mozilla_layers_NativeLayerWayland_h
+ #define mozilla_layers_NativeLayerWayland_h
+ 
++#include "ImageTypes.h"
+ #include "mozilla/Atomics.h"
+ #include "mozilla/Mutex.h"
+ #include "mozilla/layers/NativeLayer.h"
+@@ -322,6 +323,11 @@ class NativeLayerWayland : public NativeLayer {
+   LayerState mState{};
+   bool mSurfaceIsFlipped = false;
+   bool mIsHDR = false;
++  // The surface is declared to hold two views, full side by side with the
++  // left eye first.
++  bool mStereoDeclared = false;
++  // The layer shows one view at its own shape in the place of the two.
++  bool mStereoFitOneView = false;
+ 
+   enum class MainThreadUpdate {
+     None,
+@@ -398,6 +404,15 @@ class NativeLayerWaylandExternal final : public NativeLayerWayland {
+  private:
+   ~NativeLayerWaylandExternal() override;
+ 
++  void UpdateStereoContentLocked(const widget::WaylandSurfaceLock& aProofOfLock,
++                                 DMABufSurface* aSurface);
++
++  // Last picture the stereo picture policy decided on, and its decision.
++  gfx::IntSize mStereoPolicySize;
++  StereoMode mStereoPolicyMark = StereoMode::MONO;
++  StereoMode mStereoPolicyMode = StereoMode::MONO;
++  bool mStereoPolicyFitOneView = false;
++
+   void DiscardBackbuffersLocked(const widget::WaylandSurfaceLock& aProofOfLock,
+                                 bool aForce) override;
+   void FreeUnusedBackBuffers();
+diff --git a/widget/gtk/WaylandSurface.h b/widget/gtk/WaylandSurface.h
+index 05b6924785..31adfe6e13 100644
+--- a/widget/gtk/WaylandSurface.h
++++ b/widget/gtk/WaylandSurface.h
+@@ -121,6 +121,10 @@ class WaylandSurface final {
+ 
+   bool HasBufferAttached() const { return mBufferAttached; }
+ 
++  // The wl_surface itself, for protocols managed outside WaylandSurface.
++  // It lives as long as WaylandSurface.
++  wl_surface* GetWlSurface() const { return mSurface; }
++
+   // Mapped as direct surface of MozContainer
+   bool MapLocked(const WaylandSurfaceLock& aProofOfLock,
+                  wl_surface* aParentWLSurface,
+-- 
+2.53.0
+

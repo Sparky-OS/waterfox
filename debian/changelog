@@ -1,0 +1,51 @@
+sparky-stereo-browser (@DEBVERSION@) unstable; urgency=medium
+
+  * Pages declare stereo only through WebXR: the stereolayout canvas
+    attribute is gone.
+  * The screen is a WebXR immersive device (dom.vr.flat.enabled): an
+    "immersive-vr" session shows its canvas full screen, each eye its view,
+    with a window projection at the viewer's distance; the mouse, the wheel
+    and the keyboard move the view.
+  * Inline sessions take the "inline-stereo" feature: the page's canvas
+    holds both views side by side and is declared on its own surface.
+    Inline projections keep the canvas's shape.
+  * Videos say they hold two views in this order: the stream's frame
+    packing SEI, the container's mark (Matroska StereoMode, every value of
+    RFC 9559 Table 5, with its DisplayWidth and DisplayHeight; the MP4 st3d
+    box), the user's choice in the new 3D Video menu, and last the
+    picture's shape through libstereo-layer's C entry. A mark without the
+    size of a view takes full size views from a picture at least 2.5 times
+    as wide as high (side by side) or at most 1.2 (top and bottom).
+  * Top and bottom and right eye first pictures, and videos clipped on the
+    side, are copied on the GPU into two views side by side, left eye
+    first, before they are declared.
+  * The stereo-layer policy wrapper is gone: the browser calls
+    libstereo-layer's C entry itself.
+  * The 3D Video menu is translated into Polish, Brazilian Portuguese,
+    French, Japanese, Korean and Chinese (simplified and traditional).
+
+ -- Daniel Ramos (Capitain Jack) <Capitain_Jack@yahoo.com>  @DATE@
+
+sparky-stereo-browser (6.7.5-0+stereo3d2) unstable; urgency=medium
+
+  * Pictures that hold two views, full side by side with the left eye first,
+    are declared on their own Wayland surface to Stereo KWin through
+    libstereo-declare: videos marked so in their file (WebM StereoMode),
+    videos without a mark that the stereo-layer policy finds side by side,
+    and WebGL canvases the page marks with stereolayout="stereo-left-right".
+  * WebRender's native compositor is on (gfx.webrender.compositor), so that
+    videos and canvases get surfaces of their own.
+  * The stereo-layer policy wrapper, libstereo-policy.so, is built and
+    installed beside the browser.
+  * Waterfox's strings that mean this browser take the brand name; the names
+    of BrowserWorks' services stay.
+  * A profile folder of its own, ~/.sparky-stereo-browser.
+
+ -- Daniel Ramos (Capitain Jack) <Capitain_Jack@yahoo.com>  Tue, 13 Oct 2026 03:57:57 +0000
+
+sparky-stereo-browser (6.7.5-0+stereo3d1) unstable; urgency=medium
+
+  * Waterfox 6.7.5 (Firefox 153.4.0 base) built from the release tag
+    for Sparky Stereo OS, x86-64-v3, with a brand of its own.
+
+ -- Daniel Ramos (Capitain Jack) <Capitain_Jack@yahoo.com>  Mon, 12 Oct 2026 22:31:49 +0000

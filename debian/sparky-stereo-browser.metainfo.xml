@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.sparkylinux.sparky-stereo-browser</id>
+  <launchable type="desktop-id">sparky-stereo-browser.desktop</launchable>
+  <name>Sparky Stereo Browser</name>
+  <summary>Sparky Stereo OS's build of Waterfox</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MPL-2.0</project_license>
+  <developer id="org.sparkylinux">
+    <name>Sparky Stereo OS</name>
+  </developer>
+  <description>
+    <p>
+      A web browser built from the Waterfox release by BrowserWorks, which is
+      based on Mozilla Firefox, for Sparky Stereo OS, an edition of
+      SparkyLinux. Waterfox is a trademark of BrowserWorks; this build is not
+      made or endorsed by BrowserWorks.
+    </p>
+  </description>
+  <url type="homepage">https://sparkylinux.org</url>
+  <categories>
+    <category>Network</category>
+    <category>WebBrowser</category>
+  </categories>
+</component>

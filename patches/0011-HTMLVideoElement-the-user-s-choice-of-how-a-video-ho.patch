@@ -1,0 +1,586 @@
+From 62ede3a4914e3f02a8a1f3be67b6243975e34433 Mon Sep 17 00:00:00 2001
+From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
+Date: Tue, 13 Oct 2026 14:54:23 -0300
+Subject: [PATCH 11/12] HTMLVideoElement: the user's choice of how a video
+ holds its views
+
+The video context menu gets a 3D Video submenu: Automatic, Not 3D, Side
+by Side, Side by Side Right Eye First, Top and Bottom, Top and Bottom
+Right Eye First. The choice is kept on the element (stereoChoice, for the
+browser's own UI only; pages do not see it) and applied to each frame
+the element shows that carries no mark of its own: it comes after the
+stream's frame packing SEI and the container's mark, and before the
+picture's shape. A paused video takes it with its next frame.
+
+Frames decoded in the media process reach the page as references to the
+decoded picture; the choice travels with their descriptor
+(SurfaceDescriptorRemoteDecoder), and the compositor applies it to the
+picture, again only when the picture has no mark of its own.
+
+Assisted-by: Claude Opus 5.5 via Claude Code
+---
+ browser/actors/ContextMenuChild.sys.mjs       |  4 ++
+ .../base/content/browser-context.inc.xhtml    | 34 +++++++++++++++++
+ browser/base/content/browser-context.js       | 13 +++++++
+ browser/base/content/nsContextMenu.sys.mjs    | 23 +++++++++++
+ .../locales/en-US/browser/browserContext.ftl  | 26 +++++++++++++
+ dom/media/VideoFrameContainer.cpp             | 32 ++++++++++++++++
+ dom/media/VideoFrameContainer.h               |  9 +++++
+ dom/media/mediaelement/HTMLMediaElement.cpp   |  8 ++++
+ dom/media/mediaelement/HTMLMediaElement.h     |  8 ++++
+ dom/media/mediaelement/HTMLVideoElement.cpp   | 38 +++++++++++++++++++
+ dom/media/mediaelement/HTMLVideoElement.h     |  3 ++
+ dom/webidl/HTMLVideoElement.webidl            | 11 ++++++
+ gfx/layers/GPUVideoImage.h                    | 12 ++++++
+ gfx/layers/client/GPUVideoTextureClient.cpp   |  4 ++
+ gfx/layers/client/GPUVideoTextureClient.h     |  3 ++
+ gfx/layers/client/TextureClient.cpp           |  2 +-
+ gfx/layers/composite/GPUVideoTextureHost.cpp  |  4 ++
+ gfx/layers/composite/TextureHost.h            |  5 +++
+ gfx/layers/ipc/LayersSurfaces.ipdlh           |  3 ++
+ gfx/layers/opengl/DMABUFTextureHostOGL.cpp    | 11 ++++++
+ gfx/layers/opengl/DMABUFTextureHostOGL.h      |  2 +
+ 21 files changed, 254 insertions(+), 1 deletion(-)
+
+diff --git a/browser/actors/ContextMenuChild.sys.mjs b/browser/actors/ContextMenuChild.sys.mjs
+index bdb9252578..2680ec2976 100644
+--- a/browser/actors/ContextMenuChild.sys.mjs
++++ b/browser/actors/ContextMenuChild.sys.mjs
+@@ -108,6 +108,9 @@ export class ContextMenuChild extends JSWindowActorChild {
+               case "playbackRate":
+                 media.playbackRate = message.data.data;
+                 break;
++              case "stereoChoice":
++                media.stereoChoice = message.data.data;
++                break;
+               case "hidecontrols":
+                 media.removeAttribute("controls");
+                 break;
+@@ -789,6 +792,7 @@ export class ContextMenuChild extends JSWindowActorChild {
+         Object.assign(cleanTarget, {
+           readyState: context.target.readyState,
+           HAVE_CURRENT_DATA: context.target.HAVE_CURRENT_DATA,
++          stereoChoice: context.target.stereoChoice,
+         });
+       }
+     }
+diff --git a/browser/base/content/browser-context.inc.xhtml b/browser/base/content/browser-context.inc.xhtml
+index eb46c83dcc..a133d823fe 100644
+--- a/browser/base/content/browser-context.inc.xhtml
++++ b/browser/base/content/browser-context.inc.xhtml
+@@ -190,6 +190,40 @@
+                 data-l10n-id="main-context-menu-media-loop"
+                 type="checkbox"
+                 />
++      <menu id="context-video-stereo" data-l10n-id="main-context-menu-video-stereo">
++        <menupopup>
++          <menuitem id="context-video-stereo-auto"
++                    data-l10n-id="main-context-menu-video-stereo-auto"
++                    type="radio"
++                    name="videostereo"
++                    />
++          <menuitem id="context-video-stereo-mono"
++                    data-l10n-id="main-context-menu-video-stereo-mono"
++                    type="radio"
++                    name="videostereo"
++                    />
++          <menuitem id="context-video-stereo-side-by-side"
++                    data-l10n-id="main-context-menu-video-stereo-side-by-side"
++                    type="radio"
++                    name="videostereo"
++                    />
++          <menuitem id="context-video-stereo-side-by-side-right-first"
++                    data-l10n-id="main-context-menu-video-stereo-side-by-side-right-first"
++                    type="radio"
++                    name="videostereo"
++                    />
++          <menuitem id="context-video-stereo-top-bottom"
++                    data-l10n-id="main-context-menu-video-stereo-top-bottom"
++                    type="radio"
++                    name="videostereo"
++                    />
++          <menuitem id="context-video-stereo-top-bottom-right-first"
++                    data-l10n-id="main-context-menu-video-stereo-top-bottom-right-first"
++                    type="radio"
++                    name="videostereo"
++                    />
++        </menupopup>
++      </menu>
+       <menuitem id="context-leave-dom-fullscreen"
+                 data-l10n-id="main-context-menu-media-video-leave-fullscreen"
+                 />
+diff --git a/browser/base/content/browser-context.js b/browser/base/content/browser-context.js
+index 042341cecb..29e6b6bd4e 100644
+--- a/browser/base/content/browser-context.js
++++ b/browser/base/content/browser-context.js
+@@ -106,6 +106,19 @@ document.addEventListener(
+         case "context-media-loop":
+           gContextMenu.mediaCommand("loop");
+           break;
++        case "context-video-stereo-auto":
++          gContextMenu.mediaCommand("stereoChoice", "");
++          break;
++        case "context-video-stereo-mono":
++        case "context-video-stereo-side-by-side":
++        case "context-video-stereo-side-by-side-right-first":
++        case "context-video-stereo-top-bottom":
++        case "context-video-stereo-top-bottom-right-first":
++          gContextMenu.mediaCommand(
++            "stereoChoice",
++            event.target.id.slice("context-video-stereo-".length)
++          );
++          break;
+         case "context-leave-dom-fullscreen":
+           gContextMenu.leaveDOMFullScreen();
+           break;
+diff --git a/browser/base/content/nsContextMenu.sys.mjs b/browser/base/content/nsContextMenu.sys.mjs
+index c3ee7a0cc3..f421d807c6 100644
+--- a/browser/base/content/nsContextMenu.sys.mjs
++++ b/browser/base/content/nsContextMenu.sys.mjs
+@@ -1081,6 +1081,12 @@ export class nsContextMenu {
+       onMedia && this.target.duration != Number.POSITIVE_INFINITY
+     );
+     this.showItem("context-media-loop", onMedia);
++    // The user's choice for a video without a stereo mark of its own
++    // (Sparky Stereo OS).
++    this.showItem(
++      "context-video-stereo",
++      this.onVideo && this.target.stereoChoice !== undefined
++    );
+     this.showItem(
+       "context-media-showcontrols",
+       onMedia && !this.target.controls
+@@ -1134,6 +1140,23 @@ export class nsContextMenu {
+         this.target.playbackRate == 2.0
+       );
+       this.setItemAttr("context-media-loop", "checked", this.target.loop);
++      if (this.onVideo && this.target.stereoChoice !== undefined) {
++        const stereoChoice = this.target.stereoChoice || "auto";
++        for (const choice of [
++          "auto",
++          "mono",
++          "side-by-side",
++          "side-by-side-right-first",
++          "top-bottom",
++          "top-bottom-right-first",
++        ]) {
++          this.setItemAttr(
++            "context-video-stereo-" + choice,
++            "checked",
++            choice == stereoChoice
++          );
++        }
++      }
+       var hasError =
+         this.target.error != null ||
+         this.target.networkState == this.target.NETWORK_NO_SOURCE;
+diff --git a/browser/locales/en-US/browser/browserContext.ftl b/browser/locales/en-US/browser/browserContext.ftl
+index 85b875194a..c023fb1546 100644
+--- a/browser/locales/en-US/browser/browserContext.ftl
++++ b/browser/locales/en-US/browser/browserContext.ftl
+@@ -241,6 +241,32 @@ main-context-menu-media-loop =
+     .label = Loop
+     .accesskey = L
+ 
++## How a video that carries no 3D mark of its own holds the two views of a
++## stereo 3D picture (Sparky Stereo OS). A mark in the video itself always
++## comes first.
++
++main-context-menu-video-stereo =
++    .label = 3D Video
++    .accesskey = 3
++
++main-context-menu-video-stereo-auto =
++    .label = Automatic
++
++main-context-menu-video-stereo-mono =
++    .label = Not 3D
++
++main-context-menu-video-stereo-side-by-side =
++    .label = Side by Side
++
++main-context-menu-video-stereo-side-by-side-right-first =
++    .label = Side by Side, Right Eye First
++
++main-context-menu-video-stereo-top-bottom =
++    .label = Top and Bottom
++
++main-context-menu-video-stereo-top-bottom-right-first =
++    .label = Top and Bottom, Right Eye First
++
+ ## The access keys for "Show Controls" and "Hide Controls" are the same
+ ## because the two context-menu items are mutually exclusive.
+ 
+diff --git a/dom/media/VideoFrameContainer.cpp b/dom/media/VideoFrameContainer.cpp
+index 640b6b76b7..47367ee321 100644
+--- a/dom/media/VideoFrameContainer.cpp
++++ b/dom/media/VideoFrameContainer.cpp
+@@ -10,6 +10,11 @@
+ #  include "GLImages.h"  // for SurfaceTextureImage
+ #endif
+ #include "MediaDecoderOwner.h"
++#include "GPUVideoImage.h"
++#ifdef MOZ_WIDGET_GTK
++#  include "mozilla/layers/DMABUFSurfaceImage.h"
++#  include "mozilla/widget/DMABufSurface.h"
++#endif
+ #include "mozilla/AbstractThread.h"
+ #include "mozilla/gfx/BuildConstants.h"
+ #include "mozilla/gfx/gfxVars.h"
+@@ -138,6 +143,33 @@ void VideoFrameContainer::SetCurrentFramesLocked(
+         }));
+   }
+ 
++#ifdef MOZ_WIDGET_GTK
++  // The user's choice comes after the stream's and the container's marks and
++  // before the picture's shape, which the compositor side looks at last. A
++  // frame decoded in another process takes it to the compositor, which knows
++  // the frame's marks.
++  for (const auto& image : aImages) {
++    if (auto* gpuImage = image.mImage->AsGPUVideoImage()) {
++      gpuImage->SetStereoChoice(mStereoChoice);
++      continue;
++    }
++    auto* dmabufImage = image.mImage->AsDMABUFSurfaceImage();
++    DMABufSurface* surface = dmabufImage ? dmabufImage->GetSurface() : nullptr;
++    if (!surface) {
++      continue;
++    }
++    const StereoSource source = surface->GetStereoSource();
++    if (source != StereoSource::NONE && source != StereoSource::USER) {
++      continue;
++    }
++    if (mStereoChoice) {
++      surface->SetStereoMode(*mStereoChoice, StereoSource::USER);
++    } else if (source == StereoSource::USER) {
++      surface->SetStereoMode(StereoMode::MONO, StereoSource::NONE);
++    }
++  }
++#endif
++
+   gfx::IntSize oldFrameSize = mImageContainer->GetCurrentSize();
+ 
+   // When using the OMX decoder, destruction of the current image can indirectly
+diff --git a/dom/media/VideoFrameContainer.h b/dom/media/VideoFrameContainer.h
+index fdc950a6b2..1038579488 100644
+--- a/dom/media/VideoFrameContainer.h
++++ b/dom/media/VideoFrameContainer.h
+@@ -96,6 +96,14 @@ class VideoFrameContainer {
+ 
+   bool SupportsOnly8BitImage() const { return mSupportsOnly8BitImage; }
+ 
++  // The user's choice of how frames without a stereo mark of their own (no
++  // frame packing SEI, no container mark) hold their views; Nothing() leaves
++  // them unmarked. Any thread.
++  void SetStereoChoice(const Maybe<StereoMode>& aChoice) {
++    MutexAutoLock lock(mMutex);
++    mStereoChoice = aChoice;
++  }
++
+  protected:
+   void SetCurrentFramesLocked(
+       const gfx::IntSize& aIntrinsicSize,
+@@ -130,6 +138,7 @@ class VideoFrameContainer {
+   // specifies that the Image should be stretched to have the correct aspect
+   // ratio.
+   Maybe<gfx::IntSize> mIntrinsicSize MOZ_GUARDED_BY(mMutex);
++  Maybe<StereoMode> mStereoChoice MOZ_GUARDED_BY(mMutex);
+   // We maintain our own mFrameID which is auto-incremented at every
+   // SetCurrentFrame() or NewFrameID() call.
+   ImageContainer::FrameID mFrameID;
+diff --git a/dom/media/mediaelement/HTMLMediaElement.cpp b/dom/media/mediaelement/HTMLMediaElement.cpp
+index 69922d2c5a..f6103830c6 100644
+--- a/dom/media/mediaelement/HTMLMediaElement.cpp
++++ b/dom/media/mediaelement/HTMLMediaElement.cpp
+@@ -7032,10 +7032,18 @@ VideoFrameContainer* HTMLMediaElement::GetVideoFrameContainer() {
+   mVideoFrameContainer = new VideoFrameContainer(
+       this, MakeAndAddRef<ImageContainer>(ImageUsageType::VideoFrameContainer,
+                                           ImageContainer::ASYNCHRONOUS));
++  mVideoFrameContainer->SetStereoChoice(mStereoChoice);
+ 
+   return mVideoFrameContainer;
+ }
+ 
++void HTMLMediaElement::SetStereoChoice(const Maybe<StereoMode>& aChoice) {
++  mStereoChoice = aChoice;
++  if (mVideoFrameContainer) {
++    mVideoFrameContainer->SetStereoChoice(aChoice);
++  }
++}
++
+ void HTMLMediaElement::PrincipalChanged(MediaStreamTrack* aTrack) {
+   if (aTrack != mSelectedVideoStreamTrack) {
+     return;
+diff --git a/dom/media/mediaelement/HTMLMediaElement.h b/dom/media/mediaelement/HTMLMediaElement.h
+index 74ec5b5edf..a076feb7b4 100644
+--- a/dom/media/mediaelement/HTMLMediaElement.h
++++ b/dom/media/mediaelement/HTMLMediaElement.h
+@@ -8,6 +8,7 @@
+ 
+ #include "AudioChannelService.h"
+ #include "DecoderTraits.h"
++#include "ImageTypes.h"
+ #include "MediaDecoderOwner.h"
+ #include "MediaElementEventRunners.h"
+ #include "MediaEventSource.h"
+@@ -312,6 +313,11 @@ class HTMLMediaElement : public nsGenericHTMLElement,
+   VideoFrameContainer* GetVideoFrameContainer() final;
+   layers::ImageContainer* GetImageContainer();
+ 
++  // The user's choice of how a video without a stereo mark of its own holds
++  // its views (Sparky Stereo OS); Nothing() for none.
++  void SetStereoChoice(const Maybe<StereoMode>& aChoice);
++  const Maybe<StereoMode>& StereoChoice() const { return mStereoChoice; }
++
+   /**
+    * Call this to reevaluate whether we should start/stop due to our owner
+    * document being active, inactive, visible or hidden.
+@@ -1488,6 +1494,8 @@ class HTMLMediaElement : public nsGenericHTMLElement,
+   // of video to display.
+   RefPtr<VideoFrameContainer> mVideoFrameContainer;
+ 
++  Maybe<StereoMode> mStereoChoice;
++
+   // Holds a reference to the MediaStream that has been set in the src
+   // attribute.
+   RefPtr<DOMMediaStream> mSrcAttrStream;
+diff --git a/dom/media/mediaelement/HTMLVideoElement.cpp b/dom/media/mediaelement/HTMLVideoElement.cpp
+index 422fbbb03e..e6a98e3274 100644
+--- a/dom/media/mediaelement/HTMLVideoElement.cpp
++++ b/dom/media/mediaelement/HTMLVideoElement.cpp
+@@ -423,6 +423,44 @@ double HTMLVideoElement::MozFrameDelay() {
+   return container ? std::max(0.0, container->GetFrameDelay()) : 0.0;
+ }
+ 
++namespace {
++
++struct StereoChoiceName {
++  StereoMode mMode;
++  const char* mName;
++};
++
++constexpr StereoChoiceName kStereoChoices[] = {
++    {StereoMode::MONO, "mono"},
++    {StereoMode::LEFT_RIGHT, "side-by-side"},
++    {StereoMode::RIGHT_LEFT, "side-by-side-right-first"},
++    {StereoMode::TOP_BOTTOM, "top-bottom"},
++    {StereoMode::BOTTOM_TOP, "top-bottom-right-first"},
++};
++
++}  // namespace
++
++void HTMLVideoElement::GetStereoChoice(nsAString& aChoice) const {
++  aChoice.Truncate();
++  if (const auto& choice = StereoChoice()) {
++    for (const auto& entry : kStereoChoices) {
++      if (entry.mMode == *choice) {
++        aChoice.AssignASCII(entry.mName);
++      }
++    }
++  }
++}
++
++void HTMLVideoElement::SetStereoChoice(const nsAString& aChoice) {
++  Maybe<StereoMode> choice;
++  for (const auto& entry : kStereoChoices) {
++    if (aChoice.EqualsASCII(entry.mName)) {
++      choice = Some(entry.mMode);
++    }
++  }
++  HTMLMediaElement::SetStereoChoice(choice);
++}
++
+ bool HTMLVideoElement::MozHasAudio() const {
+   MOZ_ASSERT(NS_IsMainThread(), "Should be on main thread.");
+   return HasAudio();
+diff --git a/dom/media/mediaelement/HTMLVideoElement.h b/dom/media/mediaelement/HTMLVideoElement.h
+index 5dc80d27f5..9390f0a0a9 100644
+--- a/dom/media/mediaelement/HTMLVideoElement.h
++++ b/dom/media/mediaelement/HTMLVideoElement.h
+@@ -125,6 +125,9 @@ class HTMLVideoElement final : public HTMLMediaElement {
+ 
+   already_AddRefed<VideoPlaybackQuality> GetVideoPlaybackQuality();
+ 
++  void GetStereoChoice(nsAString& aChoice) const;
++  void SetStereoChoice(const nsAString& aChoice);
++
+   already_AddRefed<Promise> CloneElementVisually(HTMLVideoElement& aTarget,
+                                                  ErrorResult& rv);
+ 
+diff --git a/dom/webidl/HTMLVideoElement.webidl b/dom/webidl/HTMLVideoElement.webidl
+index 094a1ee12d..0289c0c9e4 100644
+--- a/dom/webidl/HTMLVideoElement.webidl
++++ b/dom/webidl/HTMLVideoElement.webidl
+@@ -94,6 +94,17 @@ partial interface HTMLVideoElement {
+   VideoPlaybackQuality getVideoPlaybackQuality();
+ };
+ 
++// Sparky Stereo OS: the user's choice, from the browser's own menu, of how a
++// video that carries no stereo mark of its own (no frame packing SEI, no
++// container mark) holds the views of a stereo picture. "" (no choice: the
++// picture's shape decides, last), "mono", "side-by-side",
++// "side-by-side-right-first", "top-bottom" or "top-bottom-right-first".
++// Pages do not see it.
++partial interface HTMLVideoElement {
++  [Func="IsChromeOrUAWidget"]
++  attribute DOMString stereoChoice;
++};
++
+ // https://w3c.github.io/picture-in-picture/#htmlvideoelement-extensions
+ partial interface HTMLVideoElement {
+   [Pref="dom.media-pip.enabled", NewObject, Throws, UseCounter] Promise<PictureInPictureWindow> requestPictureInPicture();
+diff --git a/gfx/layers/GPUVideoImage.h b/gfx/layers/GPUVideoImage.h
+index 14ea8b7425..0b8e4ee17c 100644
+--- a/gfx/layers/GPUVideoImage.h
++++ b/gfx/layers/GPUVideoImage.h
+@@ -89,6 +89,18 @@ class GPUVideoImage final : public Image {
+ 
+   const SurfaceDescriptorGPUVideo& SD() const { return mSD; }
+ 
++  // The user's choice of stereo mode for a frame without a mark of its own
++  // (Sparky Stereo OS): the compositor applies it to the decoded picture.
++  void SetStereoChoice(const Maybe<StereoMode>& aChoice) {
++    mSD.get_SurfaceDescriptorRemoteDecoder().stereoChoice() = aChoice;
++    if (TextureData* data =
++            mTextureClient ? mTextureClient->GetInternalData() : nullptr) {
++      if (GPUVideoTextureData* video = data->AsGPUVideoTextureData()) {
++        video->SetStereoChoice(aChoice);
++      }
++    }
++  }
++
+   void OnSetCurrent() override {
+     if (NS_WARN_IF(!mManager)) {
+       return;
+diff --git a/gfx/layers/client/GPUVideoTextureClient.cpp b/gfx/layers/client/GPUVideoTextureClient.cpp
+index 7446c08fe3..215722945b 100644
+--- a/gfx/layers/client/GPUVideoTextureClient.cpp
++++ b/gfx/layers/client/GPUVideoTextureClient.cpp
+@@ -18,6 +18,10 @@ GPUVideoTextureData::GPUVideoTextureData(IGPUVideoSurfaceManager* aManager,
+ 
+ GPUVideoTextureData::~GPUVideoTextureData() = default;
+ 
++void GPUVideoTextureData::SetStereoChoice(const Maybe<StereoMode>& aChoice) {
++  mSD.get_SurfaceDescriptorRemoteDecoder().stereoChoice() = aChoice;
++}
++
+ bool GPUVideoTextureData::Serialize(SurfaceDescriptor& aOutDescriptor) {
+   aOutDescriptor = mSD;
+   return true;
+diff --git a/gfx/layers/client/GPUVideoTextureClient.h b/gfx/layers/client/GPUVideoTextureClient.h
+index 66688f1a57..32369d381c 100644
+--- a/gfx/layers/client/GPUVideoTextureClient.h
++++ b/gfx/layers/client/GPUVideoTextureClient.h
+@@ -38,6 +38,9 @@ class GPUVideoTextureData : public TextureData {
+ 
+   void OnSetCurrent();
+ 
++  // The user's choice of stereo mode, sent with the descriptor.
++  void SetStereoChoice(const Maybe<StereoMode>& aChoice);
++
+   GPUVideoTextureData* AsGPUVideoTextureData() override { return this; }
+ 
+  protected:
+diff --git a/gfx/layers/client/TextureClient.cpp b/gfx/layers/client/TextureClient.cpp
+index 6660e5ff97..4b575e187d 100644
+--- a/gfx/layers/client/TextureClient.cpp
++++ b/gfx/layers/client/TextureClient.cpp
+@@ -1526,7 +1526,7 @@ void TextureClient::GetSurfaceDescriptorRemoteDecoder(
+ 
+   *aOutDesc = SurfaceDescriptorRemoteDecoder(
+       handle, std::move(subDesc), Nothing(),
+-      SurfaceDescriptorRemoteDecoderId::GetNext());
++      SurfaceDescriptorRemoteDecoderId::GetNext(), Nothing());
+ }
+ 
+ class MemoryTextureReadLock : public NonBlockingTextureReadLock {
+diff --git a/gfx/layers/composite/GPUVideoTextureHost.cpp b/gfx/layers/composite/GPUVideoTextureHost.cpp
+index f8a4e6ecb1..37e8771004 100644
+--- a/gfx/layers/composite/GPUVideoTextureHost.cpp
++++ b/gfx/layers/composite/GPUVideoTextureHost.cpp
+@@ -59,6 +59,10 @@ TextureHost* GPUVideoTextureHost::EnsureWrappedTextureHost() {
+     return nullptr;
+   }
+ 
++  if (sd.stereoChoice()) {
++    mWrappedTextureHost->ApplyStereoChoice(*sd.stereoChoice());
++  }
++
+   if (mExternalImageId.isSome()) {
+     // External image id is allocated by mWrappedTextureHost.
+     mWrappedTextureHost->EnsureRenderTexture(Nothing());
+diff --git a/gfx/layers/composite/TextureHost.h b/gfx/layers/composite/TextureHost.h
+index 14173b674d..651dcb5511 100644
+--- a/gfx/layers/composite/TextureHost.h
++++ b/gfx/layers/composite/TextureHost.h
+@@ -10,6 +10,7 @@
+ #include "mozilla/Assertions.h"  // for MOZ_ASSERT, etc
+ #include "mozilla/Attributes.h"  // for override
+ #include "mozilla/RefPtr.h"      // for RefPtr, already_AddRefed, etc
++#include "ImageTypes.h"          // for StereoMode
+ #include "mozilla/dom/ipc/IdType.h"
+ #include "mozilla/gfx/Logging.h"
+ #include "mozilla/gfx/Matrix.h"
+@@ -611,6 +612,10 @@ class TextureHost : public AtomicRefCountedWithFinalize<TextureHost> {
+ 
+   TextureReadLock* GetReadLock() { return mReadLock; }
+ 
++  // The user's choice of stereo mode for a picture without a mark of its
++  // own (Sparky Stereo OS); only DMABuf pictures carry stereo modes.
++  virtual void ApplyStereoChoice(StereoMode aChoice) {}
++
+   virtual BufferTextureHost* AsBufferTextureHost() { return nullptr; }
+   virtual ShmemTextureHost* AsShmemTextureHost() { return nullptr; }
+   virtual MacIOSurfaceTextureHostOGL* AsMacIOSurfaceTextureHost() {
+diff --git a/gfx/layers/ipc/LayersSurfaces.ipdlh b/gfx/layers/ipc/LayersSurfaces.ipdlh
+index 2b53a3b964..bec3b30666 100644
+--- a/gfx/layers/ipc/LayersSurfaces.ipdlh
++++ b/gfx/layers/ipc/LayersSurfaces.ipdlh
+@@ -155,6 +155,9 @@ namespace layers {
+   RemoteDecoderVideoSubDescriptor subdesc;
+   MaybeVideoBridgeSource source;
+   SurfaceDescriptorRemoteDecoderId id;
++  // The user's choice of the picture's stereo mode, for a frame without a
++  // mark of its own (Sparky Stereo OS).
++  StereoMode? stereoChoice;
+ };
+ 
+ [Comparable] union SurfaceDescriptorGPUVideo {
+diff --git a/gfx/layers/opengl/DMABUFTextureHostOGL.cpp b/gfx/layers/opengl/DMABUFTextureHostOGL.cpp
+index 13a124b5fe..c34caa4ad6 100644
+--- a/gfx/layers/opengl/DMABUFTextureHostOGL.cpp
++++ b/gfx/layers/opengl/DMABUFTextureHostOGL.cpp
+@@ -49,6 +49,17 @@ gfx::ColorRange DMABUFTextureHostOGL::GetColorRange() const {
+                                  : gfx::ColorRange::LIMITED;
+ }
+ 
++// The user's choice comes after the stream's and the container's marks.
++void DMABUFTextureHostOGL::ApplyStereoChoice(StereoMode aChoice) {
++  if (!mSurface) {
++    return;
++  }
++  const StereoSource source = mSurface->GetStereoSource();
++  if (source == StereoSource::NONE || source == StereoSource::USER) {
++    mSurface->SetStereoMode(aChoice, StereoSource::USER);
++  }
++}
++
+ gfx::TransferFunction DMABUFTextureHostOGL::GetTransferFunction() const {
+   if (!mSurface) {
+     return gfx::TransferFunction::BT709;
+diff --git a/gfx/layers/opengl/DMABUFTextureHostOGL.h b/gfx/layers/opengl/DMABUFTextureHostOGL.h
+index c4f95d6317..0a01408497 100644
+--- a/gfx/layers/opengl/DMABUFTextureHostOGL.h
++++ b/gfx/layers/opengl/DMABUFTextureHostOGL.h
+@@ -47,6 +47,8 @@ class DMABUFTextureHostOGL : public TextureHost {
+   void CreateRenderTexture(
+       const wr::ExternalImageId& aExternalImageId) override;
+ 
++  void ApplyStereoChoice(StereoMode aChoice) override;
++
+   void PushResourceUpdates(wr::TransactionBuilder& aResources,
+                            ResourceUpdateOp aOp,
+                            const Range<wr::ImageKey>& aImageKeys,
+-- 
+2.53.0
+

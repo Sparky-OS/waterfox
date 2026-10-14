@@ -1,0 +1,12 @@
+# AppArmor profile, as Waterfox's own package ships one: it does not
+# confine the browser, it only grants the unprivileged user namespaces its
+# sandbox needs where the kernel restricts them.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile sparky-stereo-browser /usr/lib/sparky-stereo-browser/{sparky-stereo-browser,sparky-stereo-browser-bin,plugin-container,glxtest,vaapitest} flags=(unconfined) {
+  userns,
+
+  # Site-specific additions and overrides. See local/README for details.
+  include if exists <local/sparky-stereo-browser>
+}

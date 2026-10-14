@@ -1,0 +1,28 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Waterfox
+Upstream-Contact: BrowserWorks Ltd
+Source: https://github.com/BrowserWorks/waterfox
+Comment: Built from the Waterfox release tag named in the changelog. The
+ browser bundles third-party code under several licences; the complete list
+ is shown by the browser at about:license.
+
+Files: *
+Copyright: Mozilla Foundation and contributors
+           BrowserWorks Ltd and contributors
+License: MPL-2.0
+
+Files: debian/*
+Copyright: 2026 Daniel Ramos (Capitain Jack) <Capitain_Jack@yahoo.com>
+Comment: Sparky Stereo OS, an edition of SparkyLinux, created by Paweł
+ "pavroo" Pijanowski and Daniel Ramos (Capitain Jack)
+ <Capitain_Jack@yahoo.com>. Adapted from Waterfox's OBS recipe
+ (waterfox/browser/installer/linux/obs).
+License: MPL-2.0
+
+License: MPL-2.0
+ This Source Code Form is subject to the terms of the Mozilla Public
+ License, v. 2.0. If a copy of the MPL was not distributed with this
+ file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ .
+ On Debian systems, the full text of the Mozilla Public License version 2.0
+ can be found in the file `/usr/share/common-licenses/MPL-2.0'.

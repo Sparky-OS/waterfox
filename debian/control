@@ -1,0 +1,46 @@
+Source: sparky-stereo-browser
+Maintainer: Daniel Ramos (Capitain Jack) <Capitain_Jack@yahoo.com>
+Section: web
+Priority: optional
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+Build-Depends: debhelper-compat (= 13),
+ libasound2t64,
+ libatk1.0-0t64,
+ libcairo-gobject2,
+ libcairo2,
+ libdbus-1-3,
+ libfontconfig1,
+ libfreetype6,
+ libgdk-pixbuf-2.0-0,
+ libglib2.0-0t64,
+ libgtk-3-0t64,
+ libpango-1.0-0,
+ libx11-6,
+ libx11-xcb1,
+ libxcb-shm0,
+ libxcb1,
+ libxcomposite1,
+ libxcursor1,
+ libxdamage1,
+ libxext6,
+ libxfixes3,
+ libxi6,
+ libxrandr2,
+ libxrender1
+Homepage: https://sparkylinux.org
+
+Package: sparky-stereo-browser
+Architecture: amd64
+Depends: ${misc:Depends}, ${shlibs:Depends}, libstereo-declare1, libstereo-layer1 (>= 1.1.0)
+Provides: gnome-www-browser, www-browser
+Description: Sparky Stereo OS's build of Waterfox
+ A web browser built from the Waterfox release by BrowserWorks, which is
+ based on Mozilla Firefox, for Sparky Stereo OS, an edition of SparkyLinux.
+ It is the base for the edition's stereo 3D work on the web: a video that
+ holds both eyes, or a WebXR page, is declared to the desktop's compositor,
+ which shows each eye its view while the page stays flat. The screen is a
+ WebXR immersive device.
+ .
+ Waterfox is a trademark of BrowserWorks; this build is not made or
+ endorsed by BrowserWorks, so it carries a name of its own.

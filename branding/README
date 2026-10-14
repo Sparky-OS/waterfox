@@ -1,0 +1,8 @@
+Branding for Sparky Stereo OS's build of Waterfox, until BrowserWorks agrees
+to anything else. build-in-container.sh copies Mozilla's in-tree
+"unofficial" branding (browser/branding/unofficial: generic artwork, no
+Mozilla or Waterfox marks) to browser/branding/sparky-stereo, lays these
+files over it, and uses Waterfox's own build template for the directory
+(waterfox/browser/branding/moz.build and branding-common.mozbuild), which
+installs the icon sizes Waterfox's package manifest lists. The name is
+provisional and is set here and in the mozconfig only.

@@ -1,0 +1,41 @@
+#!/usr/bin/make -f
+# Installs the tree that build.sh built and packaged (./mach package), as
+# Waterfox's own OBS recipe installs its release tarball.
+
+PKG := sparky-stereo-browser
+PKGDIR := debian/$(PKG)
+INSTDIR := $(PKGDIR)/usr/lib/$(PKG)
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+override_dh_auto_build:
+override_dh_auto_test:
+
+override_dh_auto_install:
+	install -d $(INSTDIR)
+	cp -a $(PKG)/. $(INSTDIR)/
+	install -d $(PKGDIR)/usr/bin
+	ln -sf /usr/lib/$(PKG)/$(PKG) $(PKGDIR)/usr/bin/$(PKG)
+	install -D -m 0644 debian/$(PKG).desktop $(PKGDIR)/usr/share/applications/$(PKG).desktop
+	install -D -m 0644 debian/$(PKG).metainfo.xml $(PKGDIR)/usr/share/metainfo/$(PKG).metainfo.xml
+	install -D -m 0644 debian/usr.bin.$(PKG) $(PKGDIR)/etc/apparmor.d/usr.bin.$(PKG)
+	install -D -m 0644 debian/package-prefs.js $(INSTDIR)/defaults/pref/package-prefs.js
+	install -D -m 0644 debian/$(PKG).1 $(PKGDIR)/usr/share/man/man1/$(PKG).1
+	echo "This is a packaged app." > $(INSTDIR)/is-packaged-app
+	for s in 16 32 48 64 128; do \
+	  install -D -m 0644 $(INSTDIR)/browser/chrome/icons/default/default$${s}.png \
+	    $(PKGDIR)/usr/share/icons/hicolor/$${s}x$${s}/apps/$(PKG).png ; \
+	done
+
+# mach already stripped the binaries (--enable-strip, --enable-install-strip).
+override_dh_strip:
+override_dh_strip_nondeterminism:
+override_dh_dwz:
+
+# The bundled libraries are private to the browser: no shlibs file for them.
+override_dh_makeshlibs:
+
+override_dh_shlibdeps:
+	dh_shlibdeps -l$(CURDIR)/$(INSTDIR)

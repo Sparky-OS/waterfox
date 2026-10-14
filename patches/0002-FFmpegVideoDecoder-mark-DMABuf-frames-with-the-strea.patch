@@ -1,0 +1,70 @@
+From 1dc1bf2365564055cc4deca0e6305cafdc53e605 Mon Sep 17 00:00:00 2001
+From: Daniel Campos Ramos <Capitain_Jack@yahoo.com>
+Date: Mon, 12 Oct 2026 21:05:17 -0300
+Subject: [PATCH 02/12] FFmpegVideoDecoder: mark DMABuf frames with the
+ stream's stereo mode
+
+Every DMABuf frame the decoder makes (VA-API, Vulkan, V4L2 and software
+decoding uploaded to DMABuf) takes the stereo mode of the stream, as the
+software path's YCbCr images already do (FFmpegVideoDecoder.cpp,
+data.mStereoMode = mInfo.mStereoMode).
+
+Assisted-by: Claude Opus 5.5 via Claude Code
+---
+ dom/media/platforms/ffmpeg/FFmpegVideoDecoder.cpp | 4 ++++
+ dom/media/platforms/ffmpeg/FFmpegVideoFramePool.h | 3 +++
+ 2 files changed, 7 insertions(+)
+
+diff --git a/dom/media/platforms/ffmpeg/FFmpegVideoDecoder.cpp b/dom/media/platforms/ffmpeg/FFmpegVideoDecoder.cpp
+index 325c1e2149..e2a402a7e9 100644
+--- a/dom/media/platforms/ffmpeg/FFmpegVideoDecoder.cpp
++++ b/dom/media/platforms/ffmpeg/FFmpegVideoDecoder.cpp
+@@ -2039,6 +2039,7 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateImage(
+           mVideoFramePool->GetVideoFrameSurface(*yuvData, mCodecContext);
+       if (surface) {
+         surface->SetYUVColorSpace(GetFrameColorSpace());
++        surface->SetStereoMode(mInfo.mStereoMode);
+         surface->SetColorRange(GetFrameColorRange());
+         if (mInfo.mColorPrimaries) {
+           surface->SetColorPrimaries(mInfo.mColorPrimaries.value());
+@@ -2142,6 +2143,7 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateImageVAAPI(
+   }
+ 
+   surface->SetYUVColorSpace(GetFrameColorSpace());
++  surface->SetStereoMode(mInfo.mStereoMode);
+   surface->SetColorRange(GetFrameColorRange());
+   if (mInfo.mColorPrimaries) {
+     surface->SetColorPrimaries(mInfo.mColorPrimaries.value());
+@@ -2361,6 +2363,7 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateImageVulkan(
+   }
+ 
+   surface->SetYUVColorSpace(GetFrameColorSpace());
++  surface->SetStereoMode(mInfo.mStereoMode);
+   surface->SetColorRange(GetFrameColorRange());
+   if (mInfo.mColorPrimaries) {
+     surface->SetColorPrimaries(mInfo.mColorPrimaries.value());
+@@ -2417,6 +2420,7 @@ MediaResult FFmpegVideoDecoder<LIBAV_VER>::CreateImageV4L2(
+                        RESULT_DETAIL("V4L2 dmabuf allocation error"));
+   }
+   surface->SetYUVColorSpace(GetFrameColorSpace());
++  surface->SetStereoMode(mInfo.mStereoMode);
+   surface->SetColorRange(GetFrameColorRange());
+ 
+   RefPtr<VideoData> vp = VideoData::CreateFromImage(
+diff --git a/dom/media/platforms/ffmpeg/FFmpegVideoFramePool.h b/dom/media/platforms/ffmpeg/FFmpegVideoFramePool.h
+index b9e43786c0..94a7b11848 100644
+--- a/dom/media/platforms/ffmpeg/FFmpegVideoFramePool.h
++++ b/dom/media/platforms/ffmpeg/FFmpegVideoFramePool.h
+@@ -82,6 +82,9 @@ class VideoFrameSurface<LIBAV_VER> {
+   void SetWPChromaLocation(uint32_t aWPChromaLocation) {
+     mSurface->GetAsDMABufSurfaceYUV()->SetWPChromaLocation(aWPChromaLocation);
+   }
++  void SetStereoMode(mozilla::StereoMode aStereoMode) {
++    mSurface->SetStereoMode(aStereoMode);
++  }
+   void SetVulkanCopySlotIndex(int32_t aSlotIndex) {
+     mVulkanCopySlotIndex = aSlotIndex;
+   }
+-- 
+2.53.0
+
