@@ -122,6 +122,20 @@ document.addEventListener(
         case "context-video-stereo-swap":
           gContextMenu.mediaCommand("stereoSwap");
           break;
+        case "context-xr-stereo-mode-tv":
+        case "context-xr-stereo-mode-headset":
+        case "context-xr-stereo-mode-phone":
+        case "context-xr-stereo-depth-less":
+        case "context-xr-stereo-depth-normal":
+        case "context-xr-stereo-depth-more":
+        case "context-xr-stereo-depth-most":
+        case "context-xr-stereo-plane-nearer":
+        case "context-xr-stereo-plane-default":
+        case "context-xr-stereo-plane-farther":
+          gContextMenu.setXRStereo(
+            event.target.id.slice("context-xr-stereo-".length)
+          );
+          break;
         case "context-canvas-stereo-off":
           gContextMenu.setCanvasStereo(false);
           break;

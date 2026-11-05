@@ -839,6 +839,22 @@ let JSWINDOWACTORS = {
     allFrames: true,
   },
 
+  // Sparky Stereo OS: the hint, the mode and the Exit control while an
+  // immersive WebXR session shows the flat stereo display.
+  StereoXR: {
+    child: {
+      esModuleURI: "resource:///actors/StereoXRChild.sys.mjs",
+      events: {
+        MozStereoXRStart: {},
+        MozStereoXREnd: {},
+        fullscreenchange: {},
+      },
+    },
+
+    messageManagerGroups: ["browsers"],
+    allFrames: true,
+  },
+
   ASRouter: {
     parent: {
       esModuleURI: "resource:///actors/ASRouterParent.sys.mjs",

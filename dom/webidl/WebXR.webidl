@@ -15,6 +15,11 @@ interface XRSystem : EventTarget {
   [NewObject, NeedsCallerType]
   Promise<XRSession> requestSession(XRSessionMode mode, optional XRSessionInit options = {});
 
+  // Sparky Stereo OS: the browser's own Exit control (Escape too) ends the
+  // immersive session on the flat stereo display. Pages do not see it.
+  [ChromeOnly]
+  undefined exitFlatSession();
+
   // Events
   attribute EventHandler ondevicechange;
 };

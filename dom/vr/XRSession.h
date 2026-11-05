@@ -116,11 +116,17 @@ class XRSession final : public DOMEventTargetHelper, public nsARefreshObserver {
     std::array<gfx::VRFieldOfView, gfx::VRDisplayState::NumEyes> mFieldOfView;
     std::array<gfx::Point3D, gfx::VRDisplayState::NumEyes> mOffset;
     gfx::IntSize mEyeResolution;
+    // False until the display's depth has been read (a pose is not reported
+    // before: WebXR 5.1 XRFrame.getViewerPose may return null).
+    bool mReady = true;
   };
   bool IsFlat() const;
   bool IsInlineStereo() const { return mInlineStereo; }
   void SetInlineStereo(bool aInlineStereo) { mInlineStereo = aInlineStereo; }
   WindowViews GetWindowViews() const;
+  // The person's choice of how the screen is seen (dom.vr.flat.mode): 0 flat
+  // TV or output, 1 flat headset, 2 VR over the phone.
+  static int32_t FlatMode();
   // With no controllers, the viewer turns with the mouse and moves with the
   // keys and the wheel; this is the viewer's pose in the session's space.
   gfx::QuaternionDouble FlatOrientation() const;
@@ -186,6 +192,25 @@ class XRSession final : public DOMEventTargetHelper, public nsARefreshObserver {
   double mFlatYaw = 0.0;
   double mFlatPitch = 0.0;
   gfx::PointDouble3D mFlatPosition;
+
+  // The display's depth for the mode, size and strength it was asked for,
+  // read by libstereo-policy in the parent process (the one source the
+  // desktop reads too); the key tells what it answers.
+  struct FlatDepth {
+    bool mReady = false;
+    uint64_t mKey = 0;
+    double mSunkPx = 0;
+    double mPoppedPx = 0;
+    int32_t mViewingDistanceMm = 0;
+  };
+  mutable FlatDepth mFlatDepth;
+  mutable uint64_t mFlatDepthAsked = 0;
+  mutable bool mFlatSizeNoticed = false;
+  void AskFlatDepth(int32_t aKind, int32_t aWidthMm, int32_t aHeightMm,
+                    uint32_t aStrength, uint64_t aKey) const;
+  // Tells the page's document (the browser's own UI listens) that the flat
+  // display's immersive session began or ended.
+  void NotifyFlatSession(bool aStarted);
 };
 
 }  // namespace dom

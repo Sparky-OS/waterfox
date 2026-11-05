@@ -84,6 +84,12 @@ already_AddRefed<XRViewerPose> XRFrame::GetViewerPose(
       viewerPosition = mSession->FlatPosition();
       viewerOrientation = mSession->FlatOrientation();
       windowViews = mSession->GetWindowViews();
+      if (!windowViews.mReady) {
+        // The display's depth is being read: no pose yet (a viewer pose may
+        // be null, WebXR 5.1 XRFrame.getViewerPose, and a page
+        // asks again on the next frame).
+        return nullptr;
+      }
     }
 
     gfx::Matrix4x4Double headTransform;
@@ -128,6 +134,9 @@ already_AddRefed<XRViewerPose> XRFrame::GetViewerPose(
     // geometry"). The views share the canvas, left half and right half
     // (XRWebGLLayer::GetViewport), and the canvas is declared to hold both.
     const XRSession::WindowViews windowViews = mSession->GetWindowViews();
+    if (!windowViews.mReady) {
+      return nullptr;
+    }
     viewerPose =
         mSession->PooledViewerPose(gfx::Matrix4x4Double(), emulatedPosition);
     for (int32_t eye = 0; eye < gfx::VRDisplayState::NumEyes; eye++) {

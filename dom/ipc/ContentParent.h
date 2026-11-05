@@ -1407,6 +1407,11 @@ class ContentParent final : public PContentParent,
   mozilla::ipc::IPCResult RecvGetStereoFileSwap(
       nsIURI* aURI, GetStereoFileSwapResolver&& aResolver);
 
+  mozilla::ipc::IPCResult RecvGetStereoDisplayDepth(
+      const int32_t& aKind, const int32_t& aWidthMm, const int32_t& aHeightMm,
+      const double& aStrengthPercent,
+      GetStereoDisplayDepthResolver&& aResolver);
+
   mozilla::ipc::IPCResult RecvGetStereoSiteMark(
       const nsCString& aKeywords, GetStereoSiteMarkResolver&& aResolver);
 

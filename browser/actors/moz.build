@@ -83,6 +83,9 @@ with Files("SpeechDispatcher*.sys.mjs"):
 with Files("StereoSiteMarkChild.sys.mjs"):
     BUG_COMPONENT = ("Core", "Audio/Video: Playback")
 
+with Files("StereoXRChild.sys.mjs"):
+    BUG_COMPONENT = ("Core", "WebVR")
+
 with Files("SwitchDocumentDirectionChild.sys.mjs"):
     BUG_COMPONENT = ("Core", "Internationalization")
 
@@ -141,6 +144,7 @@ FINAL_TARGET_FILES.actors += [
     "SpeechDispatcherChild.sys.mjs",
     "SpeechDispatcherParent.sys.mjs",
     "StereoSiteMarkChild.sys.mjs",
+    "StereoXRChild.sys.mjs",
     "SwitchDocumentDirectionChild.sys.mjs",
     "WebRTCChild.sys.mjs",
     "WebRTCParent.sys.mjs",

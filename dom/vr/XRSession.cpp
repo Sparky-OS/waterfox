@@ -25,9 +25,14 @@
 #include "mozilla/dom/XRInputSourceEvent.h"
 #include "mozilla/dom/XRSessionEvent.h"
 #include <algorithm>
+#include <cmath>
+#include <tuple>
 
 #include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/DOMRect.h"
+#include "nsContentUtils.h"
+#include "mozilla/StaticPrefs_dom.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/ElementBinding.h"
 #include "mozilla/dom/HTMLCanvasElement.h"
@@ -381,6 +386,7 @@ void XRSession::StartFlatPresentation(HTMLCanvasElement* aCanvas) {
   }
   RefPtr<Promise> promise =
       aCanvas->RequestFullscreen(FullscreenOptions(), CallerType::System, rv);
+  NotifyFlatSession(true);
   if (nsGlobalWindowInner* win = GetOwnerWindow()) {
     mFlatInput = new FlatInputListener(this);
     for (const auto& type : kFlatInputEvents) {
@@ -389,7 +395,20 @@ void XRSession::StartFlatPresentation(HTMLCanvasElement* aCanvas) {
   }
 }
 
+void XRSession::NotifyFlatSession(bool aStarted) {
+  // The browser's own UI (the StereoXR actor) shows the hint, the mode and the
+  // Exit control while the session lasts; pages do not see this event.
+  if (Document* doc = mFlatCanvas ? mFlatCanvas->OwnerDoc() : nullptr) {
+    nsContentUtils::DispatchEventOnlyToChrome(
+        doc, doc, aStarted ? u"MozStereoXRStart"_ns : u"MozStereoXREnd"_ns,
+        CanBubble::eYes, Cancelable::eNo);
+  }
+}
+
 void XRSession::StopFlatPresentation() {
+  if (mFlatCanvas) {
+    NotifyFlatSession(false);
+  }
   if (mFlatInput) {
     if (nsGlobalWindowInner* win = GetOwnerWindow()) {
       for (const auto& type : kFlatInputEvents) {
@@ -412,11 +431,63 @@ void XRSession::StopFlatPresentation() {
   }
 }
 
+int32_t XRSession::FlatMode() {
+  return std::clamp<int32_t>(StaticPrefs::dom_vr_flat_mode(), 0, 2);
+}
+
+void XRSession::AskFlatDepth(int32_t aKind, int32_t aWidthMm, int32_t aHeightMm,
+                             uint32_t aStrength, uint64_t aKey) const {
+  mFlatDepthAsked = aKey;
+  if (!XRE_IsContentProcess()) {
+    return;
+  }
+  ContentChild* child = ContentChild::GetSingleton();
+  if (!child) {
+    return;
+  }
+  child->SendGetStereoDisplayDepth(aKind, aWidthMm, aHeightMm,
+                                   double(aStrength))
+      ->Then(
+          GetMainThreadSerialEventTarget(), __func__,
+          [self = RefPtr{const_cast<XRSession*>(this)}, aKey](
+              const std::tuple<int32_t, double, double, int32_t, int32_t>&
+                  aAnswer) {
+            const auto [ok, sunk, popped, distance, known] = aAnswer;
+            if (self->mFlatDepthAsked != aKey) {
+              return;
+            }
+            if (ok != 0) {
+              // Said, never silent: the package depends on libstereo-policy1
+              // 1.15, so this is a library that was removed or replaced.
+              nsContentUtils::LogSimpleConsoleError(
+                  u"Stereo: libstereo-policy 1.15 or newer is missing, so the "
+                  u"display's depth cannot be read and the flat stereo "
+                  u"display shows no views."_ns,
+                  "media"_ns, false, true);
+              return;
+            }
+            if (!known && !self->mFlatSizeNoticed) {
+              self->mFlatSizeNoticed = true;
+              nsContentUtils::LogSimpleConsoleError(
+                  u"Stereo: the display's size is not known, so the depth of "
+                  u"a 24 inch monitor stands in for it."_ns,
+                  "media"_ns, false, true);
+            }
+            self->mFlatDepth.mReady = true;
+            self->mFlatDepth.mKey = aKey;
+            self->mFlatDepth.mSunkPx = sunk;
+            self->mFlatDepth.mPoppedPx = popped;
+            self->mFlatDepth.mViewingDistanceMm = distance;
+          },
+          [](mozilla::ipc::ResponseRejectReason) {});
+}
+
 XRSession::WindowViews XRSession::GetWindowViews() const {
   // The window: its size in device pixels and in millimetres.
   RefPtr<widget::Screen> screen =
       widget::ScreenManager::GetSingleton().GetPrimaryScreen();
   double dpi = screen ? screen->GetDPI() : 0.0;
+  const bool sizeKnown = dpi > 0.0;
   if (dpi <= 0.0) {
     dpi = 96.0;
   }
@@ -439,18 +510,69 @@ XRSession::WindowViews XRSession::GetWindowViews() const {
   }
   const double width = pixels.width * 25.4 / dpi;
   const double height = pixels.height * 25.4 / dpi;
-  const double distance = StaticPrefs::dom_vr_flat_viewer_distance_mm();
-  const double separation = StaticPrefs::dom_vr_flat_eye_separation_mm();
+
+  WindowViews views;
+  views.mEyeResolution = pixels;
+  double viewer = StaticPrefs::dom_vr_flat_viewer_distance_mm();
+  double separation = StaticPrefs::dom_vr_flat_eye_separation_mm();
+  double plane = viewer;
+  if (separation <= 0) {
+    // The depth of the display, under the person's choice (WebXR is in
+    // metres, the display's depth in pixels of a 1920 wide view): the
+    // screen's own size (that of the display, not of an inline canvas) and
+    // the mode decide what is comfortable, the person's strength scales it.
+    const int32_t kind = FlatMode() == 0 ? 0 : 2;
+    const uint32_t strength = StaticPrefs::dom_vr_flat_depth_strength();
+    const gfx::IntSize screenPixels =
+        screen ? screen->GetRect().Size().ToUnknownSize() : pixels;
+    const int32_t screenWidthMm =
+        sizeKnown ? int32_t(lround(screenPixels.width * 25.4 / dpi)) : 0;
+    const int32_t screenHeightMm =
+        sizeKnown ? int32_t(lround(screenPixels.height * 25.4 / dpi)) : 0;
+    const uint64_t key = (uint64_t(kind) << 60) ^
+                         (uint64_t(screenWidthMm & 0xfffff) << 40) ^
+                         (uint64_t(screenHeightMm & 0xfffff) << 20) ^
+                         uint64_t(strength) ^ 0x1000000000000000ull;
+    if (key != mFlatDepthAsked) {
+      AskFlatDepth(kind, screenWidthMm, screenHeightMm, strength, key);
+    }
+    if (!mFlatDepth.mReady) {
+      views.mReady = false;
+      return views;
+    }
+    if (viewer <= 0) {
+      viewer = mFlatDepth.mViewingDistanceMm;
+    }
+    // The screen plane: where an object has no parallax, in the page's world.
+    // The window is that far away and as large as keeps the view's angle, and
+    // the eyes are apart by the display's far parallax (its sunk limit) as a
+    // fraction of that window: an object at distance z has a parallax of
+    // that fraction of the window times (1 - plane / z), so it sinks
+    // towards the far limit and pops in front of the plane.
+    const double person = StaticPrefs::dom_vr_flat_screen_plane_mm();
+    plane = person > 0 ? person : 1000.0;
+    const double windowWidth = width * plane / viewer;
+    separation = mFlatDepth.mSunkPx / 1920.0 * windowWidth;
+    // the window as the eyes at the plane see it
+  } else {
+    // The expert's own physical separation: the screen at the viewer's
+    // distance (700 mm unless set), as before the display's depth.
+    if (viewer <= 0) {
+      viewer = 700.0;
+    }
+    plane = viewer;
+  }
+  const double windowWidth = width * plane / viewer;
+  const double windowHeight = height * plane / viewer;
 
   // Each eye's frustum through the window: the window's edge on the eye's
   // own side is nearer to it by half the separation, the other edge farther.
   // VRFieldOfView takes up, right, down, left, in degrees.
   const double ownSide =
-      atan((width - separation) / 2.0 / distance) / kRadPerDegree;
+      atan((windowWidth - separation) / 2.0 / plane) / kRadPerDegree;
   const double otherSide =
-      atan((width + separation) / 2.0 / distance) / kRadPerDegree;
-  const double vertical = atan(height / 2.0 / distance) / kRadPerDegree;
-  WindowViews views;
+      atan((windowWidth + separation) / 2.0 / plane) / kRadPerDegree;
+  const double vertical = atan(windowHeight / 2.0 / plane) / kRadPerDegree;
   views.mFieldOfView[gfx::VRDisplayState::Eye_Left] =
       gfx::VRFieldOfView(vertical, otherSide, vertical, ownSide);
   views.mFieldOfView[gfx::VRDisplayState::Eye_Right] =
@@ -458,7 +580,6 @@ XRSession::WindowViews XRSession::GetWindowViews() const {
   const float offset = float(separation / 2000.0);
   views.mOffset[gfx::VRDisplayState::Eye_Left] = gfx::Point3D(-offset, 0, 0);
   views.mOffset[gfx::VRDisplayState::Eye_Right] = gfx::Point3D(offset, 0, 0);
-  views.mEyeResolution = pixels;
   return views;
 }
 
@@ -493,6 +614,15 @@ void XRSession::HandleFlatInput(Event& aEvent) {
   } else if (KeyboardEvent* key = aEvent.AsKeyboardEvent()) {
     nsAutoString name;
     key->GetKey(name);
+    if (name.EqualsLiteral("Escape")) {
+      // Escape always ends the immersive session on the flat display, with
+      // or without full screen (WebXR 4.1 "shut down the session":
+      // the user agent may end a session at any time, and must when the
+      // person asks it to), and the page sees its "end" event.
+      aEvent.PreventDefault();
+      ExitPresentInternal();
+      return;
+    }
     if (name.EqualsLiteral("ArrowUp") || name.EqualsLiteral("w")) {
       move(0.1, 0.0);
     } else if (name.EqualsLiteral("ArrowDown") || name.EqualsLiteral("s")) {

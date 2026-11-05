@@ -8104,6 +8104,31 @@ IPCResult ContentParent::RecvGetStereoFileSwap(
   return IPC_OK();
 }
 
+IPCResult ContentParent::RecvGetStereoDisplayDepth(
+    const int32_t& aKind, const int32_t& aWidthMm, const int32_t& aHeightMm,
+    const double& aStrengthPercent, GetStereoDisplayDepthResolver&& aResolver) {
+  using ResolverArgs = std::tuple<const int32_t&, const double&, const double&,
+                                  const int32_t&, const int32_t&>;
+  int32_t ok = -1, distance = 0, known = 0;
+  double sunk = 0, popped = 0;
+#if defined(MOZ_WAYLAND)
+  const auto* policy = layers::GetStereoPolicy();
+  if (policy && policy->displayDepth) {
+    layers::StereoPolicy::Depth depth{};
+    ok = policy->displayDepth(aKind, aWidthMm, aHeightMm, aStrengthPercent, 0,
+                              0, &depth);
+    if (ok == 0) {
+      sunk = depth.mSunkPx;
+      popped = depth.mPoppedPx;
+      distance = depth.mViewingDistanceMm;
+      known = depth.mSizeKnown;
+    }
+  }
+#endif
+  aResolver(ResolverArgs(ok, sunk, popped, distance, known));
+  return IPC_OK();
+}
+
 IPCResult ContentParent::RecvGetStereoSiteMark(
     const nsCString& aKeywords, GetStereoSiteMarkResolver&& aResolver) {
   using ResolverArgs = std::tuple<const int32_t&, const int32_t&,

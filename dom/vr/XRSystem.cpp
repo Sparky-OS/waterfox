@@ -89,6 +89,12 @@ void XRSystem::Shutdown() {
   }
 }
 
+void XRSystem::ExitFlatSession() {
+  if (RefPtr<XRSession> session = mActiveImmersiveSession) {
+    session->ExitPresent();
+  }
+}
+
 void XRSystem::SessionEnded(XRSession* aSession) {
   if (mActiveImmersiveSession == aSession) {
     mActiveImmersiveSession = nullptr;

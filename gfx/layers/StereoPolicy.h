@@ -42,6 +42,22 @@ struct StereoPolicy {
   // none is given. Null in libraries older than 1.13.
   int (*siteMarkList)(const char* aKeywords, int* aLayout, int* aOrder,
                       int* aAspectNum, int* aAspectDen) = nullptr;
+
+  // The depth of a display (libstereo-policy 1.15, stereo-policy.h): the one
+  // source of how far a stereo output sinks and pops, read by the desktop and
+  // by the browser. Mirrors struct stereo_policy_depth.
+  struct Depth {
+    double mSunkPx;          // behind the screen, pixels of a 1920 wide view
+    double mPoppedPx;        // in front of it
+    int mViewingDistanceMm;  // where the viewer sits
+    int mSizeKnown;          // 1 when the physical size was given
+  };
+  static constexpr int kDisplayFramed = 0;
+  static constexpr int kDisplayAnaglyph = 1;
+  static constexpr int kDisplayHeadset = 2;
+  int (*displayDepth)(int aKind, int aWidthMm, int aHeightMm,
+                      double aStrengthPercent, double aSunkOverridePx,
+                      double aPoppedOverridePx, Depth* aOut) = nullptr;
 };
 
 // Null without the library.

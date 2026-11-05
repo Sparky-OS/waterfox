@@ -5715,23 +5715,54 @@
 # hardware.  If a VR multitasking environment, this should be set
 # very low or set to 0.
 # The flat stereo display: the screen itself offered as an immersive WebXR
-# device. Each eye's view goes through the screen as a window, seen from the
-# viewer's seat (both distances in millimetres), and the session's canvas
-# shows both eyes side by side, declared to a compositor that shows each eye
-# its half (gfx/vr/service/FlatSession.cpp). It also offers inline-stereo.
+# device. Each eye's view goes through the screen as a window, and the
+# session's canvas shows both eyes side by side, declared to a compositor that
+# shows each eye its half (gfx/vr/service/FlatSession.cpp). It also offers
+# inline-stereo.
+#
+# The person picks how it is seen, never the output (they may show a 3D
+# television and a headset at once): the mode, then the depth, both read
+# with the display's own default under them (libstereo-policy's display
+# depth, the one source the desktop reads too).
+#   0 flat TV or output: a framed screen, gentle separation around the
+#     screen plane, a gentle pop;
+#   1 flat headset: the screen as a window in a headset, more separation;
+#   2 VR over the phone: the phone headset's own session, with head tracking
+#     and controllers once the tracked phone headset delivers them.
 - name: dom.vr.flat.enabled
   type: RelaxedAtomicBool
   value: false
   mirror: always
 
+- name: dom.vr.flat.mode
+  type: RelaxedAtomicInt32
+  value: 0
+  mirror: always
+
+# The person's depth, in percent of the display's default (100).
+- name: dom.vr.flat.depth-strength
+  type: RelaxedAtomicUint32
+  value: 100
+  mirror: always
+
+# Where the screen plane is in the page's world, in millimetres: the distance
+# at which an object has no parallax. 0 is the default, 1000.
+- name: dom.vr.flat.screen-plane-mm
+  type: RelaxedAtomicUint32
+  value: 0
+  mirror: always
+
+# Expert overrides of the display's own geometry, in millimetres, 0 for the
+# display's own: the distance the screen is seen from, and a physical eye
+# separation (which, when set, replaces the depth of the display).
 - name: dom.vr.flat.viewer-distance-mm
   type: RelaxedAtomicUint32
-  value: 700
+  value: 0
   mirror: always
 
 - name: dom.vr.flat.eye-separation-mm
   type: RelaxedAtomicUint32
-  value: 64
+  value: 0
   mirror: always
 
 - name: dom.vr.inactive.timeout

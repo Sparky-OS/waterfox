@@ -110,6 +110,9 @@ class XRSystem final : public DOMEventTargetHelper,
   bool OnXRPermissionRequestAllow();
   void OnXRPermissionRequestCancel();
   bool HasActiveImmersiveSession() const;
+  // The browser's Exit control on the flat stereo display (WebXR 4.1
+  // "shut down the session"): ends the active immersive session.
+  void ExitFlatSession();
 
   // WebIDL Boilerplate
   static already_AddRefed<XRSystem> Create(nsPIDOMWindowInner* aWindow);

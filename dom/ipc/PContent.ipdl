@@ -1981,6 +1981,16 @@ parent:
     // library is missing or too old); the layout and order are its
     // stereo_policy_layout and stereo_policy_order values, the aspect the
     // shape of one view (0 and 0 when none is given).
+    // Sparky Stereo OS: the depth of a display, read by libstereo-policy,
+    // the one source the desktop reads too (stereo_policy_display_depth):
+    // the limits the display sinks and pops at (pixels of a 1920 wide view),
+    // the distance it is seen from and whether its size was known. aOk is 0,
+    // or -1 when the library is missing or too old.
+    async GetStereoDisplayDepth(int32_t aKind, int32_t aWidthMm,
+                                int32_t aHeightMm, double aStrengthPercent)
+        returns (int32_t aOk, double aSunkPx, double aPoppedPx,
+                 int32_t aDistanceMm, int32_t aSizeKnown);
+
     async GetStereoSiteMark(nsCString aKeywords)
         returns (int32_t aFound, int32_t aLayout, int32_t aOrder,
                  int32_t aAspectNum, int32_t aAspectDen);
