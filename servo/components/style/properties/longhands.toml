@@ -1477,6 +1477,15 @@ spec = "https://drafts.csswg.org/css-color/#transparency"
 servo_restyle_damage = "repaint"
 affects = "paint"
 
+[depth]
+type = "Depth"
+initial = "0.0"
+struct = "effects"
+gecko_pref = "layout.css.depth.enabled"
+spec = "https://github.com/Sparky-OS/svgstereo/blob/main/DEPTH.md"
+servo_restyle_damage = "repaint"
+affects = "paint"
+
 [order]
 type = "Integer"
 initial = "0"

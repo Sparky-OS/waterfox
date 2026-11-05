@@ -364,6 +364,69 @@ impl ToComputedValue for Opacity {
     }
 }
 
+/// A specified CSS `depth`: where an element lies in depth on a stereoscopic display, as Union, Stereo KWin and SVGStereo
+/// name it: `sunk | screen | popped | <percentage> | <number>`. The keywords are the levels -1, 0 and 1, a number is a
+/// level from -1 to 1 and a percentage a fraction of the limit on its side from -100% to 100%. The limits are the
+/// person's and the display's, never the page's; a value out of range is ignored as a declaration.
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToCss, ToShmem, ToTyped)]
+pub enum Depth {
+    /// The sunk limit, level -1.
+    Sunk,
+    /// The plane of what the element lies on, level 0.
+    Screen,
+    /// The popped limit, level 1.
+    Popped,
+    /// A fraction of the limit on its side.
+    Level(NumberOrPercentage),
+}
+
+impl Parse for Depth {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        if let Ok(keyword) = input.try_parse(|input| -> Result<Depth, ParseError<'i>> {
+            Ok(try_match_ident_ignore_ascii_case! { input,
+                "sunk" => Depth::Sunk,
+                "screen" => Depth::Screen,
+                "popped" => Depth::Popped,
+            })
+        }) {
+            return Ok(keyword);
+        }
+        let value = NumberOrPercentage::parse(context, input)?.into_simplified_number();
+        if let NumberOrPercentage::Number(ref number) = value {
+            if let Some(level) = number.get() {
+                if !(-1.0..=1.0).contains(&level) {
+                    return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+                }
+            }
+        }
+        Ok(Depth::Level(value))
+    }
+}
+
+impl ToComputedValue for Depth {
+    type ComputedValue = CSSFloat;
+
+    #[inline]
+    fn to_computed_value(&self, context: &Context) -> CSSFloat {
+        match *self {
+            Depth::Sunk => -1.0,
+            Depth::Screen => 0.0,
+            Depth::Popped => 1.0,
+            Depth::Level(ref value) => value.to_computed_value(context).value().max(-1.0).min(1.0),
+        }
+    }
+
+    #[inline]
+    fn from_computed_value(computed: &CSSFloat) -> Self {
+        Depth::Level(NumberOrPercentage::Number(Number::from_computed_value(
+            computed,
+        )))
+    }
+}
+
 /// The specified value of a grid `<track-breadth>`
 pub type TrackBreadth = GenericTrackBreadth<LengthPercentage>;
 

@@ -10563,6 +10563,16 @@
   mirror: always
   rust: true
 
+# Sparky Stereo OS: the CSS `depth` property (sunk | screen | popped |
+# <percentage> | <number>), the same words as Union, Stereo KWin and SVGStereo.
+# Off until the browser draws an element once per view at its depth: a page
+# that is told a property exists must see it do something.
+- name: layout.css.depth.enabled
+  type: RelaxedAtomicBool
+  value: false
+  mirror: always
+  rust: true
+
 # Whether to enable CSS Anchor Positioning support.
 # https://drafts.csswg.org/css-anchor-position-1/
 - name: layout.css.anchor-positioning.enabled

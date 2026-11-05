@@ -1068,6 +1068,9 @@ impl NonNegativeNumberOrPercentage {
 /// A type used for opacity.
 pub type Opacity = CSSFloat;
 
+/// A type used for depth: the level, from -1 (sunk) to 1 (popped), 0 at the screen.
+pub type Depth = CSSFloat;
+
 /// A `<integer>` value.
 pub type Integer = CSSInteger;
 

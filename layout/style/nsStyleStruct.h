@@ -2404,6 +2404,9 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleEffects {
   mozilla::StyleOwnedSlice<mozilla::StyleFilter> mBackdropFilters;
   mozilla::StyleClipRectOrAuto mClip;  // offsets from UL border edge
   float mOpacity;
+  // Sparky Stereo OS: where the element lies in depth, from -1 (the sunk limit)
+  // to 1 (the popped limit), 0 at the screen: CSS `depth`.
+  float mDepth = 0.0f;
   mozilla::StyleBlend mMixBlendMode;
 };
 

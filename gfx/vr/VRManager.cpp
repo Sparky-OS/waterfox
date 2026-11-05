@@ -1223,6 +1223,7 @@ void VRManager::ClearHapticSlot(size_t aSlot) {
 }
 
 void VRManager::ShutdownSubmitThread() {
+  mAbortSubmit = true;
   if (mSubmitThread) {
     mSubmitThread->Shutdown();
     mSubmitThread = nullptr;
@@ -1238,6 +1239,7 @@ void VRManager::StartPresentation() {
   }
 
   // Indicate that we are ready to start immersive mode
+  mAbortSubmit = false;
   mBrowserState.presentationActive = true;
   mBrowserState.layerState[0].type = VRLayerType::LayerType_Stereo_Immersive;
   PushState();
@@ -1256,6 +1258,7 @@ void VRManager::StopPresentation() {
   }
 
   // Indicate that we have stopped immersive mode
+  mAbortSubmit = true;
   mBrowserState.presentationActive = false;
   memset(mBrowserState.layerState, 0,
          sizeof(VRLayerState) * std::size(mBrowserState.layerState));
@@ -1429,8 +1432,13 @@ bool VRManager::SubmitFrame(const layers::SurfaceDescriptor& aTexture,
   PullState([&]() {
     return (mDisplayInfo.mDisplayState.lastSubmittedFrameId >= aFrameId) ||
            mDisplayInfo.mDisplayState.suppressFrames ||
-           !mDisplayInfo.mDisplayState.isConnected;
+           !mDisplayInfo.mDisplayState.isConnected || mAbortSubmit;
   });
+
+  if (mAbortSubmit) {
+    // The presentation stopped while the frame was in flight.
+    return false;
+  }
 
   if (mDisplayInfo.mDisplayState.suppressFrames ||
       !mDisplayInfo.mDisplayState.isConnected) {

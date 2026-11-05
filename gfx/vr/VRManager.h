@@ -159,6 +159,12 @@ class VRManager : nsIObserver {
   RefPtr<nsITimer> mTaskTimer;
   mozilla::Monitor mCurrentSubmitTaskMonitor MOZ_UNANNOTATED;
   RefPtr<CancelableRunnable> mCurrentSubmitTask;
+  // Set when the presentation stops or the submit thread is about to be shut
+  // down: a frame submission waiting for the service to say it took the frame
+  // (VRManager::SubmitFrame) stops waiting. Without it a session that ends
+  // while a frame is in flight leaves the submit thread polling for ever,
+  // holding mCurrentSubmitTaskMonitor, and the browser cannot quit.
+  mozilla::Atomic<bool> mAbortSubmit{false};
   uint64_t mLastSubmittedFrameId;
   uint64_t mLastStartedFrame;
   VRDisplayCapabilityFlags mRuntimeSupportFlags;

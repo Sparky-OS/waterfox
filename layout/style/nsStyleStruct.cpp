@@ -3512,6 +3512,7 @@ nsStyleEffects::nsStyleEffects(const nsStyleEffects& aSource)
       mBackdropFilters(aSource.mBackdropFilters),
       mClip(aSource.mClip),
       mOpacity(aSource.mOpacity),
+      mDepth(aSource.mDepth),
       mMixBlendMode(aSource.mMixBlendMode) {
   MOZ_COUNT_CTOR(nsStyleEffects);
 }
@@ -3568,6 +3569,11 @@ nsChangeHint nsStyleEffects::CalcDifference(
         hint |= nsChangeHint_UpdateUsesOpacity;
       }
     }
+  }
+
+  if (mDepth != aNewData.mDepth) {
+    // The element is drawn once per view at its own depth: repaint it.
+    hint |= nsChangeHint_RepaintFrame;
   }
 
   if (HasFilters() != aNewData.HasFilters()) {
