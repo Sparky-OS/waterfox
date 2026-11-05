@@ -818,6 +818,27 @@ let JSWINDOWACTORS = {
     allFrames: true,
   },
 
+  // Sparky Stereo OS: the page's keywords to its videos, for a video site's
+  // stereo mark (YouTube's yt3d tags).
+  StereoSiteMark: {
+    child: {
+      esModuleURI: "resource:///actors/StereoSiteMarkChild.sys.mjs",
+      events: {
+        DOMContentLoaded: {},
+        loadstart: { capture: true },
+        loadedmetadata: { capture: true },
+        // The page's own events: they need not bubble, so they are caught
+        // on the way down.
+        "yt-navigate-start": { capture: true, wantUntrusted: true },
+        "yt-navigate-finish": { capture: true, wantUntrusted: true },
+        "yt-page-data-updated": { capture: true, wantUntrusted: true },
+      },
+    },
+
+    messageManagerGroups: ["browsers"],
+    allFrames: true,
+  },
+
   ASRouter: {
     parent: {
       esModuleURI: "resource:///actors/ASRouterParent.sys.mjs",

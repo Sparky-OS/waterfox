@@ -8104,6 +8104,31 @@ IPCResult ContentParent::RecvGetStereoFileSwap(
   return IPC_OK();
 }
 
+IPCResult ContentParent::RecvGetStereoSiteMark(
+    const nsCString& aKeywords, GetStereoSiteMarkResolver&& aResolver) {
+  using ResolverArgs = std::tuple<const int32_t&, const int32_t&,
+                                  const int32_t&, const int32_t&,
+                                  const int32_t&>;
+#if defined(MOZ_WAYLAND)
+  // A page's keywords are short; a longer text is not a list of tags.
+  constexpr uint32_t kMaxKeywords = 16 * 1024;
+  const auto* policy = layers::GetStereoPolicy();
+  int layout = 0, order = 0, aspectNum = 0, aspectDen = 0;
+  int found = -1;
+  if (policy && policy->siteMarkList && aKeywords.Length() <= kMaxKeywords) {
+    found = policy->siteMarkList(aKeywords.get(), &layout, &order, &aspectNum,
+                                 &aspectDen);
+  }
+  const int32_t result[] = {found, layout, order, aspectNum, aspectDen};
+  aResolver(ResolverArgs(result[0], result[1], result[2], result[3],
+                         result[4]));
+#else
+  const int32_t none = -1, zero = 0;
+  aResolver(ResolverArgs(none, zero, zero, zero, zero));
+#endif
+  return IPC_OK();
+}
+
 IPCResult ContentParent::RecvGetSystemGeolocationPermissionBehavior(
     GetSystemGeolocationPermissionBehaviorResolver&& aResolver) {
   PermissionObserver::EnsureMonitoringInParent(PermissionName::Geolocation);

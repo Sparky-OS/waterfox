@@ -1974,6 +1974,17 @@ parent:
     // attributes.
     async GetStereoFileSwap(nullable nsIURI aURI) returns (int32_t aSwap);
 
+    // Sparky Stereo OS: the stereo mark a video site declares in the keywords
+    // of its page (YouTube's yt3d tags), read by libstereo-policy, the one
+    // reader of the edition's programs. aFound is that reader's return value
+    // (1 a mark, 0 no yt3d tag, 2 tags that name no arrangement, -1 the
+    // library is missing or too old); the layout and order are its
+    // stereo_policy_layout and stereo_policy_order values, the aspect the
+    // shape of one view (0 and 0 when none is given).
+    async GetStereoSiteMark(nsCString aKeywords)
+        returns (int32_t aFound, int32_t aLayout, int32_t aOrder,
+                 int32_t aAspectNum, int32_t aAspectDen);
+
     // Returns the status of the geolocation permission on this system.
     // May not be accurate if the information is not known.
     async GetSystemGeolocationPermissionBehavior() returns (SystemGeolocationPermissionBehavior permission);

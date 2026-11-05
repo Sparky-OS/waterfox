@@ -7035,7 +7035,8 @@ VideoFrameContainer* HTMLMediaElement::GetVideoFrameContainer() {
   mVideoFrameContainer = new VideoFrameContainer(
       this, MakeAndAddRef<ImageContainer>(ImageUsageType::VideoFrameContainer,
                                           ImageContainer::ASYNCHRONOUS));
-  mVideoFrameContainer->SetStereoChoice(mStereoChoice);
+  mVideoFrameContainer->SetStereoChoice(mStereoChoice ? mStereoChoice
+                                                       : mStereoSiteMark);
   mVideoFrameContainer->SetStereoSwap(mStereoSwap);
 
   return mVideoFrameContainer;
@@ -7043,9 +7044,80 @@ VideoFrameContainer* HTMLMediaElement::GetVideoFrameContainer() {
 
 void HTMLMediaElement::SetStereoChoice(const Maybe<StereoMode>& aChoice) {
   mStereoChoice = aChoice;
+  UpdateStereoChoice();
+}
+
+void HTMLMediaElement::UpdateStereoChoice() {
   if (mVideoFrameContainer) {
-    mVideoFrameContainer->SetStereoChoice(aChoice);
+    mVideoFrameContainer->SetStereoChoice(mStereoChoice ? mStereoChoice
+                                                         : mStereoSiteMark);
   }
+}
+
+// Sparky Stereo OS: a video site's mark, from the keywords of the page
+// (YouTube's yt3d tags). The parent process reads them with
+// libstereo-policy's site mark reader, the one reader the edition's programs
+// share; the content process keeps no copy of its rules. The answer applies
+// only if the element still has the keywords it was asked about.
+void HTMLMediaElement::SetStereoSiteKeywords(const nsAString& aKeywords) {
+  if (mStereoSiteKeywords == aKeywords) {
+    return;
+  }
+  mStereoSiteKeywords = aKeywords;
+  mStereoSiteMark = Nothing();
+  UpdateStereoChoice();
+  if (aKeywords.IsEmpty() || !XRE_IsContentProcess()) {
+    return;
+  }
+  ContentChild* child = ContentChild::GetSingleton();
+  if (!child) {
+    return;
+  }
+  NS_ConvertUTF16toUTF8 keywords(aKeywords);
+  child->SendGetStereoSiteMark(keywords)->Then(
+      GetMainThreadSerialEventTarget(), __func__,
+      [self = RefPtr{this}, asked = nsString(aKeywords)](
+          const std::tuple<int32_t, int32_t, int32_t, int32_t, int32_t>&
+              aAnswer) {
+        const auto [found, layout, order, aspectNum, aspectDen] = aAnswer;
+        if (self->mStereoSiteKeywords != asked) {
+          return;
+        }
+        if (found == 2) {
+          // yt3d tags that name no arrangement of the policy: no mark; the
+          // keywords are said once, in the console.
+          nsContentUtils::LogSimpleConsoleError(
+              u"Stereo: the page's yt3d keywords name no arrangement this "
+              u"browser reads (an unsupported rectangle or value); the video "
+              u"is not marked."_ns,
+              "media"_ns, self->OwnerDoc()->IsInPrivateBrowsing(),
+              self->OwnerDoc()->IsInChromeDocShell());
+        }
+        if (found == -1) {
+          // Said, never silent: the package depends on libstereo-policy1
+          // 1.13, so this is a library that was removed or replaced.
+          nsContentUtils::LogSimpleConsoleError(
+              u"Stereo: libstereo-policy 1.13 or newer is missing, so the "
+              u"page's yt3d keywords cannot be read and the video is not "
+              u"marked."_ns,
+              "media"_ns, self->OwnerDoc()->IsInPrivateBrowsing(),
+              self->OwnerDoc()->IsInChromeDocShell());
+        }
+        if (found != 1) {
+          return;
+        }
+        // stereo_policy_layout: 1 side by side, 2 top and bottom, 0 not 3D;
+        // stereo_policy_order: 0 left eye first, 1 right eye first.
+        const bool rightFirst = order == 1;
+        self->mStereoSiteMark =
+            Some(layout == 1   ? (rightFirst ? StereoMode::RIGHT_LEFT
+                                             : StereoMode::LEFT_RIGHT)
+                 : layout == 2 ? (rightFirst ? StereoMode::BOTTOM_TOP
+                                             : StereoMode::TOP_BOTTOM)
+                               : StereoMode::MONO);
+        self->UpdateStereoChoice();
+      },
+      [](mozilla::ipc::ResponseRejectReason) {});
 }
 
 // Sparky Stereo OS: a local video file may carry its viewer's Swap Eyes

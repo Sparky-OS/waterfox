@@ -1407,6 +1407,9 @@ class ContentParent final : public PContentParent,
   mozilla::ipc::IPCResult RecvGetStereoFileSwap(
       nsIURI* aURI, GetStereoFileSwapResolver&& aResolver);
 
+  mozilla::ipc::IPCResult RecvGetStereoSiteMark(
+      const nsCString& aKeywords, GetStereoSiteMarkResolver&& aResolver);
+
   mozilla::ipc::IPCResult RecvGetSystemGeolocationPermissionBehavior(
       GetSystemGeolocationPermissionBehaviorResolver&& aResolver);
 

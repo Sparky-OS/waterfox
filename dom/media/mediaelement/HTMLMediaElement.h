@@ -323,6 +323,16 @@ class HTMLMediaElement : public nsGenericHTMLElement,
   bool StereoSwap() const { return mStereoSwap; }
   // Asks the parent process for the Swap Eyes correction of a file: video.
   void RequestStereoFileSwap();
+  // The keywords of the page the video is shown in, as the browser's own UI
+  // hands them on (the stereo-site-mark actor), and the mark they declare:
+  // YouTube's yt3d tags, read by libstereo-policy's one reader (Sparky
+  // Stereo OS). The mark counts as the user's choice would for a video
+  // without a mark of its own, under the user's own choice and the stream's
+  // and container's marks; Nothing() when the keywords declare none.
+  void SetStereoSiteKeywords(const nsAString& aKeywords);
+  void GetStereoSiteKeywords(nsAString& aKeywords) const {
+    aKeywords = mStereoSiteKeywords;
+  }
 
   /**
    * Call this to reevaluate whether we should start/stop due to our owner
@@ -1502,6 +1512,11 @@ class HTMLMediaElement : public nsGenericHTMLElement,
 
   Maybe<StereoMode> mStereoChoice;
   bool mStereoSwap = false;
+  // The page's keywords and the mark the site declares in them.
+  nsString mStereoSiteKeywords;
+  Maybe<StereoMode> mStereoSiteMark;
+  // What the frames take for the user's choice: the user's, else the site's.
+  void UpdateStereoChoice();
 
   // Holds a reference to the MediaStream that has been set in the src
   // attribute.

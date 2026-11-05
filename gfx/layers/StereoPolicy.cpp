@@ -28,6 +28,8 @@ const StereoPolicy* GetStereoPolicy() {
         dlsym(handle, "stereo_policy_video_full_views"));
     lib.fileSwapEyes = reinterpret_cast<decltype(lib.fileSwapEyes)>(
         dlsym(handle, "stereo_policy_file_swap_eyes"));
+    lib.siteMarkList = reinterpret_cast<decltype(lib.siteMarkList)>(
+        dlsym(handle, "stereo_policy_site_mark_list"));
     if (!lib.videoLayout || !lib.videoFullViews) {
       MOZ_LOG(sStereoPolicyLog, LogLevel::Debug,
               ("libstereo-policy.so.1 lacks its video entries"));

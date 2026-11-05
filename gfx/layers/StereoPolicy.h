@@ -34,6 +34,14 @@ struct StereoPolicy {
   // The extended attribute user.stereo-policy.swap-eyes of a file: 1, 0, or
   // -1 when it cannot be read. Null in libraries older than 1.4.
   int (*fileSwapEyes)(const char* aPath) = nullptr;
+  // A video site's mark read from the keywords of its page (YouTube's yt3d
+  // tags, in libstereo-policy 1.13): 1 for a mark (layout kLayoutNone for
+  // "not 3D"), 0 when the keywords carry no yt3d tag, 2 when they carry tags
+  // that name no arrangement, -1 for a bad argument. aAspectNum and
+  // aAspectDen are the shape of one view as the site shows it, 0 and 0 when
+  // none is given. Null in libraries older than 1.13.
+  int (*siteMarkList)(const char* aKeywords, int* aLayout, int* aOrder,
+                      int* aAspectNum, int* aAspectDen) = nullptr;
 };
 
 // Null without the library.

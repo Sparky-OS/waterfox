@@ -109,6 +109,13 @@ partial interface HTMLVideoElement {
   attribute DOMString stereoChoice;
   [Func="IsChromeOrUAWidget"]
   attribute boolean stereoSwap;
+  // The keywords of the page the video is shown in, comma separated, which
+  // the browser's own UI (the StereoSiteMark actor) hands on: a video site's
+  // mark of its videos (YouTube's yt3d tags) is read from them by
+  // libstereo-policy and counts as a choice under the user's own and under
+  // the stream's and the container's marks. "" for none.
+  [Func="IsChromeOrUAWidget"]
+  attribute DOMString stereoSiteKeywords;
 };
 
 // https://w3c.github.io/picture-in-picture/#htmlvideoelement-extensions

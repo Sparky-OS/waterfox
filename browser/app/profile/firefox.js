@@ -2393,6 +2393,13 @@ pref("identity.fxaccounts.telemetry.clientAssociationPing.enabled", true);
 pref("media.gmp-gmpopenh264.visible", true);
 pref("media.gmp-gmpopenh264.enabled", true);
 
+// Sparky Stereo OS: a video site's mark of its videos, read from the
+// keywords of the page (YouTube's yt3d tags) when the stream and its
+// container carry none; the 3D Video menu's choice is above it. The hosts
+// are a comma separated list of domains (empty: every page).
+pref("media.stereo.site-marks", true);
+pref("media.stereo.site-marks.hosts", "");
+
 pref("media.videocontrols.picture-in-picture.enabled", true);
 pref("media.videocontrols.picture-in-picture.audio-toggle.enabled", true);
 pref("media.videocontrols.picture-in-picture.video-toggle.enabled", true);
