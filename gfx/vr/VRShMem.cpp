@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "VRShMem.h"
+#include "mozilla/TimeStamp.h"
 
 #ifdef MOZILLA_INTERNAL_API
 #  include "nsString.h"
@@ -34,6 +35,8 @@ static const char* kShmemName = "/moz.gecko.vr_ext." SHMEM_VERSION;
 
 #if !defined(MOZ_WIDGET_ANDROID)
 namespace {
+constexpr double kMaxWaitSeconds = 3.0;
+
 void YieldThread() {
 #  if defined(XP_WIN)
   ::Sleep(0);
@@ -579,7 +582,21 @@ void VRShMem::PullSystemState(
   if (!mExternalShmem) {
     return;
   }
+  // A wait for the service to take a frame is bounded: the service takes one
+  // every refresh, so a few seconds without it means it is gone or stuck, and
+  // the thread polling for it (the VR submit thread, which holds the lock the
+  // compositor thread needs) must not be held for ever: the browser could not
+  // quit (Sparky Stereo OS, ORDER 195).
+  const TimeStamp waitStart = TimeStamp::Now();
   while (true) {
+    if (aWaitCondition &&
+        (TimeStamp::Now() - waitStart).ToSeconds() > kMaxWaitSeconds) {
+      fprintf(stderr,
+              "VRShMem::PullSystemState: gave up waiting for the VR service "
+              "after %.0f seconds\n",
+              kMaxWaitSeconds);
+      return;
+    }
     {  // Scope for WaitForMutex
 #  if defined(XP_WIN)
       bool status = true;
@@ -605,6 +622,12 @@ void VRShMem::PullSystemState(
         } else if (!aWaitCondition) {
           // We did not get a clean copy, and we are not waiting for a condition
           // to exit from PullState call.
+          return;
+        } else if (aWaitCondition()) {
+          // No clean copy, and the wait is over all the same: the caller is
+          // told to stop waiting (a presentation that ended leaves the
+          // service's state without a clean generation for good, so the
+          // condition was never asked while the service was gone).
           return;
         }
         // Yield the thread while polling
