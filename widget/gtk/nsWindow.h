@@ -270,6 +270,10 @@ class nsWindow : public nsIWidget {
                                    uint16_t aDuration, nsISupports* aData,
                                    nsIRunnable* aCallback) override;
   already_AddRefed<mozilla::widget::Screen> GetWidgetScreen() override;
+  mozilla::widget::StereoDepthState GetStereoDepthState() override;
+  void StereoDepthStateEvent(bool aAwake, uint32_t aOutputEdges);
+  void StereoDepthLimitsEvent(double aSunk, double aPopped);
+  void StereoDepthChanged();
   nsresult MakeFullScreen(bool aFullScreen) override;
   void HideWindowChrome(bool aShouldHide) override;
 
@@ -618,6 +622,8 @@ class nsWindow : public nsIWidget {
   RefPtr<mozilla::widget::WaylandSurface> mSurface;
   // KWin's kde_stereo_depth_v1 for this window (Sparky Stereo OS).
   struct kde_stereo_depth_v1* mStereoDepth = nullptr;
+  // What KWin said about this window (limits come with their own event).
+  mozilla::widget::StereoDepthState mStereoDepthState;
 #endif
   RefPtr<gfxImageSurface> mDragPopupSurface;
   LayoutDeviceIntRegion mDragPopupSurfaceRegion;

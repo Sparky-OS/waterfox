@@ -5,6 +5,7 @@
 #ifndef mozilla_dom_BrowserChild_h
 #define mozilla_dom_BrowserChild_h
 
+#include "mozilla/widget/StereoDepthState.h"
 #include "PuppetWidget.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/DOMEventTargetHelper.h"
@@ -271,6 +272,14 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   // window rule).
   mozilla::ipc::IPCResult RecvStereoViewportEdges(const uint32_t& aEdges);
   uint32_t StereoViewportEdges() const { return mStereoViewportEdges; }
+  // What the desktop said about the window this page is shown in.
+  mozilla::ipc::IPCResult RecvStereoDepth(
+      const bool& aAwake, const bool& aFromCompositor, const int32_t& aSunk100,
+      const int32_t& aPopped100, const uint32_t& aOutputEdges,
+      const int32_t& aOutputWidth);
+  const mozilla::widget::StereoDepthState& StereoDepth() const {
+    return mStereoDepth;
+  }
 
   mozilla::ipc::IPCResult RecvChildToParentMatrix(
       const mozilla::Maybe<mozilla::gfx::Matrix4x4>& aMatrix,
@@ -884,6 +893,7 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
 
   // Position of client area relative to the outer window
   uint32_t mStereoViewportEdges = 0;
+  mozilla::widget::StereoDepthState mStereoDepth;
   LayoutDeviceIntPoint mClientOffset;
   // Position of tab, relative to parent widget (typically the window)
   // NOTE: This value is valuable only for the top level browser.

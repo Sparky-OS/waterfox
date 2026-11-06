@@ -5,6 +5,7 @@
 #ifndef mozilla_dom_BrowserParent_h
 #define mozilla_dom_BrowserParent_h
 
+#include "mozilla/widget/StereoDepthState.h"
 #include "LiveResizeListener.h"
 #include "Units.h"
 #include "js/TypeDecls.h"
@@ -478,6 +479,10 @@ class BrowserParent final : public PBrowserParent,
   // CSS depth, the stereo window rule: tells the page which sides of its
   // viewport are flush with the window.
   void UpdateStereoViewportEdges();
+  // CSS depth: tells the page what the desktop said about its window.
+  void UpdateStereoDepth();
+  // The window's depth changed: tells the pages of every browser in it.
+  static void StereoDepthChanged(nsIWidget* aWidget);
 
   void HandleAccessKey(const WidgetKeyboardEvent& aEvent,
                        nsTArray<uint32_t>& aCharCodes);
@@ -946,6 +951,8 @@ class BrowserParent final : public PBrowserParent,
   nsSizeMode mSizeMode;
   uint32_t mStereoViewportEdges = 0;
   bool mStereoViewportEdgesSent = false;
+  mozilla::widget::StereoDepthState mStereoDepthState;
+  bool mStereoDepthSent = false;
   LayoutDeviceIntPoint mClientOffset;
   LayoutDeviceIntPoint mChromeOffset;
 

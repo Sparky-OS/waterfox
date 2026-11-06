@@ -33,6 +33,9 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/Components.h"
 #include "mozilla/GRefPtr.h"
+#include "mozilla/dom/BrowserParent.h"
+#include "mozilla/dom/DocumentInlines.h"
+#include "nsPresContext.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/WheelEventBinding.h"
 #include "mozilla/gfx/2D.h"
@@ -5264,6 +5267,69 @@ void nsWindow::PerformFullscreenTransition(FullscreenTransitionStage aStage,
                      nullptr);
 }
 
+// Sparky Stereo OS, CSS depth: KWin tells each toplevel whether it may show
+// depth now, the limits of the output it mainly sits on and which of its
+// sides lie on that output's edge. The state is this window's own: the pages
+// shown in it read it (the parent tells the content processes of its
+// browsers, chrome documents ask the widget), so two windows never read each
+// other's.
+mozilla::widget::StereoDepthState nsWindow::GetStereoDepthState() {
+  mozilla::widget::StereoDepthState state = mStereoDepthState;
+  if (RefPtr<mozilla::widget::Screen> screen = GetWidgetScreen()) {
+    state.mOutputWidth = screen->GetRect().Width();
+  }
+  return state;
+}
+
+static void StereoDepthRepaintDocument(mozilla::dom::Document* aDocument) {
+  if (!aDocument) {
+    return;
+  }
+  if (nsPresContext* pc = aDocument->GetPresContext()) {
+    pc->RebuildAllStyleData(nsChangeHint_RepaintFrame, mozilla::RestyleHint{});
+  }
+  aDocument->EnumerateSubDocuments([](mozilla::dom::Document& aSub) {
+    StereoDepthRepaintDocument(&aSub);
+    return mozilla::CallState::Continue;
+  });
+}
+
+void nsWindow::StereoDepthChanged() {
+  mozilla::dom::BrowserParent::StereoDepthChanged(this);
+  if (mWidgetListener) {
+    if (mozilla::PresShell* presShell = mWidgetListener->GetPresShell()) {
+      StereoDepthRepaintDocument(presShell->GetDocument());
+    }
+  }
+}
+
+void nsWindow::StereoDepthStateEvent(bool aAwake, uint32_t aOutputEdges) {
+  static mozilla::LazyLogModule sLog("StereoDepth");
+  MOZ_LOG(sLog, mozilla::LogLevel::Debug,
+          ("nsWindow::StereoDepthStateEvent %p awake %d output_edges %u", this,
+           aAwake, aOutputEdges));
+  if (mStereoDepthState.mAwake == aAwake &&
+      mStereoDepthState.mOutputEdges == aOutputEdges) {
+    return;
+  }
+  mStereoDepthState.mAwake = aAwake;
+  mStereoDepthState.mOutputEdges = aOutputEdges;
+  StereoDepthChanged();
+}
+
+void nsWindow::StereoDepthLimitsEvent(double aSunk, double aPopped) {
+  const int32_t sunk = int32_t(std::lround(aSunk * 100.0));
+  const int32_t popped = int32_t(std::lround(aPopped * 100.0));
+  if (mStereoDepthState.mFromCompositor && mStereoDepthState.mSunk100 == sunk &&
+      mStereoDepthState.mPopped100 == popped) {
+    return;
+  }
+  mStereoDepthState.mFromCompositor = true;
+  mStereoDepthState.mSunk100 = sunk;
+  mStereoDepthState.mPopped100 = popped;
+  StereoDepthChanged();
+}
+
 already_AddRefed<mozilla::widget::Screen> nsWindow::GetWidgetScreen() {
   // Wayland can read screen directly
   if (GdkIsWaylandDisplay()) {
@@ -7432,7 +7498,7 @@ void nsWindow::OnMap() {
   // of the output it sits on, live.
   if (mSurface && mWindowType == WindowType::TopLevel && !mStereoDepth) {
     mStereoDepth = WaylandDisplayGet()->FollowStereoDepth(
-        mSurface->GetWlSurface());
+        mSurface->GetWlSurface(), this);
   }
 #endif
 

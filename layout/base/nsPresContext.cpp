@@ -349,8 +349,6 @@ static const char* gPrefixCallbackPrefs[] = {
     "font.",
     "gfx.font_rendering.",
     "layout.css.font-visibility.",
-    // CSS depth: the limits KWin gives the window's output, live
-    "widget.wayland.stereo-depth.",
     nullptr,
 };
 
@@ -534,12 +532,6 @@ void nsPresContext::PreferenceChanged(const char* aPrefName) {
   }
 
   nsDependentCString prefName(aPrefName);
-  if (StringBeginsWith(prefName, "widget.wayland.stereo-depth."_ns)) {
-    // The depth limits changed (or the window is no longer awake): the
-    // elements with a depth are drawn at their new places.
-    RebuildAllStyleData(nsChangeHint_RepaintFrame, RestyleHint{});
-    return;
-  }
   if (prefName.EqualsLiteral("layout.css.dpi") ||
       prefName.EqualsLiteral("layout.css.devPixelsPerPx")) {
     int32_t oldAppUnitsPerDevPixel = mDeviceContext->AppUnitsPerDevPixel();

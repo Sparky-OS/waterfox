@@ -990,16 +990,17 @@ void nsWaylandDisplay::RemoveStereoOutputDevice(StereoOutputDevice* aDevice) {
   UpdateStereoOutputs();
 }
 
-// The desktop's depth for a surface (see FollowStereoDepth).
+// The desktop's depth for a surface (see FollowStereoDepth): the events go to
+// the window the object was made for.
 static void StereoDepthStateEvent(void* aData, kde_stereo_depth_v1*,
                                   uint32_t aAwake, uint32_t aOutputEdges) {
-  static_cast<nsWaylandDisplay*>(aData)->StereoDepthStateChanged(aAwake != 0,
-                                                                 aOutputEdges);
+  static_cast<nsWindow*>(aData)->StereoDepthStateEvent(aAwake != 0,
+                                                        aOutputEdges);
 }
 
 static void StereoDepthLimitsEvent(void* aData, kde_stereo_depth_v1*,
                                    wl_fixed_t aSunk, wl_fixed_t aPopped) {
-  static_cast<nsWaylandDisplay*>(aData)->StereoDepthLimitsChanged(
+  static_cast<nsWindow*>(aData)->StereoDepthLimitsEvent(
       wl_fixed_to_double(aSunk), wl_fixed_to_double(aPopped));
 }
 
@@ -1008,18 +1009,18 @@ static const kde_stereo_depth_v1_listener kStereoDepthListener = {
     StereoDepthLimitsEvent,
 };
 
-kde_stereo_depth_v1* nsWaylandDisplay::FollowStereoDepth(
-    wl_surface* aSurface) {
+kde_stereo_depth_v1* nsWaylandDisplay::FollowStereoDepth(wl_surface* aSurface,
+                                                         nsWindow* aWindow) {
   // get_depth is since version 3 of the protocol (an older KWin has no
   // depth to follow: the page's depth then comes from libstereo-policy).
   if (!mStereoContentManager || mStereoContentManagerVersion < 3 ||
-      !aSurface) {
+      !aSurface || !aWindow) {
     return nullptr;
   }
   kde_stereo_depth_v1* depth =
       kde_stereo_content_manager_v1_get_depth(mStereoContentManager, aSurface);
   if (depth) {
-    kde_stereo_depth_v1_add_listener(depth, &kStereoDepthListener, this);
+    kde_stereo_depth_v1_add_listener(depth, &kStereoDepthListener, aWindow);
   }
   return depth;
 }
@@ -1027,41 +1028,6 @@ kde_stereo_depth_v1* nsWaylandDisplay::FollowStereoDepth(
 void nsWaylandDisplay::UnfollowStereoDepth(kde_stereo_depth_v1* aDepth) {
   if (aDepth) {
     kde_stereo_depth_v1_destroy(aDepth);
-  }
-}
-
-void nsWaylandDisplay::StereoDepthStateChanged(bool aAwake,
-                                               uint32_t aOutputEdges) {
-  static const char kAwake[] = "widget.wayland.stereo-depth.awake";
-  static const char kEdges[] = "widget.wayland.stereo-depth.edges";
-  static LazyLogModule sLog("StereoDepth");
-  MOZ_LOG(sLog, LogLevel::Debug,
-          ("nsWaylandDisplay::StereoDepthStateChanged awake %d output_edges %u",
-           aAwake, aOutputEdges));
-  if (Preferences::GetBool(kAwake, true) != aAwake) {
-    Preferences::SetBool(kAwake, aAwake, PrefValueKind::Default);
-  }
-  // The window's edges that touch the edge of its output: nothing at such an
-  // edge comes nearer than the screen (the stereo window rule).
-  if (Preferences::GetInt(kEdges, 0) != int32_t(aOutputEdges)) {
-    Preferences::SetInt(kEdges, int32_t(aOutputEdges), PrefValueKind::Default);
-  }
-}
-
-void nsWaylandDisplay::StereoDepthLimitsChanged(double aSunk, double aPopped) {
-  static const char kSunk[] = "widget.wayland.stereo-depth.sunk-100";
-  static const char kPopped[] = "widget.wayland.stereo-depth.popped-100";
-  static const char kFrom[] = "widget.wayland.stereo-depth.from-compositor";
-  const int32_t sunk = int32_t(std::lround(aSunk * 100.0));
-  const int32_t popped = int32_t(std::lround(aPopped * 100.0));
-  if (Preferences::GetInt(kSunk, -1) != sunk) {
-    Preferences::SetInt(kSunk, sunk, PrefValueKind::Default);
-  }
-  if (Preferences::GetInt(kPopped, -1) != popped) {
-    Preferences::SetInt(kPopped, popped, PrefValueKind::Default);
-  }
-  if (!Preferences::GetBool(kFrom, false)) {
-    Preferences::SetBool(kFrom, true, PrefValueKind::Default);
   }
 }
 

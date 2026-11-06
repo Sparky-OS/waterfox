@@ -1241,6 +1241,40 @@ mozilla::ipc::IPCResult BrowserChild::RecvStereoViewportEdges(
   return IPC_OK();
 }
 
+static void StereoDepthRepaintDocument(Document* aDocument) {
+  if (!aDocument) {
+    return;
+  }
+  if (nsPresContext* pc = aDocument->GetPresContext()) {
+    pc->RebuildAllStyleData(nsChangeHint_RepaintFrame, RestyleHint{});
+  }
+  aDocument->EnumerateSubDocuments([](Document& aSub) {
+    StereoDepthRepaintDocument(&aSub);
+    return CallState::Continue;
+  });
+}
+
+mozilla::ipc::IPCResult BrowserChild::RecvStereoDepth(
+    const bool& aAwake, const bool& aFromCompositor, const int32_t& aSunk100,
+    const int32_t& aPopped100, const uint32_t& aOutputEdges,
+    const int32_t& aOutputWidth) {
+  widget::StereoDepthState state;
+  state.mAwake = aAwake;
+  state.mFromCompositor = aFromCompositor;
+  state.mSunk100 = aSunk100;
+  state.mPopped100 = aPopped100;
+  state.mOutputEdges = aOutputEdges;
+  state.mOutputWidth = aOutputWidth;
+  if (state == mStereoDepth) {
+    return IPC_OK();
+  }
+  mStereoDepth = state;
+  // Elements with a depth are drawn at their new places.
+  nsCOMPtr<Document> topDocument = GetTopLevelDocument();
+  StereoDepthRepaintDocument(topDocument);
+  return IPC_OK();
+}
+
 mozilla::ipc::IPCResult BrowserChild::RecvChildToParentMatrix(
     const Maybe<gfx::Matrix4x4>& aMatrix,
     const ScreenRect& aTopLevelViewportVisibleRectInBrowserCoords) {

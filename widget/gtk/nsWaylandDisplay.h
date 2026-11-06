@@ -33,6 +33,7 @@
 #include <gbm.h>
 
 using GdkMonitor = struct _GdkMonitor;
+class nsWindow;
 
 namespace mozilla::widget {
 
@@ -107,10 +108,10 @@ class nsWaylandDisplay {
     mStereoContentManager = aManager;
     mStereoContentManagerVersion = aVersion;
   }
-  kde_stereo_depth_v1* FollowStereoDepth(wl_surface* aSurface);
+  // The events of the returned object go to aWindow (one object per window).
+  kde_stereo_depth_v1* FollowStereoDepth(wl_surface* aSurface,
+                                         nsWindow* aWindow);
   void UnfollowStereoDepth(kde_stereo_depth_v1* aDepth);
-  void StereoDepthStateChanged(bool aAwake, uint32_t aOutputEdges);
-  void StereoDepthLimitsChanged(double aSunk, double aPopped);
   // An output that shows stereo 3D, or can (Sparky Stereo OS): KWin lists a
   // 3D mode for it (the display's own HDMI 1.4 3D modes, or the virtual 3D
   // modes its stereo toggles turn on) or pairs it with another output, as

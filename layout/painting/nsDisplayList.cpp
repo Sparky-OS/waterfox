@@ -5316,9 +5316,8 @@ StereoDepthDefault sStereoDepthDefault;
 // (the parent's BrowserParent::UpdateStereoViewportEdges). The viewport's own
 // clipping away from the output's edge is not part of the rule.
 static bool StereoDepthTouchesOutputEdge(nsIFrame* aFrame,
-                                         int32_t aDisparity) {
-  const uint32_t outputEdges = uint32_t(
-      Preferences::GetInt("widget.wayland.stereo-depth.edges", 0));
+                                         int32_t aDisparity,
+                                         uint32_t outputEdges) {
   if (!outputEdges) {
     return false;
   }
@@ -5363,24 +5362,44 @@ static bool StereoDepthTouchesOutputEdge(nsIFrame* aFrame,
   return touches;
 }
 
+// What the desktop told the window this frame is shown in: a page in a
+// content process has it from its browser's parent (BrowserChild), a chrome
+// document asks its own window. Each window has its own state.
+static widget::StereoDepthState StereoDepthStateOf(nsIFrame* aFrame) {
+  nsPresContext* pc = aFrame->PresContext();
+  if (nsPresContext* rootPc = pc->GetInProcessRootContentDocumentPresContext()) {
+    if (rootPc->PresShell()) {
+      if (RefPtr<dom::BrowserChild> child =
+              dom::BrowserChild::GetFrom(rootPc->PresShell())) {
+        return child->StereoDepth();
+      }
+    }
+  }
+  if (nsIWidget* widget = pc->GetRootWidget()) {
+    if (nsIWidget* top = widget->GetTopLevelWidget()) {
+      return top->GetStereoDepthState();
+    }
+    return widget->GetStereoDepthState();
+  }
+  return widget::StereoDepthState();
+}
+
 /* static */
 Maybe<int32_t> nsDisplayStereoDepth::ShiftForLevel(nsIFrame* aFrame,
                                                    float aLevel) {
   if (!gfx::gfxVars::StereoOutputs()) {
     return Nothing();
   }
+  const widget::StereoDepthState state = StereoDepthStateOf(aFrame);
   // KWin says whether the window may show depth now (the active window, a
   // popup...), as for a 2D output otherwise.
-  if (!Preferences::GetBool("widget.wayland.stereo-depth.awake", true)) {
+  if (!state.mAwake) {
     return Nothing();
   }
   double sunk = 0, popped = 0;
-  if (Preferences::GetBool("widget.wayland.stereo-depth.from-compositor",
-                           false)) {
-    sunk = Preferences::GetInt("widget.wayland.stereo-depth.sunk-100", 0) /
-           100.0;
-    popped = Preferences::GetInt("widget.wayland.stereo-depth.popped-100", 0) /
-             100.0;
+  if (state.mFromCompositor) {
+    sunk = state.mSunk100 / 100.0;
+    popped = state.mPopped100 / 100.0;
   } else {
     if (!sStereoDepthDefault.mReady) {
       if (!sStereoDepthDefault.mAsked) {
@@ -5455,10 +5474,12 @@ Maybe<int32_t> nsDisplayStereoDepth::ShiftForLevel(nsIFrame* aFrame,
   }
   // The width of the view: the output's, in device pixels (the unit of the
   // limits is a view 1920 wide, scaled to the output as KWin does).
-  int32_t width = 0;
-  if (RefPtr<widget::Screen> screen =
-          widget::ScreenManager::GetSingleton().GetPrimaryScreen()) {
-    width = screen->GetRect().Width();
+  int32_t width = state.mOutputWidth;
+  if (width <= 0) {
+    if (RefPtr<widget::Screen> screen =
+            widget::ScreenManager::GetSingleton().GetPrimaryScreen()) {
+      width = screen->GetRect().Width();
+    }
   }
   if (width <= 0) {
     return Nothing();
@@ -5469,7 +5490,8 @@ Maybe<int32_t> nsDisplayStereoDepth::ShiftForLevel(nsIFrame* aFrame,
   // The stereo window rule (memory stereo-plasma-depth-rules, 2026-10-05): a
   // popped element cut by the edge of the output looks wrong, so what touches
   // the output's edge stays at the screen.
-  if (disparity > 0 && StereoDepthTouchesOutputEdge(aFrame, disparity)) {
+  if (disparity > 0 && StereoDepthTouchesOutputEdge(aFrame, disparity,
+                                                    state.mOutputEdges)) {
     return Some(0);
   }
   return Some(disparity);

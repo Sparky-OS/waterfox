@@ -15,6 +15,7 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/EventForwards.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/widget/StereoDepthState.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/TypedEnumBits.h"
@@ -1173,6 +1174,14 @@ class nsIWidget : public nsSupportsWeakReference {
    * Return the screen the widget is in, or null if we don't know.
    */
   virtual already_AddRefed<mozilla::widget::Screen> GetWidgetScreen();
+
+  /**
+   * What the desktop tells this window about depth (Sparky Stereo OS, CSS
+   * depth); the default is a window that may show depth with no limits.
+   */
+  virtual mozilla::widget::StereoDepthState GetStereoDepthState() {
+    return mozilla::widget::StereoDepthState();
+  }
 
   /**
    * Put the toplevel window into or out of fullscreen mode.

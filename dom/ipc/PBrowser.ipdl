@@ -702,6 +702,15 @@ child:
     // kde_stereo_depth_v1's edges).
     async StereoViewportEdges(uint32_t edges);
 
+    // Sparky Stereo OS, CSS depth: what the desktop told the window this page
+    // is shown in (kde_stereo_depth_v1): may it show depth now, the limits of
+    // its output (pixels of a view 1920 wide, times 100; fromCompositor says
+    // they are KWin's), the window's sides on the output's edge and the
+    // output's width in device pixels.
+    async StereoDepth(bool awake, bool fromCompositor, int32_t sunk100,
+                      int32_t popped100, uint32_t outputEdges,
+                      int32_t outputWidth);
+
     async ChildToParentMatrix(Matrix4x4? aMatrix,
                               ScreenRect aRemoteDocumentRect);
 

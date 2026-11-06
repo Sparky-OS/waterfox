@@ -1205,7 +1205,46 @@ void BrowserParent::UpdateDimensions(const LayoutDeviceIntRect& rect,
   UpdateStereoViewportEdges();
 }
 
+void BrowserParent::UpdateStereoDepth() {
+  if (mIsDestroyed) {
+    return;
+  }
+  nsCOMPtr<nsIWidget> widget = GetWidget();
+  if (!widget) {
+    return;
+  }
+  // Popups and the like ask their window's own state.
+  nsIWidget* top = widget->GetTopLevelWidget();
+  const widget::StereoDepthState state =
+      (top ? top : widget.get())->GetStereoDepthState();
+  if (mStereoDepthSent && state == mStereoDepthState) {
+    return;
+  }
+  mStereoDepthSent = true;
+  mStereoDepthState = state;
+  (void)SendStereoDepth(state.mAwake, state.mFromCompositor, state.mSunk100,
+                        state.mPopped100, state.mOutputEdges,
+                        state.mOutputWidth);
+}
+
+/* static */
+void BrowserParent::StereoDepthChanged(nsIWidget* aWidget) {
+  for (auto* cp : ContentParent::AllProcesses(ContentParent::eLive)) {
+    for (const auto& key : cp->ManagedPBrowserParent()) {
+      BrowserParent* browser = BrowserParent::GetFrom(key);
+      if (!browser) {
+        continue;
+      }
+      nsCOMPtr<nsIWidget> widget = browser->GetWidget();
+      if (widget && widget->GetTopLevelWidget() == aWidget) {
+        browser->UpdateStereoDepth();
+      }
+    }
+  }
+}
+
 void BrowserParent::UpdateStereoViewportEdges() {
+  UpdateStereoDepth();
   if (mIsDestroyed || !mUpdatedDimensions) {
     return;
   }
