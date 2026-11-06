@@ -20648,6 +20648,18 @@
   value: true
   mirror: once
 
+# Sparky Stereo OS: every popup is an xdg_popup of its own surface where the
+# compositor is Stereo KWin (it offers kde_stereo_content_manager_v1), never a
+# wl_subsurface of the window: KWin shows a popup surface in front of the
+# window (the desktop's depth rules for menus, tooltips and panels), while a
+# subsurface is a part of the window at the window's level. Off keeps
+# Gecko's own choice, which makes a wl_subsurface of a popup that layout
+# constrained, a tooltip and a popup that does not hide on its own.
+- name: widget.wayland.popups-as-xdg-popups
+  type: bool
+  value: true
+  mirror: once
+
 # Use gdk_window_move_to_rect to move Wayland popups when available.
 - name: widget.wayland.use-move-to-rect
   type: bool

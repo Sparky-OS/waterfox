@@ -181,6 +181,10 @@ class nsWindowWayland final : public nsWindow {
       nsTArray<nsIWidget*>* aLayoutWidgetHierarchy);
   void CloseAllPopupsBeforeRemotePopup();
   void WaylandPopupHideClosedPopups();
+  // Sparky Stereo OS: the popup is mapped as an xdg_popup (never as a
+  // wl_subsurface of its parent) so that the compositor can show it in
+  // front of the window.
+  static bool PopupsAsXdgPopups();
   void WaylandPopupPrepareForMove();
   void WaylandPopupMoveImpl();
   void WaylandPopupMovePlain(int aX, int aY);

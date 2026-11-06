@@ -788,12 +788,22 @@ bool nsWindowWayland::WaylandPopupCheckAndGetAnchor(GdkRectangle* aPopupAnchor,
   return true;
 }
 
+/* static */
+bool nsWindowWayland::PopupsAsXdgPopups() {
+  return StaticPrefs::widget_wayland_popups_as_xdg_popups_AtStartup() &&
+         WaylandDisplayGet()->HasStereoContent();
+}
+
 void nsWindowWayland::WaylandPopupPrepareForMove() {
   LOG("nsWindowWayland::WaylandPopupPrepareForMove()");
 
+  // An xdg_popup takes its place when it is mapped: a visible one is hidden
+  // before it is moved, as for move-to-rect.
+  const bool asXdgPopup = PopupsAsXdgPopups();
+
   if (mPopupType == PopupType::Tooltip) {
     // Don't fiddle with tooltips type, just hide it before move-to-rect
-    if (mPopupUseMoveToRect && gtk_widget_is_visible(mShell)) {
+    if ((mPopupUseMoveToRect || asXdgPopup) && gtk_widget_is_visible(mShell)) {
       HideWaylandPopupWindow(/* aTemporaryHide */ true,
                              /* aRemoveFromPopupList */ false);
     }
@@ -807,11 +817,11 @@ void nsWindowWayland::WaylandPopupPrepareForMove() {
   // We need to set it before map event when popup is hidden.
   const GdkWindowTypeHint currentType =
       gtk_window_get_type_hint(GTK_WINDOW(mShell));
-  const GdkWindowTypeHint requiredType = mPopupUseMoveToRect
+  const GdkWindowTypeHint requiredType = (mPopupUseMoveToRect || asXdgPopup)
                                              ? GDK_WINDOW_TYPE_HINT_POPUP_MENU
                                              : GDK_WINDOW_TYPE_HINT_UTILITY;
 
-  if (!mPopupUseMoveToRect && currentType == requiredType) {
+  if (!mPopupUseMoveToRect && !asXdgPopup && currentType == requiredType) {
     LOG("  type matches and we're not forced to hide it, quit.");
     return;
   }
@@ -834,11 +844,14 @@ void nsWindowWayland::WaylandPopupPrepareForMove() {
 void nsWindowWayland::WaylandPopupMovePlain(int aX, int aY) {
   LOG("nsWindowWayland::WaylandPopupMovePlain(%d, %d)", aX, aY);
 
-  // We can directly move only popups based on wl_subsurface type.
+  // We can directly move only popups based on wl_subsurface type, and any
+  // popup that is not mapped yet (an xdg_popup of Stereo KWin is placed by
+  // the position it has when it is mapped).
   MOZ_DIAGNOSTIC_ASSERT(gtk_window_get_type_hint(GTK_WINDOW(mShell)) ==
                             GDK_WINDOW_TYPE_HINT_UTILITY ||
                         gtk_window_get_type_hint(GTK_WINDOW(mShell)) ==
-                            GDK_WINDOW_TYPE_HINT_TOOLTIP);
+                            GDK_WINDOW_TYPE_HINT_TOOLTIP ||
+                        PopupsAsXdgPopups());
 
   gtk_window_move(GTK_WINDOW(mShell), aX, aY);
 
@@ -1434,6 +1447,9 @@ bool nsWindowWayland::WaylandPopupConfigure() {
 
   // See gdkwindow-wayland.c and
   // should_map_as_popup()/should_map_as_subsurface()
+  // Stereo KWin pops a popup surface in front of its window, so there every
+  // popup is an xdg_popup (GDK_WINDOW_TYPE_HINT_POPUP_MENU), whatever its kind.
+  const bool asXdgPopup = PopupsAsXdgPopups();
   GdkWindowTypeHint gtkTypeHint;
   switch (mPopupType) {
     case PopupType::Menu:
@@ -1443,11 +1459,13 @@ bool nsWindowWayland::WaylandPopupConfigure() {
       LOG("  popup type Menu");
       break;
     case PopupType::Tooltip:
-      gtkTypeHint = GDK_WINDOW_TYPE_HINT_TOOLTIP;
+      gtkTypeHint = asXdgPopup ? GDK_WINDOW_TYPE_HINT_POPUP_MENU
+                               : GDK_WINDOW_TYPE_HINT_TOOLTIP;
       LOG("  popup type Tooltip");
       break;
     default:
-      gtkTypeHint = GDK_WINDOW_TYPE_HINT_UTILITY;
+      gtkTypeHint = asXdgPopup ? GDK_WINDOW_TYPE_HINT_POPUP_MENU
+                               : GDK_WINDOW_TYPE_HINT_UTILITY;
       LOG("  popup type Utility");
       break;
   }
@@ -1456,7 +1474,8 @@ bool nsWindowWayland::WaylandPopupConfigure() {
     // GDK_WINDOW_TYPE_HINT_UTILITY is mapped as wl_subsurface
     // by default.
     LOG("  not tracked in popup hierarchy, switch to Utility");
-    gtkTypeHint = GDK_WINDOW_TYPE_HINT_UTILITY;
+    gtkTypeHint = asXdgPopup ? GDK_WINDOW_TYPE_HINT_POPUP_MENU
+                             : GDK_WINDOW_TYPE_HINT_UTILITY;
   }
   gtk_window_set_type_hint(GTK_WINDOW(mShell), gtkTypeHint);
 
