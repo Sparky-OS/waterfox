@@ -5315,6 +5315,11 @@ StereoDepthDefault sStereoDepthDefault;
 // (kde_stereo_depth_v1) and on which the viewport is flush with the window
 // (the parent's BrowserParent::UpdateStereoViewportEdges). The viewport's own
 // clipping away from the output's edge is not part of the rule.
+// The distance from an output's edge that the browser's own windows keep
+// popped things from, in device pixels (Daniel, 2026-11-06: a 10 px invisible
+// border that constrains popups on the borders; KWin keeps it for popups).
+static constexpr int32_t kStereoChromeEdgeMargin = 10;
+
 static bool StereoDepthTouchesOutputEdge(nsIFrame* aFrame,
                                          int32_t aDisparity,
                                          uint32_t outputEdges) {
@@ -5323,15 +5328,35 @@ static bool StereoDepthTouchesOutputEdge(nsIFrame* aFrame,
   }
   nsPresContext* rootPc =
       aFrame->PresContext()->GetInProcessRootContentDocumentPresContext();
+  if (!rootPc) {
+    // A chrome document has no root content document: its own root.
+    rootPc = aFrame->PresContext()->GetRootPresContext();
+  }
   if (!rootPc || !rootPc->PresShell()) {
     return false;
   }
   RefPtr<dom::BrowserChild> child =
       dom::BrowserChild::GetFrom(rootPc->PresShell());
-  if (!child) {
-    return false;
+  const nscoord apd = rootPc->AppUnitsPerDevPixel();
+  uint32_t viewportEdges = 0;
+  // How close to the side counts as touching it: a page's elements touch it
+  // when their drawn copy reaches it; the browser's own windows (the URL bar's
+  // results list) keep the 10 px border KWin keeps for popups and windows,
+  // measured on the output.
+  nscoord margin = 0;
+  Maybe<ScreenRect> topLevelRect;
+  if (child) {
+    viewportEdges = child->StereoViewportEdges();
+    // A frame in another process measures against the top-level viewport.
+    if (!child->IsTopLevel()) {
+      topLevelRect = child->GetTopLevelViewportVisibleRectInBrowserCoords();
+    }
+  } else {
+    // A chrome document is the window itself.
+    viewportEdges = 15;
+    margin = kStereoChromeEdgeMargin * apd;
   }
-  const uint32_t edges = outputEdges & child->StereoViewportEdges();
+  const uint32_t edges = outputEdges & viewportEdges;
   if (!edges) {
     return false;
   }
@@ -5343,21 +5368,27 @@ static bool StereoDepthTouchesOutputEdge(nsIFrame* aFrame,
   const nsRect rect = nsLayoutUtils::TransformFrameRectToAncestor(
       aFrame, aFrame->InkOverflowRectRelativeToSelf(),
       RelativeTo{rootFrame});
-  const nsSize viewport = rootFrame->GetSize();
-  const nscoord apd = rootPc->AppUnitsPerDevPixel();
+  nsRect viewport(nsPoint(), rootFrame->GetSize());
+  if (topLevelRect) {
+    viewport = nsRect(NSToCoordRound(topLevelRect->x * apd),
+                      NSToCoordRound(topLevelRect->y * apd),
+                      NSToCoordRound(topLevelRect->width * apd),
+                      NSToCoordRound(topLevelRect->height * apd));
+  }
   // The left eye's copy moves right by the larger half, the right eye's left
   // by the smaller (the same split the drawing uses).
   const nscoord right = (aDisparity - aDisparity / 2) * apd;
   const nscoord left = (aDisparity / 2) * apd;
-  const bool touches = ((edges & 1) && rect.x - left <= 0) ||
-                       ((edges & 4) && rect.XMost() + right >= viewport.width) ||
-                       ((edges & 2) && rect.y <= 0) ||
-                       ((edges & 8) && rect.YMost() >= viewport.height);
+  const bool touches =
+      ((edges & 1) && rect.x - left <= viewport.x + margin) ||
+      ((edges & 4) && rect.XMost() + right >= viewport.XMost() - margin) ||
+      ((edges & 2) && rect.y <= viewport.y + margin) ||
+      ((edges & 8) && rect.YMost() >= viewport.YMost() - margin);
   static LazyLogModule sLog("StereoDepth");
   MOZ_LOG(sLog, LogLevel::Verbose,
           ("StereoDepthTouchesOutputEdge frame %p disparity %d edges %u "
            "(output %u, viewport %u) rect %s viewport %s -> %d",
-           aFrame, aDisparity, edges, outputEdges, child->StereoViewportEdges(),
+           aFrame, aDisparity, edges, outputEdges, viewportEdges,
            ToString(rect).c_str(), ToString(viewport).c_str(), touches));
   return touches;
 }

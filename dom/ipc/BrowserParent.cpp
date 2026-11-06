@@ -1245,13 +1245,24 @@ void BrowserParent::StereoDepthChanged(nsIWidget* aWidget) {
 
 void BrowserParent::UpdateStereoViewportEdges() {
   UpdateStereoDepth();
-  if (mIsDestroyed || !mUpdatedDimensions) {
+  if (mIsDestroyed) {
     return;
   }
   // The sides of this browser's viewport that are flush with the window's
-  // client area; a frame inside another process has no such side here.
+  // client area. A frame in another process (a Fission iframe, a page in full
+  // screen is often one) tells its elements against the top-level browser's
+  // viewport (BrowserChild's top-level visible rect), so it gets that
+  // browser's flush sides.
   uint32_t edges = 0;
-  if (!GetBrowserBridgeParent()) {
+  if (GetBrowserBridgeParent()) {
+    if (BrowserParent* top = BrowserParent::GetFrom(mFrameElement.get())) {
+      if (top != this) {
+        edges = top->mStereoViewportEdges;
+      }
+    }
+  } else if (!mUpdatedDimensions) {
+    return;
+  } else {
     if (nsCOMPtr<nsIWidget> widget = GetWidget()) {
       const LayoutDeviceIntRect bounds = widget->GetClientBounds();
       const LayoutDeviceIntPoint offset = GetChildProcessOffset();
@@ -1287,6 +1298,20 @@ void BrowserParent::UpdateStereoViewportEdges() {
   mStereoViewportEdgesSent = true;
   mStereoViewportEdges = edges;
   (void)SendStereoViewportEdges(edges);
+  if (!GetBrowserBridgeParent()) {
+    // The frames embedded in other processes follow this browser's sides.
+    if (nsCOMPtr<nsIWidget> widget = GetWidget()) {
+      for (auto* cp : ContentParent::AllProcesses(ContentParent::eLive)) {
+        for (const auto& key : cp->ManagedPBrowserParent()) {
+          BrowserParent* browser = BrowserParent::GetFrom(key);
+          if (browser && browser != this && browser->GetBrowserBridgeParent() &&
+              BrowserParent::GetFrom(browser->mFrameElement.get()) == this) {
+            browser->UpdateStereoViewportEdges();
+          }
+        }
+      }
+    }
+  }
 }
 
 DimensionInfo BrowserParent::GetDimensionInfo() {

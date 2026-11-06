@@ -442,6 +442,14 @@ toolbar[inactive="true"] .urlbar,
   position: relative;
 }
 
+/* Sparky Stereo OS: the results list is the active window's menu, drawn in the
+ * window. On a stereo output it is popped like a menu, by the same CSS depth
+ * the pages use (the window's own limits from KWin; flat on a 2D output and
+ * in a window that is not the active one). */
+.urlbarView {
+  depth: popped;
+}
+
 @media not -moz-pref("browser.nova.enabled") {
   @keyframes urlbar-grow {
     0% {
