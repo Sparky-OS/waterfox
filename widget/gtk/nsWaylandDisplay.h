@@ -14,6 +14,7 @@
 #include "mozilla/widget/idle-inhibit-unstable-v1-client-protocol.h"
 #include "mozilla/widget/kde-appmenu-client-protocol.h"
 #include "mozilla/widget/kde-output-device-v2-client-protocol.h"
+#include "mozilla/widget/kde-stereo-content-v1-client-protocol.h"
 #include "mozilla/widget/linux-dmabuf-unstable-v1-client-protocol.h"
 #include "mozilla/widget/primary-selection-unstable-v1-client-protocol.h"
 #include "mozilla/widget/pointer-constraints-unstable-v1-client-protocol.h"
@@ -94,6 +95,20 @@ class nsWaylandDisplay {
   // on its own.
   bool HasStereoContent() const { return mHasStereoContent; }
   void SetHasStereoContent() { mHasStereoContent = true; }
+  // The desktop's depth for a surface (kde_stereo_depth_v1, version 5): whether
+  // elements drawn inside it may be shown in depth, and the limits of the
+  // output it mainly sits on, the person's own (KWin's SunkLimit and
+  // PoppedLimit) built on that display. They are kept in the preferences
+  // widget.wayland.stereo-depth.* for every process, and the pages repaint when
+  // they change. Returns the object to destroy with UnfollowStereoDepth, or
+  // null when the compositor has no such protocol.
+  void SetStereoContentManager(kde_stereo_content_manager_v1* aManager) {
+    mStereoContentManager = aManager;
+  }
+  kde_stereo_depth_v1* FollowStereoDepth(wl_surface* aSurface);
+  void UnfollowStereoDepth(kde_stereo_depth_v1* aDepth);
+  void StereoDepthStateChanged(bool aAwake);
+  void StereoDepthLimitsChanged(double aSunk, double aPopped);
   // An output that shows stereo 3D, or can (Sparky Stereo OS): KWin lists a
   // 3D mode for it (the display's own HDMI 1.4 3D modes, or the virtual 3D
   // modes its stereo toggles turn on) or pairs it with another output, as
@@ -271,6 +286,7 @@ class nsWaylandDisplay {
 
   bool mIsPrimarySelectionEnabled = false;
   bool mHasStereoContent = false;
+  kde_stereo_content_manager_v1* mStereoContentManager = nullptr;
   bool mHasStereoOutput = false;
   nsTArray<UniquePtr<StereoOutputDevice>> mStereoOutputDevices;
 

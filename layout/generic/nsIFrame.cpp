@@ -4421,6 +4421,22 @@ void nsIFrame::BuildDisplayListForChild(nsDisplayListBuilder* aBuilder,
   NS_ASSERTION(!child->IsPlaceholderFrame(),
                "Should have dealt with placeholders already");
 
+  // A depth element is drawn twice, each copy moved sideways by up to its
+  // disparity: what is visible, and what a click reaches, is wider than its own
+  // box by that much (Sparky Stereo OS, CSS depth).
+  if (child->StyleEffects()->mDepth != 0.0f &&
+      StaticPrefs::layout_css_depth_enabled()) {
+    if (Maybe<int32_t> disparity = nsDisplayStereoDepth::ShiftForLevel(
+            child, child->StyleEffects()->mDepth)) {
+      const nscoord margin =
+          std::abs(*disparity) * child->PresContext()->AppUnitsPerDevPixel();
+      if (margin) {
+        visible.Inflate(margin, 0);
+        dirty.Inflate(margin, 0);
+      }
+    }
+  }
+
   if (!DescendIntoChild(aBuilder, child, visible, dirty)) {
     DL_LOGV("Skipped frame %p", child);
     return;

@@ -616,6 +616,8 @@ class nsWindow : public nsIWidget {
   void* mEGLWindow = nullptr;
 #ifdef MOZ_WAYLAND
   RefPtr<mozilla::widget::WaylandSurface> mSurface;
+  // KWin's kde_stereo_depth_v1 for this window (Sparky Stereo OS).
+  struct kde_stereo_depth_v1* mStereoDepth = nullptr;
 #endif
   RefPtr<gfxImageSurface> mDragPopupSurface;
   LayoutDeviceIntRegion mDragPopupSurfaceRegion;

@@ -641,6 +641,20 @@ class DisplayListBuilder final {
   Maybe<wr::WrSpatialId> GetSpatialIdForDefinedLayer(
       const ActiveScrolledRoot* aASR) const;
 
+  // Scroll frames defined while this lives belong to one copy of an element
+  // drawn twice, once for each eye (nsDisplayStereoDepth): they are forgotten
+  // when it ends, so the other copy defines its own, inside its own shift.
+  class AutoForgetDefinedLayers {
+   public:
+    explicit AutoForgetDefinedLayers(DisplayListBuilder& aBuilder)
+        : mBuilder(aBuilder), mSaved(aBuilder.mASRToSpatialIdMap) {}
+    ~AutoForgetDefinedLayers() { mBuilder.mASRToSpatialIdMap = std::move(mSaved); }
+
+   private:
+    DisplayListBuilder& mBuilder;
+    std::unordered_map<const ActiveScrolledRoot*, wr::WrSpatialId> mSaved;
+  };
+
   wr::WrSpatialId DefineScrollLayer(
       const ActiveScrolledRoot* aAsr,
       const layers::ScrollableLayerGuid::ViewID& aViewId,

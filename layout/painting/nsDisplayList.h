@@ -5276,6 +5276,12 @@ class nsDisplayStereoDepth : public nsDisplayWrapList {
   }
   bool CreatesStackingContextHelper() override { return true; }
   void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
+  void HitTest(nsDisplayListBuilder* aBuilder, const nsRect& aRect,
+               HitTestState* aState,
+               nsTArray<nsIFrame*>* aOutFrames) override;
+  // Both drawn copies, so that a point on either one reaches HitTest.
+  nsRect GetBounds(nsDisplayListBuilder* aBuilder,
+                   bool* aSnap) const override;
 
   // The depth shift in device pixels of a level (-1 sunk, 0 screen, 1
   // popped) for a frame's window, or Nothing while the display's limits are

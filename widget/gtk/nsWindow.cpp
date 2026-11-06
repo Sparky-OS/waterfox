@@ -7427,6 +7427,15 @@ void nsWindow::OnMap() {
 
   RefreshWindowClass();
 
+#ifdef MOZ_WAYLAND
+  // Follow the desktop's depth for this window (Sparky Stereo OS): the limits
+  // of the output it sits on, live.
+  if (mSurface && mWindowType == WindowType::TopLevel && !mStereoDepth) {
+    mStereoDepth = WaylandDisplayGet()->FollowStereoDepth(
+        mSurface->GetWlSurface());
+  }
+#endif
+
   if (GdkIsX11Display()) {
     if (CompositorBridgeChild* remoteRenderer = GetRemoteRenderer()) {
       remoteRenderer->SendResume();
@@ -7439,6 +7448,13 @@ void nsWindow::OnMap() {
 
 void nsWindow::OnUnmap() {
   LOG("nsWindow::OnUnmap");
+
+#ifdef MOZ_WAYLAND
+  if (mStereoDepth) {
+    WaylandDisplayGet()->UnfollowStereoDepth(mStereoDepth);
+    mStereoDepth = nullptr;
+  }
+#endif
 
 #ifdef MOZ_WAYLAND
   if (AsWayland()) {
