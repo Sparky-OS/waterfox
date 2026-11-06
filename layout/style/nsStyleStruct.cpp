@@ -3572,8 +3572,12 @@ nsChangeHint nsStyleEffects::CalcDifference(
   }
 
   if (mDepth != aNewData.mDepth) {
-    // The element is drawn once per view at its own depth: repaint it.
-    hint |= nsChangeHint_RepaintFrame;
+    // The element is drawn once per view at its own depth: repaint it; having
+    // a depth or not makes it a stacking context, which frames are built for.
+    hint |= (mDepth == 0.0f) != (aNewData.mDepth == 0.0f)
+                ? nsChangeHint_RepaintFrame | nsChangeHint_UpdateEffects |
+                      nsChangeHint_AddOrRemoveTransform
+                : nsChangeHint_RepaintFrame;
   }
 
   if (HasFilters() != aNewData.HasFilters()) {

@@ -432,6 +432,11 @@ pub struct SceneBuilder<'a> {
     /// Stack of requested raster spaces for stacking contexts
     raster_space_stack: Vec<RasterSpace>,
 
+    /// The eye the primitives being added belong to (0 both, else EYE_LEFT or EYE_RIGHT of the
+    /// stacking context that holds them), and the eyes of the contexts the traversal is inside.
+    current_eye: u8,
+    eye_stack: Vec<u8>,
+
     /// Maintains state for any currently active shadows
     pending_shadow_items: VecDeque<ShadowItem>,
 
@@ -542,6 +547,8 @@ impl<'a> SceneBuilder<'a> {
             sc_stack: mem::take(&mut recycler.sc_stack),
             containing_block_stack: mem::take(&mut recycler.containing_block_stack),
             raster_space_stack: mem::take(&mut recycler.raster_space_stack),
+            current_eye: 0,
+            eye_stack: Vec::new(),
             prim_store: mem::take(&mut recycler.prim_store),
             clip_store: mem::take(&mut recycler.clip_store),
             interners,
@@ -944,6 +951,13 @@ impl<'a> SceneBuilder<'a> {
                             snapshot,
                         );
 
+                        // CSS depth: the contexts that draw an element for one eye (crate::stereo).
+                        let eye_bits = info.stacking_context.flags.bits();
+                        let eye = ((eye_bits >> 3) & 0x3) as u8;
+                        self.eye_stack.push(self.current_eye);
+                        if eye != 0 {
+                            self.current_eye = eye;
+                        }
                         let sc_info = self.push_stacking_context(
                             composition_operations,
                             info.stacking_context.transform_style,
@@ -1022,6 +1036,7 @@ impl<'a> SceneBuilder<'a> {
                 ContextKind::Root => {}
                 ContextKind::StackingContext { sc_info } => {
                     self.pop_stacking_context(sc_info);
+                    self.current_eye = self.eye_stack.pop().unwrap_or(0);
                 }
                 ContextKind::ReferenceFrame => {
                 }
@@ -1961,11 +1976,14 @@ impl<'a> SceneBuilder<'a> {
     /// Add an already created primitive to the draw lists.
     pub fn add_primitive_to_draw_list(
         &mut self,
-        prim_instance: PrimitiveInstance,
+        mut prim_instance: PrimitiveInstance,
         prim_rect: LayoutRect,
         spatial_node_index: SpatialNodeIndex,
         flags: PrimitiveFlags,
     ) {
+        // The eye of the stacking context the traversal is in (CSS depth).
+        prim_instance.eye = self.current_eye;
+
         // Add primitive to the top-most stacking context on the stack.
 
         // If we have a valid stacking context, the primitive gets added to that.

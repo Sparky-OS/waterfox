@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "VRShMem.h"
+#include "mozilla/StaticMutex.h"
 #include "mozilla/TimeStamp.h"
 
 #ifdef MOZILLA_INTERNAL_API
@@ -427,10 +428,21 @@ void VRShMem::PushBrowserState(VRBrowserState& aBrowserState,
 #  endif  // defined(XP_WIN)
 
   if (status) {
-    mExternalShmem->geckoGenerationA = mExternalShmem->geckoGenerationA + 1;
+    // The browser state is written by more than one thread (the compositor's
+    // and the VR submit thread's): two writers interleaving lost an update of
+    // one generation counter, which left geckoGenerationA and
+    // geckoGenerationB apart for good, and the service discarded every later
+    // copy as a dirty one, took no frame and the page's frames waited for it
+    // (Sparky Stereo OS, ORDER 195). One writer at a time, and the second
+    // counter takes the first's value, so a state apart heals at the next
+    // push.
+    static mozilla::StaticMutex sPushBrowserStateMutex;
+    mozilla::StaticMutexAutoLock lock(sPushBrowserStateMutex);
+    const int64_t generation = mExternalShmem->geckoGenerationA + 1;
+    mExternalShmem->geckoGenerationA = generation;
     memcpy((void*)&(mExternalShmem->geckoState), (void*)&aBrowserState,
            sizeof(VRBrowserState));
-    mExternalShmem->geckoGenerationB = mExternalShmem->geckoGenerationB + 1;
+    mExternalShmem->geckoGenerationB = generation;
   }
 #endif    // defined(MOZ_WIDGET_ANDROID)
 }

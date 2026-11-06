@@ -10565,11 +10565,12 @@
 
 # Sparky Stereo OS: the CSS `depth` property (sunk | screen | popped |
 # <percentage> | <number>), the same words as Union, Stereo KWin and SVGStereo.
-# Off until the browser draws an element once per view at its depth: a page
-# that is told a property exists must see it do something.
+# On: an element with a depth is drawn once per view at its depth (WebRender
+# draws the tiles that hold it once per eye); where no output shows stereo 3D
+# the page is drawn as without the property.
 - name: layout.css.depth.enabled
   type: RelaxedAtomicBool
-  value: false
+  value: true
   mirror: always
   rust: true
 
@@ -20632,6 +20633,14 @@
   value: false
   mirror: once
 #endif
+
+# Sparky Stereo OS: DMABuf WebGL on NVIDIA proprietary drivers, which Mozilla
+# blocks (bug 1924578), where an output shows stereo 3D: a stereo canvas needs
+# its DMABuf surface to carry its stereo mode to the compositor.
+- name: widget.dmabuf-webgl.stereo-nvidia.enabled
+  type: bool
+  value: true
+  mirror: once
 
 # Use DMABuf backend for WebGL.
 - name: widget.dmabuf-webgl.enabled

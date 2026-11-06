@@ -2287,6 +2287,8 @@ impl TileCacheInstance {
 
         // Build the list of resources that this primitive has dependencies on.
         let mut prim_info = PrimitiveDependencyInfo::new(prim_instance.uid(), pic_coverage_rect);
+        // A primitive drawn for one eye (CSS depth): the tile is drawn once per eye.
+        prim_info.stereo |= prim_instance.eye != 0;
         // Compute once here so it's available for both prim_info and the tile loop.
         let prim_clamp_to_tile = matches!(
             prim_instance.kind,

@@ -3760,6 +3760,18 @@ void nsIFrame::BuildDisplayListForStackingContext(
     createdContainer = true;
   }
 
+  // CSS depth (Sparky Stereo OS, ORDER 414): an element with a `depth` is
+  // drawn once per eye, as a whole, shifted by its depth; a page without depth
+  // is untouched.
+  if (StaticPrefs::layout_css_depth_enabled() && !resultList.IsEmpty() &&
+      StyleEffects()->mDepth != 0.0f) {
+    resultList.AppendNewToTop<nsDisplayStereoDepth>(
+        aBuilder, this, &resultList, containerItemASR,
+        nsDisplayItem::ContainerASRType::AncestorOfContained,
+        StyleEffects()->mDepth);
+    createdContainer = true;
+  }
+
   // We build nsDisplayViewTransitionCapture here, and then use
   // nsDisplayTransform to wrap it, to make sure we create the correct transform
   // for the captured element and its descendants. This is necessary to make
@@ -11967,6 +11979,11 @@ bool nsIFrame::IsStackingContext(const nsStyleDisplay* aStyleDisplay,
   // Properties that influence the output of this function should be handled in
   // change_bits_for_longhand as well.
   if (HasOpacity(aStyleDisplay, aStyleEffects, nullptr)) {
+    return true;
+  }
+  // CSS depth (Sparky Stereo OS): an element drawn at a depth is drawn as a
+  // whole, a stacking context.
+  if (aStyleEffects->mDepth != 0.0f && StaticPrefs::layout_css_depth_enabled()) {
     return true;
   }
   if (IsTransformed()) {

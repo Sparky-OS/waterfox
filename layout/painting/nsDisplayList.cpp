@@ -50,6 +50,14 @@
 #include "mozilla/ServoComputedData.h"
 #include "mozilla/ShapeUtils.h"
 #include "mozilla/StaticPrefs_apz.h"
+#include "mozilla/StaticPrefs_dom.h"
+#include "mozilla/dom/ContentChild.h"
+#include "mozilla/widget/ScreenManager.h"
+#if defined(MOZ_WAYLAND)
+#  include "mozilla/layers/StereoPolicy.h"
+#endif
+#include "nsIScreen.h"
+#include "nsIWidget.h"
 #include "mozilla/StaticPrefs_gfx.h"
 #include "mozilla/StaticPrefs_layers.h"
 #include "mozilla/StaticPrefs_layout.h"
@@ -5265,6 +5273,143 @@ void nsDisplayOpacity::WriteDebugInfo(std::stringstream& aStream) {
   }
 
   aStream << ")";
+}
+
+// CSS depth (ORDER 414): the display's limits in pixels of a view 1920 wide,
+// from libstereo-policy's display depth (the display's kind and physical size,
+// with the person's strength: the same source WebXR's flat modes and the
+// desktop use), asked once of the parent and kept; the pages repaint when the
+// answer comes.
+namespace {
+struct StereoDepthLimits {
+  bool mAsked = false;
+  bool mReady = false;
+  double mSunk = 0;
+  double mPopped = 0;
+};
+StereoDepthLimits sStereoDepthLimits;
+}  // namespace
+
+/* static */
+Maybe<int32_t> nsDisplayStereoDepth::ShiftForLevel(nsIFrame* aFrame,
+                                                   float aLevel) {
+  if (!gfx::gfxVars::StereoOutputs()) {
+    return Nothing();
+  }
+  if (!sStereoDepthLimits.mReady) {
+    if (!sStereoDepthLimits.mAsked) {
+      sStereoDepthLimits.mAsked = true;
+      RefPtr<widget::Screen> screen =
+          widget::ScreenManager::GetSingleton().GetPrimaryScreen();
+      double dpi = screen ? screen->GetDPI() : 0.0;
+      LayoutDeviceIntRect rect;
+      if (screen) {
+        rect = LayoutDeviceIntRect::FromUnknownRect(
+            gfx::IntRect(screen->GetRect().ToUnknownRect()));
+      }
+      int32_t widthMm = 0, heightMm = 0;
+      if (dpi > 0.0 && !rect.IsEmpty()) {
+        widthMm = int32_t(rect.Width() / dpi * 25.4);
+        heightMm = int32_t(rect.Height() / dpi * 25.4);
+      }
+      // The flat headset and phone modes are headsets, the rest framed screens
+      // (libstereo-policy's display kinds 0 framed, 2 headset).
+      const int32_t kind = std::clamp<int32_t>(
+                               StaticPrefs::dom_vr_flat_mode(), 0, 2) == 0
+                               ? 0
+                               : 2;
+      const double strength = double(StaticPrefs::dom_vr_flat_depth_strength());
+      nsPresContext* pc = aFrame->PresContext();
+      RefPtr<nsPresContext> keep(pc);
+      if (XRE_IsContentProcess()) {
+        if (dom::ContentChild* child = dom::ContentChild::GetSingleton()) {
+          child->SendGetStereoDisplayDepth(kind, widthMm, heightMm, strength)
+              ->Then(
+                  GetMainThreadSerialEventTarget(), __func__,
+                  [keep](const std::tuple<int32_t, double, double, int32_t,
+                                          int32_t>& aAnswer) {
+                    const auto [ok, sunk, popped, distance, known] = aAnswer;
+                    if (ok != 0) {
+                      return;
+                    }
+                    sStereoDepthLimits.mSunk = sunk;
+                    sStereoDepthLimits.mPopped = popped;
+                    sStereoDepthLimits.mReady = true;
+                    // The pages show their depth now.
+                    keep->RebuildAllStyleData(nsChangeHint_RepaintFrame,
+                                              RestyleHint{});
+                  },
+                  [](mozilla::ipc::ResponseRejectReason) {});
+        }
+      }
+#if defined(MOZ_WAYLAND)
+      else if (const auto* policy = layers::GetStereoPolicy()) {
+        layers::StereoPolicy::Depth depth{};
+        if (policy->displayDepth &&
+            policy->displayDepth(kind, widthMm, heightMm, strength, 0, 0,
+                                 &depth) == 0) {
+          sStereoDepthLimits.mSunk = depth.mSunkPx;
+          sStereoDepthLimits.mPopped = depth.mPoppedPx;
+          sStereoDepthLimits.mReady = true;
+        }
+      }
+#endif
+    }
+    if (!sStereoDepthLimits.mReady) {
+      return Nothing();
+    }
+  }
+  // The window's width in device pixels: the unit of the limits is a view
+  // 1920 wide.
+  int32_t width = 0;
+  if (nsIWidget* widget = aFrame->GetNearestWidget()) {
+    width = widget->GetClientBounds().Width();
+  }
+  if (width <= 0) {
+    return Nothing();
+  }
+  const double limit =
+      aLevel > 0 ? sStereoDepthLimits.mPopped : sStereoDepthLimits.mSunk;
+  return Some(int32_t(std::lround(double(aLevel) * limit * width / 1920.0)));
+}
+
+void nsDisplayStereoDepth::Paint(nsDisplayListBuilder* aBuilder,
+                                 gfxContext* aCtx) {
+  // Not drawn through WebRender: the element once, at the screen.
+  GetChildren()->Paint(aBuilder, aCtx,
+                       mFrame->PresContext()->AppUnitsPerDevPixel());
+}
+
+bool nsDisplayStereoDepth::CreateWebRenderCommands(
+    wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
+    const StackingContextHelper& aSc, RenderRootStateManager* aManager,
+    nsDisplayListBuilder* aDisplayListBuilder) {
+  const Maybe<int32_t> disparity = ShiftForLevel(mFrame, mLevel);
+  if (!disparity || *disparity == 0) {
+    return nsDisplayWrapList::CreateWebRenderCommands(
+        aBuilder, aResources, aSc, aManager, aDisplayListBuilder);
+  }
+  // Positive disparity moves the left eye's copy right of the right eye's (as
+  // Stereo KWin and Union split it): left = d - d/2, right = -(d/2).
+  const int32_t shifts[2] = {*disparity - *disparity / 2, -(*disparity / 2)};
+  for (int eye = 0; eye < 2; eye++) {
+    gfx::Matrix4x4 translation =
+        gfx::Matrix4x4::Translation(float(shifts[eye]), 0.0f, 0.0f);
+    wr::WrTransformInfo transformInfo;
+    transformInfo.transform = wr::ToLayoutTransform(translation);
+    wr::StackingContextParams params;
+    params.mBoundTransform = &translation;
+    params.mTransformPtr = &transformInfo;
+    params.clip =
+        wr::WrStackingContextClip::ClipChain(aBuilder.CurrentClipChainId());
+    params.flags |= eye == 0 ? wr::StackingContextFlags::EYE_LEFT
+                             : wr::StackingContextFlags::EYE_RIGHT;
+    StackingContextHelper sc(aSc, GetActiveScrolledRoot(), mFrame, this,
+                             aBuilder, params);
+    aManager->CommandBuilder().CreateWebRenderCommandsFromDisplayList(
+        &mList, this, aDisplayListBuilder, sc, aBuilder, aResources);
+  }
+  return true;
 }
 
 bool nsDisplayOpacity::CreateWebRenderCommands(

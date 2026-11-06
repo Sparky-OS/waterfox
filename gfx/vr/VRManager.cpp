@@ -1439,6 +1439,19 @@ bool VRManager::SubmitFrame(const layers::SurfaceDescriptor& aTexture,
     // The presentation stopped while the frame was in flight.
     return false;
   }
+  if (mDisplayInfo.mDisplayState.lastSubmittedFrameId < aFrameId &&
+      !mDisplayInfo.mDisplayState.suppressFrames &&
+      mDisplayInfo.mDisplayState.isConnected) {
+    // Not taken by the service: say what the state was (the wait gave up).
+    fprintf(stderr,
+            "VRManager::SubmitFrame: frame %llu not taken: service last %llu, "
+            "presentationActive %d, enumerationCompleted %d, shutdown %d\n",
+            (unsigned long long)aFrameId,
+            (unsigned long long)mDisplayInfo.mDisplayState.lastSubmittedFrameId,
+            (int)mBrowserState.presentationActive,
+            (int)mEnumerationCompleted,
+            (int)mDisplayInfo.mDisplayState.shutdown);
+  }
 
   if (mDisplayInfo.mDisplayState.suppressFrames ||
       !mDisplayInfo.mDisplayState.isConnected) {

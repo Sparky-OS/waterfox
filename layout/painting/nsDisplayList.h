@@ -5230,6 +5230,63 @@ class nsDisplayOpacity final : public nsDisplayWrapList {
   bool mForceIsolation : 1;
 };
 
+/**
+ * Sparky Stereo OS: an element with a CSS `depth`, drawn once per eye: its
+ * content twice, shifted by its depth to either side, the left eye's copy for
+ * the left eye's drawing of the tile that holds it, the right eye's for the
+ * right (WebRender's stacking context flags EYE_LEFT and EYE_RIGHT). The
+ * element moves as a whole, its text with it; layout is untouched.
+ */
+class nsDisplayStereoDepth : public nsDisplayWrapList {
+ public:
+  nsDisplayStereoDepth(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,
+                       nsDisplayList* aList,
+                       const ActiveScrolledRoot* aActiveScrolledRoot,
+                       ContainerASRType aContainerASRType, float aLevel)
+      : nsDisplayWrapList(aBuilder, aFrame, aList, aActiveScrolledRoot,
+                          aContainerASRType, true),
+        mLevel(aLevel) {
+    MOZ_COUNT_CTOR(nsDisplayStereoDepth);
+  }
+  nsDisplayStereoDepth(nsDisplayListBuilder* aBuilder,
+                       const nsDisplayStereoDepth& aOther)
+      : nsDisplayWrapList(aBuilder, aOther), mLevel(aOther.mLevel) {
+    MOZ_COUNT_CTOR(nsDisplayStereoDepth);
+  }
+
+  MOZ_COUNTED_DTOR_OVERRIDE(nsDisplayStereoDepth)
+
+  NS_DISPLAY_DECL_NAME("StereoDepth", TYPE_STEREO_DEPTH)
+
+  nsRegion GetOpaqueRegion(nsDisplayListBuilder* aBuilder,
+                           bool* aSnap) const override {
+    *aSnap = false;
+    return nsRegion();
+  }
+  void ComputeInvalidationRegion(nsDisplayListBuilder* aBuilder,
+                                 const nsDisplayItemGeometry* aGeometry,
+                                 nsRegion* aInvalidRegion) const override {}
+  bool CreateWebRenderCommands(
+      wr::DisplayListBuilder& aBuilder, wr::IpcResourceUpdateQueue& aResources,
+      const StackingContextHelper& aSc,
+      layers::RenderRootStateManager* aManager,
+      nsDisplayListBuilder* aDisplayListBuilder) override;
+  bool ShouldFlattenAway(nsDisplayListBuilder* aBuilder) override {
+    return false;
+  }
+  bool CreatesStackingContextHelper() override { return true; }
+  void Paint(nsDisplayListBuilder* aBuilder, gfxContext* aCtx) override;
+
+  // The depth shift in device pixels of a level (-1 sunk, 0 screen, 1
+  // popped) for a frame's window, or Nothing while the display's limits are
+  // not known yet (asked of the parent) or no output shows stereo 3D.
+  static mozilla::Maybe<int32_t> ShiftForLevel(nsIFrame* aFrame, float aLevel);
+
+ private:
+  float mLevel;
+  NS_DISPLAY_ALLOW_CLONING()
+};
+
 class nsDisplayBlendMode : public nsDisplayWrapList {
  public:
   nsDisplayBlendMode(nsDisplayListBuilder* aBuilder, nsIFrame* aFrame,

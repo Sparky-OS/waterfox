@@ -961,6 +961,12 @@ bitflags! {
         const WRAPS_BACKDROP_FILTER = 1 << 1;
         /// If true, this stacking context must be isolated from parent by a surface.
         const FORCED_ISOLATION = 1 << 2;
+        /// Sparky Stereo OS (CSS depth, crate::stereo): the primitives of this stacking context
+        /// belong to the left eye's drawing of a tile drawn once per eye, shifted by the
+        /// depth of their element; they are not drawn in the right eye's.
+        const EYE_LEFT = 1 << 3;
+        /// The same for the right eye.
+        const EYE_RIGHT = 1 << 4;
     }
 }
 

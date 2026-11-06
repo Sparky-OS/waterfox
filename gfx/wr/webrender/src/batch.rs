@@ -735,17 +735,22 @@ pub struct BatchBuilder {
     /// The eye a stereo tile is batched for (0 left, 1 right), whose part
     /// of each stereo picture is drawn (crate::stereo).
     stereo_eye: Option<usize>,
+    /// Whether primitives drawn for one eye are filtered (the picture cache tiles' batches,
+    /// not those of the intermediate surfaces, whose pictures each belong to one eye).
+    eye_filter: bool,
 }
 
 impl BatchBuilder {
     pub fn set_stereo_eye(&mut self, eye: Option<usize>) {
         self.stereo_eye = eye;
+        self.eye_filter = true;
     }
 
     pub fn new(batcher: AlphaBatchBuilder) -> Self {
         BatchBuilder {
             glyph_fetch_buffer: Vec::new(),
             stereo_eye: None,
+            eye_filter: false,
             batcher,
         }
     }
@@ -840,6 +845,27 @@ impl BatchBuilder {
         gpu_buffer_builder: &mut GpuBufferBuilder,
         segments: &[RenderTaskId],
     ) {
+        // CSS depth (crate::stereo): a primitive drawn for one eye is batched in that eye's
+        // drawing of a tile drawn once per eye; in a tile drawn once, only the left eye's copy.
+        {
+            let draw_index = match cmd {
+                PrimitiveCommand::Simple { draw_index }
+                | PrimitiveCommand::Complex { draw_index, .. }
+                | PrimitiveCommand::Instance { draw_index, .. }
+                | PrimitiveCommand::Quad { draw_index, .. } => draw_index,
+            };
+            let eye = prim_instances[draw_index.0 as usize].eye;
+            if eye != 0 && self.eye_filter {
+                let wanted = match self.stereo_eye {
+                    Some(eye_index) => 1u8 << eye_index,
+                    None => 1u8,
+                };
+                if eye != wanted {
+                    return;
+                }
+            }
+        }
+
         let (draw_index, extra_prim_gpu_address) = match cmd {
             PrimitiveCommand::Simple { draw_index } => {
                 (draw_index, None)

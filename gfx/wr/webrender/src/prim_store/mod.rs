@@ -821,6 +821,10 @@ pub struct PrimitiveInstance {
     /// intern key can deduplicate across differently-sized instances of the
     /// same prim shape.
     pub unsnapped_prim_rect: LayoutRect,
+
+    /// The eye this primitive belongs to in a tile drawn once per eye (crate::stereo):
+    /// 0 for both, EYE_LEFT or EYE_RIGHT of the stacking contexts that drew it.
+    pub eye: u8,
 }
 
 impl PrimitiveInstance {
@@ -833,6 +837,7 @@ impl PrimitiveInstance {
             kind,
             clip_leaf_id,
             unsnapped_prim_rect,
+            eye: 0,
         }
     }
 
