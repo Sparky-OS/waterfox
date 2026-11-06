@@ -1009,7 +1009,10 @@ static const kde_stereo_depth_v1_listener kStereoDepthListener = {
 
 kde_stereo_depth_v1* nsWaylandDisplay::FollowStereoDepth(
     wl_surface* aSurface) {
-  if (!mStereoContentManager || !aSurface) {
+  // get_depth is since version 3 of the protocol (an older KWin has no
+  // depth to follow: the page's depth then comes from libstereo-policy).
+  if (!mStereoContentManager || mStereoContentManagerVersion < 3 ||
+      !aSurface) {
     return nullptr;
   }
   kde_stereo_depth_v1* depth =
@@ -1108,7 +1111,8 @@ static void global_registry_handler(void* data, wl_registry* registry,
     display->SetStereoContentManager(
         WaylandRegistryBind<kde_stereo_content_manager_v1>(
             registry, id, &kde_stereo_content_manager_v1_interface,
-            std::min(version, 5u)));
+            std::min(version, 5u)),
+        std::min(version, 5u));
   } else if (iface.EqualsLiteral("kde_output_device_registry_v2")) {
     // KWin's outputs and their modes, for whether one shows stereo 3D.
     auto* outputs = WaylandRegistryBind<kde_output_device_registry_v2>(

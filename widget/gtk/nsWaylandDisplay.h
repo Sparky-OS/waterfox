@@ -102,8 +102,10 @@ class nsWaylandDisplay {
   // widget.wayland.stereo-depth.* for every process, and the pages repaint when
   // they change. Returns the object to destroy with UnfollowStereoDepth, or
   // null when the compositor has no such protocol.
-  void SetStereoContentManager(kde_stereo_content_manager_v1* aManager) {
+  void SetStereoContentManager(kde_stereo_content_manager_v1* aManager,
+                               uint32_t aVersion) {
     mStereoContentManager = aManager;
+    mStereoContentManagerVersion = aVersion;
   }
   kde_stereo_depth_v1* FollowStereoDepth(wl_surface* aSurface);
   void UnfollowStereoDepth(kde_stereo_depth_v1* aDepth);
@@ -287,6 +289,7 @@ class nsWaylandDisplay {
   bool mIsPrimarySelectionEnabled = false;
   bool mHasStereoContent = false;
   kde_stereo_content_manager_v1* mStereoContentManager = nullptr;
+  uint32_t mStereoContentManagerVersion = 0;
   bool mHasStereoOutput = false;
   nsTArray<UniquePtr<StereoOutputDevice>> mStereoOutputDevices;
 
