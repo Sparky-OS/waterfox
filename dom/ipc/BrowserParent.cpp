@@ -1202,6 +1202,52 @@ void BrowserParent::UpdateDimensions(const LayoutDeviceIntRect& rect,
 
     (void)SendUpdateDimensions(GetDimensionInfo());
   }
+  UpdateStereoViewportEdges();
+}
+
+void BrowserParent::UpdateStereoViewportEdges() {
+  if (mIsDestroyed || !mUpdatedDimensions) {
+    return;
+  }
+  // The sides of this browser's viewport that are flush with the window's
+  // client area; a frame inside another process has no such side here.
+  uint32_t edges = 0;
+  if (!GetBrowserBridgeParent()) {
+    if (nsCOMPtr<nsIWidget> widget = GetWidget()) {
+      const LayoutDeviceIntRect bounds = widget->GetClientBounds();
+      const LayoutDeviceIntPoint offset = GetChildProcessOffset();
+      if (offset.x <= 0) {
+        edges |= 1;
+      }
+      if (offset.y <= 0) {
+        edges |= 2;
+      }
+      if (offset.x + mDimensions.width >= bounds.Width()) {
+        edges |= 4;
+      }
+      if (offset.y + mDimensions.height >= bounds.Height()) {
+        edges |= 8;
+      }
+    }
+  }
+  static LazyLogModule sLog("StereoDepth");
+  if (MOZ_LOG_TEST(sLog, LogLevel::Debug)) {
+    nsCOMPtr<nsIWidget> logWidget = GetWidget();
+    const LayoutDeviceIntPoint logOffset = GetChildProcessOffset();
+    MOZ_LOG(sLog, LogLevel::Debug,
+            ("BrowserParent::UpdateStereoViewportEdges %p edges %u (was %u, "
+             "sent %d) chrome offset %d,%d size %d x %d bounds %d x %d",
+             this, edges, mStereoViewportEdges, mStereoViewportEdgesSent,
+             logOffset.x, logOffset.y, mDimensions.width, mDimensions.height,
+             logWidget ? logWidget->GetClientBounds().Width() : -1,
+             logWidget ? logWidget->GetClientBounds().Height() : -1));
+  }
+  if (mStereoViewportEdgesSent && edges == mStereoViewportEdges) {
+    return;
+  }
+  mStereoViewportEdgesSent = true;
+  mStereoViewportEdges = edges;
+  (void)SendStereoViewportEdges(edges);
 }
 
 DimensionInfo BrowserParent::GetDimensionInfo() {

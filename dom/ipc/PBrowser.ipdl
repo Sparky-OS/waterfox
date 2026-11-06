@@ -697,6 +697,11 @@ child:
 
     async SizeModeChanged(nsSizeMode sizeMode);
 
+    // Sparky Stereo OS, CSS depth: the sides of the page's viewport that are
+    // flush with the window (bit 1 left, 2 top, 4 right, 8 bottom, as
+    // kde_stereo_depth_v1's edges).
+    async StereoViewportEdges(uint32_t edges);
+
     async ChildToParentMatrix(Matrix4x4? aMatrix,
                               ScreenRect aRemoteDocumentRect);
 

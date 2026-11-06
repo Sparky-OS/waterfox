@@ -267,6 +267,10 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   mozilla::ipc::IPCResult RecvUpdateDimensions(
       const mozilla::dom::DimensionInfo& aDimensionInfo);
   mozilla::ipc::IPCResult RecvSizeModeChanged(const nsSizeMode& aSizeMode);
+  // The sides of the viewport flush with the window (CSS depth, the stereo
+  // window rule).
+  mozilla::ipc::IPCResult RecvStereoViewportEdges(const uint32_t& aEdges);
+  uint32_t StereoViewportEdges() const { return mStereoViewportEdges; }
 
   mozilla::ipc::IPCResult RecvChildToParentMatrix(
       const mozilla::Maybe<mozilla::gfx::Matrix4x4>& aMatrix,
@@ -879,6 +883,7 @@ class BrowserChild final : public nsMessageManagerScriptExecutor,
   RefPtr<APZEventState> mAPZEventState;
 
   // Position of client area relative to the outer window
+  uint32_t mStereoViewportEdges = 0;
   LayoutDeviceIntPoint mClientOffset;
   // Position of tab, relative to parent widget (typically the window)
   // NOTE: This value is valuable only for the top level browser.

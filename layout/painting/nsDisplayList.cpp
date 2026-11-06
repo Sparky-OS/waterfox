@@ -5307,6 +5307,62 @@ struct StereoDepthDefault {
 StereoDepthDefault sStereoDepthDefault;
 }  // namespace
 
+
+// CSS depth, the stereo window rule: whether a popped element's drawn copies
+// (the left eye's moved right, the right eye's moved left, by the disparity
+// the element would get) reach a side of the page's viewport that lies on the
+// output's edge. That is a side KWin lists in the window's output_edges
+// (kde_stereo_depth_v1) and on which the viewport is flush with the window
+// (the parent's BrowserParent::UpdateStereoViewportEdges). The viewport's own
+// clipping away from the output's edge is not part of the rule.
+static bool StereoDepthTouchesOutputEdge(nsIFrame* aFrame,
+                                         int32_t aDisparity) {
+  const uint32_t outputEdges = uint32_t(
+      Preferences::GetInt("widget.wayland.stereo-depth.edges", 0));
+  if (!outputEdges) {
+    return false;
+  }
+  nsPresContext* rootPc =
+      aFrame->PresContext()->GetInProcessRootContentDocumentPresContext();
+  if (!rootPc || !rootPc->PresShell()) {
+    return false;
+  }
+  RefPtr<dom::BrowserChild> child =
+      dom::BrowserChild::GetFrom(rootPc->PresShell());
+  if (!child) {
+    return false;
+  }
+  const uint32_t edges = outputEdges & child->StereoViewportEdges();
+  if (!edges) {
+    return false;
+  }
+  nsIFrame* rootFrame = rootPc->PresShell()->GetRootFrame();
+  if (!rootFrame) {
+    return false;
+  }
+  // The element as drawn (its ink), in the viewport's coordinates.
+  const nsRect rect = nsLayoutUtils::TransformFrameRectToAncestor(
+      aFrame, aFrame->InkOverflowRectRelativeToSelf(),
+      RelativeTo{rootFrame});
+  const nsSize viewport = rootFrame->GetSize();
+  const nscoord apd = rootPc->AppUnitsPerDevPixel();
+  // The left eye's copy moves right by the larger half, the right eye's left
+  // by the smaller (the same split the drawing uses).
+  const nscoord right = (aDisparity - aDisparity / 2) * apd;
+  const nscoord left = (aDisparity / 2) * apd;
+  const bool touches = ((edges & 1) && rect.x - left <= 0) ||
+                       ((edges & 4) && rect.XMost() + right >= viewport.width) ||
+                       ((edges & 2) && rect.y <= 0) ||
+                       ((edges & 8) && rect.YMost() >= viewport.height);
+  static LazyLogModule sLog("StereoDepth");
+  MOZ_LOG(sLog, LogLevel::Verbose,
+          ("StereoDepthTouchesOutputEdge frame %p disparity %d edges %u "
+           "(output %u, viewport %u) rect %s viewport %s -> %d",
+           aFrame, aDisparity, edges, outputEdges, child->StereoViewportEdges(),
+           ToString(rect).c_str(), ToString(viewport).c_str(), touches));
+  return touches;
+}
+
 /* static */
 Maybe<int32_t> nsDisplayStereoDepth::ShiftForLevel(nsIFrame* aFrame,
                                                    float aLevel) {
@@ -5408,7 +5464,15 @@ Maybe<int32_t> nsDisplayStereoDepth::ShiftForLevel(nsIFrame* aFrame,
     return Nothing();
   }
   const double limit = aLevel > 0 ? popped : sunk;
-  return Some(int32_t(std::lround(double(aLevel) * limit * width / 1920.0)));
+  const int32_t disparity =
+      int32_t(std::lround(double(aLevel) * limit * width / 1920.0));
+  // The stereo window rule (memory stereo-plasma-depth-rules, 2026-10-05): a
+  // popped element cut by the edge of the output looks wrong, so what touches
+  // the output's edge stays at the screen.
+  if (disparity > 0 && StereoDepthTouchesOutputEdge(aFrame, disparity)) {
+    return Some(0);
+  }
+  return Some(disparity);
 }
 
 nsRect nsDisplayStereoDepth::GetBounds(nsDisplayListBuilder* aBuilder,

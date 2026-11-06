@@ -475,6 +475,9 @@ class BrowserParent final : public PBrowserParent,
   nsresult UpdatePosition();
 
   void SizeModeChanged(const nsSizeMode& aSizeMode);
+  // CSS depth, the stereo window rule: tells the page which sides of its
+  // viewport are flush with the window.
+  void UpdateStereoViewportEdges();
 
   void HandleAccessKey(const WidgetKeyboardEvent& aEvent,
                        nsTArray<uint32_t>& aCharCodes);
@@ -941,6 +944,8 @@ class BrowserParent final : public PBrowserParent,
   DesktopToLayoutDeviceScale mDesktopToDeviceScale;
   bool mUpdatedDimensions;
   nsSizeMode mSizeMode;
+  uint32_t mStereoViewportEdges = 0;
+  bool mStereoViewportEdgesSent = false;
   LayoutDeviceIntPoint mClientOffset;
   LayoutDeviceIntPoint mChromeOffset;
 

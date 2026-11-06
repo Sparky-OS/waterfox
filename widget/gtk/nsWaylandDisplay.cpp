@@ -993,7 +993,8 @@ void nsWaylandDisplay::RemoveStereoOutputDevice(StereoOutputDevice* aDevice) {
 // The desktop's depth for a surface (see FollowStereoDepth).
 static void StereoDepthStateEvent(void* aData, kde_stereo_depth_v1*,
                                   uint32_t aAwake, uint32_t aOutputEdges) {
-  static_cast<nsWaylandDisplay*>(aData)->StereoDepthStateChanged(aAwake != 0);
+  static_cast<nsWaylandDisplay*>(aData)->StereoDepthStateChanged(aAwake != 0,
+                                                                 aOutputEdges);
 }
 
 static void StereoDepthLimitsEvent(void* aData, kde_stereo_depth_v1*,
@@ -1029,10 +1030,21 @@ void nsWaylandDisplay::UnfollowStereoDepth(kde_stereo_depth_v1* aDepth) {
   }
 }
 
-void nsWaylandDisplay::StereoDepthStateChanged(bool aAwake) {
+void nsWaylandDisplay::StereoDepthStateChanged(bool aAwake,
+                                               uint32_t aOutputEdges) {
   static const char kAwake[] = "widget.wayland.stereo-depth.awake";
+  static const char kEdges[] = "widget.wayland.stereo-depth.edges";
+  static LazyLogModule sLog("StereoDepth");
+  MOZ_LOG(sLog, LogLevel::Debug,
+          ("nsWaylandDisplay::StereoDepthStateChanged awake %d output_edges %u",
+           aAwake, aOutputEdges));
   if (Preferences::GetBool(kAwake, true) != aAwake) {
     Preferences::SetBool(kAwake, aAwake, PrefValueKind::Default);
+  }
+  // The window's edges that touch the edge of its output: nothing at such an
+  // edge comes nearer than the screen (the stereo window rule).
+  if (Preferences::GetInt(kEdges, 0) != int32_t(aOutputEdges)) {
+    Preferences::SetInt(kEdges, int32_t(aOutputEdges), PrefValueKind::Default);
   }
 }
 

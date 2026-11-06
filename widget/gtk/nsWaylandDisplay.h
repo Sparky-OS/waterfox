@@ -109,7 +109,7 @@ class nsWaylandDisplay {
   }
   kde_stereo_depth_v1* FollowStereoDepth(wl_surface* aSurface);
   void UnfollowStereoDepth(kde_stereo_depth_v1* aDepth);
-  void StereoDepthStateChanged(bool aAwake);
+  void StereoDepthStateChanged(bool aAwake, uint32_t aOutputEdges);
   void StereoDepthLimitsChanged(double aSunk, double aPopped);
   // An output that shows stereo 3D, or can (Sparky Stereo OS): KWin lists a
   // 3D mode for it (the display's own HDMI 1.4 3D modes, or the virtual 3D

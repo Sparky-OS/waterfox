@@ -1224,6 +1224,23 @@ mozilla::ipc::IPCResult BrowserChild::RecvSizeModeChanged(
   return IPC_OK();
 }
 
+mozilla::ipc::IPCResult BrowserChild::RecvStereoViewportEdges(
+    const uint32_t& aEdges) {
+  if (mStereoViewportEdges == aEdges) {
+    return IPC_OK();
+  }
+  mStereoViewportEdges = aEdges;
+  // Elements with a depth that touched the output's edge, or no longer do,
+  // are drawn at their new places.
+  if (nsCOMPtr<Document> document = GetTopLevelDocument()) {
+    if (nsPresContext* presContext = document->GetPresContext()) {
+      presContext->RebuildAllStyleData(nsChangeHint_RepaintFrame,
+                                       RestyleHint{});
+    }
+  }
+  return IPC_OK();
+}
+
 mozilla::ipc::IPCResult BrowserChild::RecvChildToParentMatrix(
     const Maybe<gfx::Matrix4x4>& aMatrix,
     const ScreenRect& aTopLevelViewportVisibleRectInBrowserCoords) {
