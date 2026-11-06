@@ -853,6 +853,15 @@ void nsWindowWayland::WaylandPopupMovePlain(int aX, int aY) {
                             GDK_WINDOW_TYPE_HINT_TOOLTIP ||
                         PopupsAsXdgPopups());
 
+  if (GtkWindow* parent = gtk_window_get_transient_for(GTK_WINDOW(mShell))) {
+    auto* parentWindow = nsWindow::FromGtkWidget(GTK_WIDGET(parent));
+    if (parentWindow && (parentWindow->IsDestroyed() ||
+                         !gtk_widget_get_mapped(GTK_WIDGET(parent)))) {
+      LOG("  the popup's parent window is hidden or destroyed, not moving.");
+      return;
+    }
+  }
+
   gtk_window_move(GTK_WINDOW(mShell), aX, aY);
 
   // gtk_window_move() can trick us. When widget is hidden gtk_window_move()
@@ -1832,7 +1841,12 @@ void nsWindowWayland::WaylandPopupSetDirectPosition() {
 
   GtkWindow* parentGtkWindow = gtk_window_get_transient_for(GTK_WINDOW(mShell));
   auto* window = nsWindow::FromGtkWidget(GTK_WIDGET(parentGtkWindow));
-  if (!window) {
+  // The window this popup is a subsurface of is hidden or gone (the
+  // application is quitting with the popup open): its surface is destroyed
+  // and moving the subsurface now is a protocol error ("no parent") that ends
+  // the browser with a crash.
+  if (!window || window->IsDestroyed() ||
+      !gtk_widget_get_mapped(GTK_WIDGET(parentGtkWindow))) {
     return;
   }
   GdkWindow* gdkWindow = window->GetGdkWindow();
