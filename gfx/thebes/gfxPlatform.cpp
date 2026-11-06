@@ -3346,29 +3346,41 @@ void gfxPlatform::InitWebGLConfig() {
     if (NS_FAILED(gfxInfo->GetFeatureStatus(nsIGfxInfo::FEATURE_DMABUF_WEBGL,
                                             discardFailureId, &status)) ||
         status != nsIGfxInfo::FEATURE_STATUS_OK) {
-      feature.Disable(FeatureStatus::Blocked, "Blocklisted by gfxInfo",
-                      discardFailureId);
+      // A WebGL canvas reaches the compositor as a DMABuf surface that carries
+      // its stereo mode (WebGLContext.cpp SetStereoMode); Mozilla blocks DMABuf
+      // WebGL on every NVIDIA proprietary driver (bug 1924578), so a stereo
+      // canvas (WebXR on the flat display, the camera hack) was drawn into the
+      // page's tiles unmarked and no view was declared. Where an output shows
+      // stereo 3D the block does not hold (the edition targets NVIDIA on
+      // Linux); widget.dmabuf-webgl.stereo-nvidia.enabled (default true) lets
+      // the person turn the override off. gfxVars::StereoOutputs is set by
+      // InitWebRenderConfig, before. The feature's state tells what is true (a message is at most
+      // 63 characters): forced on by that preference, with the blocklist entry
+      // kept in the decision log (about:support), or blocked, with the
+      // reason that the preference is false.
+      bool nvidiaOnStereoOutput = false;
+      if (feature.IsEnabled() && gfxVars::StereoOutputs() &&
+          gfxVars::UseDMABuf() &&
+          StaticPrefs::widget_dmabuf_webgl_enabled_AtStartup()) {
+        nsAutoString vendor;
+        nvidiaOnStereoOutput =
+            NS_SUCCEEDED(gfxInfo->GetAdapterVendorID(vendor)) &&
+            vendor.EqualsLiteral("0x10de");
+      }
+      const char* blockMessage = "Blocklisted by gfxInfo";
+      if (nvidiaOnStereoOutput) {
+        if (StaticPrefs::widget_dmabuf_webgl_stereo_nvidia_enabled_AtStartup()) {
+          // The user state is set before the environment's, as the states
+          // are decided in that order; the forced state wins in GetValue.
+          feature.UserForceEnable(
+              "Forced on by widget.dmabuf-webgl.stereo-nvidia.enabled");
+        } else {
+          blockMessage = "widget.dmabuf-webgl.stereo-nvidia.enabled is false";
+        }
+      }
+      feature.Disable(FeatureStatus::Blocked, blockMessage, discardFailureId);
     }
     gfxVars::SetUseDMABufWebGL(feature.IsEnabled());
-
-    // A WebGL canvas reaches the compositor as a DMABuf surface that carries
-    // its stereo mode (WebGLContext.cpp SetStereoMode); Mozilla blocks DMABuf
-    // WebGL on every NVIDIA proprietary driver (bug 1924578), so a stereo
-    // canvas (WebXR on the flat display, the camera hack) was drawn into the
-    // page's tiles unmarked and no view was declared. Where an output shows
-    // stereo 3D the block does not hold (the edition targets NVIDIA on Linux);
-    // widget.dmabuf-webgl.stereo-nvidia.enabled turns it back on for the
-    // person. gfxVars::StereoOutputs is set by InitWebRenderConfig, before.
-    if (!feature.IsEnabled() && gfxVars::StereoOutputs() &&
-        gfxVars::UseDMABuf() &&
-        StaticPrefs::widget_dmabuf_webgl_stereo_nvidia_enabled_AtStartup() &&
-        StaticPrefs::widget_dmabuf_webgl_enabled_AtStartup()) {
-      nsAutoString vendor;
-      if (NS_SUCCEEDED(gfxInfo->GetAdapterVendorID(vendor)) &&
-          vendor.EqualsLiteral("0x10de")) {
-        gfxVars::SetUseDMABufWebGL(true);
-      }
-    }
   }
 #endif
 }
