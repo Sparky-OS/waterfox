@@ -219,9 +219,12 @@ void DMABUFTextureHostOGL::PushDisplayItems(
   }
   bool preferCompositorSurface =
       aFlags.contains(PushDisplayItemFlag::PREFER_COMPOSITOR_SURFACE);
+  // A picture the compositor cannot import (another GPU's modifier) is drawn
+  // by WebRender into a layer instead, which is copied for the compositor.
   bool supportsDirectComposition =
       widget::GetGlobalDMABufFormats()->SupportsDirectComposition(
-          mSurface->GetFormat());
+          mSurface->GetFormat()) &&
+      mSurface->CompositorCanImport();
 
   switch (mSurface->GetFormat()) {
     case gfx::SurfaceFormat::R8G8B8X8:

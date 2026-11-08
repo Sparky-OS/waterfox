@@ -21,6 +21,7 @@
 #include "mozilla/layers/NativeLayerWayland.h"
 
 #include <dlfcn.h>
+#include <inttypes.h>
 #include <utility>
 #include <algorithm>
 #include <cmath>
@@ -29,6 +30,7 @@
 #include "nsGtkUtils.h"
 #include "GLContextProvider.h"
 #include "GLBlitHelper.h"
+#include "GLReadTexImageHelper.h"
 #include "mozilla/gfx/DataSurfaceHelpers.h"
 #include "mozilla/gfx/Logging.h"
 #include "mozilla/gfx/gfxVars.h"
@@ -1716,8 +1718,57 @@ bool NativeLayerWaylandRender::CommitFrontBufferToScreenLocked(
     ReleaseStereoBufferLocked(aProofOfLock);
   }
 
+  if (auto* dmabuf = shown->AsWaylandBufferDMABUF();
+      dmabuf && !dmabuf->GetSurface()->CompositorCanImport()) {
+    if (RefPtr<widget::WaylandBuffer> copy = CopyToSharedMemoryLocked(shown)) {
+      mSurface->InvalidateLocked(aProofOfLock);
+      shown = copy;
+    } else {
+      gfxCriticalNoteOnce << "NativeLayerWaylandRender: copy for the compositor "
+                             "on another GPU failed";
+      return false;
+    }
+  }
+
   mSurface->AttachLocked(aProofOfLock, shown);
   return true;
+}
+
+RefPtr<widget::WaylandBuffer> NativeLayerWaylandRender::CopyToSharedMemoryLocked(
+    const RefPtr<widget::WaylandBuffer>& aSource) {
+  RefPtr<gl::GLContext> gl = mSurfacePoolHandle->gl();
+  if (!gl || !gl->MakeCurrent()) {
+    return nullptr;
+  }
+  Maybe<GLuint> source =
+      mSurfacePoolHandle->GetFramebufferForBuffer(aSource, false);
+  if (!source) {
+    return nullptr;
+  }
+  const IntSize size = aSource->GetSize().ToUnknownSize();
+  RefPtr<widget::WaylandBufferSHM> shm =
+      widget::WaylandBufferSHM::Create(aSource->GetSize());
+  if (!shm) {
+    return nullptr;
+  }
+  RefPtr<gfx::DataSourceSurface> surface =
+      gfx::Factory::CreateWrappingDataSourceSurface(
+          (uint8_t*)shm->GetImageData(), size.width * 4, size,
+          gfx::SurfaceFormat::B8G8R8A8);
+  if (!surface) {
+    return nullptr;
+  }
+  gl->fBindFramebuffer(LOCAL_GL_READ_FRAMEBUFFER, *source);
+  gl::ReadPixelsIntoDataSurface(gl, surface);
+  mSharedMemoryBuffer = shm;
+  static uint64_t sCopies = 0;
+  if ((sCopies++ & 0x1ff) == 0) {
+    LOG("NativeLayerWaylandRender: %" PRIu64
+        " frames copied for a compositor that cannot import their modifier "
+        "(last %d x %d)",
+        sCopies, size.width, size.height);
+  }
+  return shm;
 }
 
 RefPtr<widget::WaylandBuffer> NativeLayerWaylandRender::RepackStereoLocked(

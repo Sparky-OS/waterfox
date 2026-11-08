@@ -285,6 +285,17 @@ bool DMABufSurface::UseDmaBufGL(GLContext* aGLContext) {
   return true;
 }
 
+bool DMABufSurface::CompositorCanImport() const {
+  const int planes = const_cast<DMABufSurface*>(this)->GetTextureCount();
+  for (int i = 0; i < planes; i++) {
+    if (!mozilla::widget::DMABufCompositorCanImport(mFOURCCFormat,
+                                                    GetPlaneModifier(i))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool DMABufSurface::UseDmaBufExportExtension(GLContext* aGLContext) {
   static bool useDmabufExport = [&]() {
     if (!gfx::gfxVars::UseDMABufSurfaceExport()) {

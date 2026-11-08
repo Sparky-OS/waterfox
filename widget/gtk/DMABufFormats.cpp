@@ -5,6 +5,8 @@
 #include <xf86drm.h>
 #include <sys/mman.h>
 #include <sys/types.h>
+#include <atomic>
+#include <inttypes.h>
 #include <gbm.h>
 #include <mutex>
 
@@ -377,6 +379,8 @@ void DMABufFormats::EnsureBasicFormats() {
   mDMABufFeedback->PendingTrancheDone();
 }
 
+bool DMABufFormats::HasFeedback() { return !!mDMABufFeedback; }
+
 DMABufFormats::DMABufFormats() = default;
 
 DMABufFormats::~DMABufFormats() {
@@ -388,6 +392,33 @@ DMABufFormats::~DMABufFormats() {
 }
 
 #ifdef MOZ_WAYLAND
+// Linux DMA-BUF protocol: a buffer's format and modifier are importable by the
+// compositor when they are in a tranche of its feedback (tranche_formats, the
+// format table), INVALID meaning the driver's own implicit layout. A buffer
+// made by another GPU (an EGLImage export on NVIDIA: block linear) is in none
+// and the compositor closes the connection: "importing the supplied dmabufs
+// failed". An implicit modifier is left as it always was.
+bool DMABufCompositorCanImport(uint32_t aFourcc, uint64_t aModifier) {
+  if (aModifier == DRM_FORMAT_MOD_INVALID || !GdkIsWaylandDisplay()) {
+    return true;
+  }
+  RefPtr<DMABufFormats> formats = WaylandDisplayGet()->GetDMABufFormats();
+  if (!formats || !formats->HasFeedback()) {
+    return true;
+  }
+  DRMFormat* format = formats->GetFormat(aFourcc);
+  const bool can = !format || !format->UseModifiers() ||
+                   format->IsFormatModifierSupported(aModifier);
+  static std::atomic<uint64_t> sLastPair{0};
+  const uint64_t pair = aModifier ^ (uint64_t(aFourcc) << 40);
+  if (sLastPair.exchange(pair) != pair) {
+    LOGDMABUF(("DMABufCompositorCanImport(): format 0x%x modifier %" PRIx64
+               " -> %d",
+               aFourcc, aModifier, can));
+  }
+  return can;
+}
+
 RefPtr<DMABufFormats> CreateDMABufFeedbackFormats(
     wl_surface* aSurface, const DMABufFormatsCallback& aFormatRefreshCB) {
   if (!WaylandDisplayGet()->HasDMABufFeedback()) {

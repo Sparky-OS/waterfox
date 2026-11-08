@@ -429,6 +429,11 @@ class NativeLayerWaylandRender final : public NativeLayerWayland {
   // left eye first, into mStereoBuffer.
   RefPtr<widget::WaylandBuffer> RepackStereoLocked(
       const widget::WaylandSurfaceLock& aProofOfLock);
+  // The compositor runs on another GPU than the one drawing: it gets a copy of
+  // the frame in shared memory instead of a buffer it cannot import.
+  RefPtr<widget::WaylandBuffer> CopyToSharedMemoryLocked(
+      const RefPtr<widget::WaylandBuffer>& aSource);
+  RefPtr<widget::WaylandBuffer> mSharedMemoryBuffer;
   bool CommitFrontBufferToScreenLocked(
       const widget::WaylandSurfaceLock& aProofOfLock) override;
 

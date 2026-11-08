@@ -5,6 +5,7 @@
 #ifndef MOZ_DMABUF_FORMATS_H_
 #define MOZ_DMABUF_FORMATS_H_
 
+#include <sys/types.h>
 #include "nsTArray.h"
 #include "mozilla/gfx/Types.h"
 
@@ -84,6 +85,7 @@ class DMABufFormats final {
   void PendingDMABufFeedbackDone();
 
   DRMFormat* GetFormat(uint32_t aFormat, bool aRequestScanoutFormat = false);
+  bool HasFeedback();
   DMABufFormats();
 
   void EnsureBasicFormats();
@@ -102,6 +104,10 @@ class DMABufFormats final {
 };
 
 #ifdef MOZ_WAYLAND
+// False when the Wayland compositor advertises modifiers for the format and
+// aModifier is none of them (the compositor could not import such a buffer).
+bool DMABufCompositorCanImport(uint32_t aFourcc, uint64_t aModifier);
+
 RefPtr<DMABufFormats> CreateDMABufFeedbackFormats(
     wl_surface* aSurface,
     const std::function<void(DMABufFormats*)>& aFormatRefreshCB = nullptr);

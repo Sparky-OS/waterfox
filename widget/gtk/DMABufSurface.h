@@ -127,6 +127,9 @@ class DMABufSurface {
     return sSurfaceTypeNames[static_cast<int>(mSurfaceType)];
   };
   int32_t GetFOURCCFormat() const { return mFOURCCFormat; };
+  virtual uint64_t GetPlaneModifier(int aPlane) const = 0;
+  // The compositor can import every plane's modifier (its dmabuf feedback).
+  bool CompositorCanImport() const;
   virtual int GetTextureCount() = 0;
   virtual bool HoldsTexture() = 0;
 
@@ -443,6 +446,9 @@ class DMABufSurfaceRGBA final : public DMABufSurface {
       mozilla::widget::DMABufDeviceLock* aDeviceLock, int aPlane) override;
 
   size_t GetUsedMemoryRGBA();
+  uint64_t GetPlaneModifier(int aPlane) const override {
+    return mBufferModifier;
+  }
 
  private:
   int mWidth;
@@ -507,6 +513,9 @@ class DMABufSurfaceYUV final : public DMABufSurface {
     return mEGLImage[aPlane];
   };
 
+  uint64_t GetPlaneModifier(int aPlane) const override {
+    return mBufferModifiers[aPlane];
+  }
   int GetTextureCount() override;
   bool HoldsTexture() override;
 
