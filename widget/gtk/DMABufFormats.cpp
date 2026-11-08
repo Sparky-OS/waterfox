@@ -6,6 +6,7 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <atomic>
+#include <string.h>
 #include <inttypes.h>
 #include <gbm.h>
 #include <mutex>
@@ -85,6 +86,12 @@ class DMABufFormatTable final {
 
 class DMABufFeedbackTranche final {
  public:
+  void SetDevice(dev_t aDevice) {
+    mDevice = aDevice;
+    mHasDevice = true;
+  }
+  bool HasDevice() const { return mHasDevice; }
+  dev_t Device() const { return mDevice; }
 #ifdef MOZ_WAYLAND
   void SetFormats(DMABufFormatTable* aFormatTable, wl_array* aIndices) {
     // Formats are reported as array with appropriate modifiers.
@@ -146,12 +153,40 @@ class DMABufFeedbackTranche final {
   }
 
  private:
+  dev_t mDevice = 0;
+  bool mHasDevice = false;
   bool mIsScanout = false;
   nsTArray<RefPtr<DRMFormat>> mFormats;
 };
 
 class DMABufFeedback final {
  public:
+  void SetMainDevice(dev_t aDevice) {
+    mMainDevice = aDevice;
+    mHasMainDevice = true;
+  }
+  // The tranches of the main device are what the compositor imports for any
+  // surface; a tranche for another device (a scanout device) lists what that
+  // device can scan out (linux-dmabuf-v1, zwp_linux_dmabuf_feedback_v1:
+  // tranche_target_device, tranche_flags.scanout), not what the compositor can
+  // import. A feedback without devices (version 3) counts as one tranche set.
+  bool MainDeviceImports(uint32_t aFormat, uint64_t aModifier,
+                         bool* aFormatListed) {
+    for (const auto& tranche : mTranches) {
+      if (mHasMainDevice && tranche->HasDevice() &&
+          tranche->Device() != mMainDevice) {
+        continue;
+      }
+      if (DRMFormat* format = tranche->GetFormat(aFormat)) {
+        *aFormatListed = true;
+        if (!format->UseModifiers() ||
+            format->IsFormatModifierSupported(aModifier)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
   DMABufFormatTable* FormatTable() { return &mFormatTable; }
   DMABufFeedbackTranche* PendingTranche() {
     if (!mPendingTranche) {
@@ -179,6 +214,8 @@ class DMABufFeedback final {
   }
 
  private:
+  dev_t mMainDevice = 0;
+  bool mHasMainDevice = false;
   DMABufFormatTable mFormatTable;
   UniquePtr<DMABufFeedbackTranche> mPendingTranche;
   nsTArray<UniquePtr<DMABufFeedbackTranche>> mTranches;
@@ -215,7 +252,15 @@ static void dmabuf_feedback_format_table(
 static void dmabuf_feedback_tranche_target_device(
     void* data, struct zwp_linux_dmabuf_feedback_v1* dmabuf_feedback,
     struct wl_array* dev) {
-  // We're getting device from GL
+  // The rendering device comes from GL; the tranche's target is kept to tell
+  // the main device's tranches from a scanout device's.
+  auto* dmabuf = static_cast<DMABufFormats*>(data);
+  if (!dmabuf || !dev || dev->size != sizeof(dev_t)) {
+    return;
+  }
+  dev_t device;
+  memcpy(&device, dev->data, sizeof(device));
+  dmabuf->GetPendingDMABufFeedback()->PendingTranche()->SetDevice(device);
 }
 
 static void dmabuf_feedback_tranche_formats(
@@ -276,7 +321,13 @@ static void dmabuf_feedback_done(
 static void dmabuf_feedback_main_device(
     void* data, struct zwp_linux_dmabuf_feedback_v1* dmabuf_feedback,
     struct wl_array* dev) {
-  // We're getting DRM device from GL.
+  auto* dmabuf = static_cast<DMABufFormats*>(data);
+  if (!dmabuf || !dev || dev->size != sizeof(dev_t)) {
+    return;
+  }
+  dev_t device;
+  memcpy(&device, dev->data, sizeof(device));
+  dmabuf->GetPendingDMABufFeedback()->SetMainDevice(device);
 }
 
 static const struct zwp_linux_dmabuf_feedback_v1_listener
@@ -381,6 +432,12 @@ void DMABufFormats::EnsureBasicFormats() {
 
 bool DMABufFormats::HasFeedback() { return !!mDMABufFeedback; }
 
+bool DMABufFormats::MainDeviceImports(uint32_t aFormat, uint64_t aModifier,
+                                      bool* aFormatListed) {
+  return mDMABufFeedback &&
+         mDMABufFeedback->MainDeviceImports(aFormat, aModifier, aFormatListed);
+}
+
 DMABufFormats::DMABufFormats() = default;
 
 DMABufFormats::~DMABufFormats() {
@@ -406,9 +463,9 @@ bool DMABufCompositorCanImport(uint32_t aFourcc, uint64_t aModifier) {
   if (!formats || !formats->HasFeedback()) {
     return true;
   }
-  DRMFormat* format = formats->GetFormat(aFourcc);
-  const bool can = !format || !format->UseModifiers() ||
-                   format->IsFormatModifierSupported(aModifier);
+  bool listed = false;
+  const bool can = formats->MainDeviceImports(aFourcc, aModifier, &listed) ||
+                   !listed;
   static std::atomic<uint64_t> sLastPair{0};
   const uint64_t pair = aModifier ^ (uint64_t(aFourcc) << 40);
   if (sLastPair.exchange(pair) != pair) {

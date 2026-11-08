@@ -1969,7 +1969,9 @@ void NativeLayerWaylandExternal::AttachExternalImage(
       mTextureHost->GetSurface()->GetUID(), mSize.width, mSize.height, mIsHDR,
       mIsOpaque, surface->CanRecycle());
 
-  mFrontBuffer = surface->CanRecycle()
+  // Borrowing makes the wl_buffer (the import request) at once: a picture the
+  // compositor cannot import is copied at commit and never imported.
+  mFrontBuffer = surface->CanRecycle() && surface->CompositorCanImport()
                      ? mRootLayer->BorrowExternalBuffer(surface)
                      : widget::WaylandBufferDMABUF::CreateExternal(surface);
 }
@@ -2252,8 +2254,73 @@ bool NativeLayerWaylandExternal::CommitFrontBufferToScreenLocked(
         aProofOfLock, surfaceYUV->GetYUVColorSpace(),
         surfaceYUV->IsFullRange(), surfaceYUV->GetWPChromaLocation());
   }
+  if (auto* dmabuf = buffer->AsWaylandBufferDMABUF();
+      dmabuf && !dmabuf->GetSurface()->CompositorCanImport()) {
+    if (RefPtr<widget::WaylandBuffer> copy = CopyToSharedMemoryLocked(buffer)) {
+      buffer = copy;
+    } else {
+      gfxCriticalNoteOnce << "NativeLayerWaylandExternal: copy for the "
+                             "compositor on another GPU failed";
+      return false;
+    }
+  }
   mSurface->AttachLocked(aProofOfLock, buffer);
   return true;
+}
+
+RefPtr<widget::WaylandBuffer> NativeLayerWaylandExternal::CopyToSharedMemoryLocked(
+    const RefPtr<widget::WaylandBuffer>& aSource) {
+  auto* dmabuf = aSource->AsWaylandBufferDMABUF();
+  if (!dmabuf) {
+    return nullptr;
+  }
+  RefPtr<DMABufSurface> surface = dmabuf->GetSurface();
+  if (!surface || surface->GetAsDMABufSurfaceYUV()) {
+    return nullptr;
+  }
+  if (!mStereoPoolHandle) {
+    mStereoPoolHandle = mRootLayer->GetSurfacePoolHandle();
+  }
+  if (!mStereoPoolHandle || !mStereoPoolHandle->gl()) {
+    return nullptr;
+  }
+  RefPtr<gl::GLContext> gl = mStereoPoolHandle->gl();
+  if (!gl->MakeCurrent()) {
+    return nullptr;
+  }
+  if (!surface->GetTexture(0) && !surface->CreateTexture(gl, 0)) {
+    return nullptr;
+  }
+  const IntSize size(surface->GetWidth(0), surface->GetHeight(0));
+  RefPtr<widget::WaylandBufferSHM> shm = widget::WaylandBufferSHM::Create(
+      LayoutDeviceIntSize::FromUnknownSize(size));
+  if (!shm) {
+    return nullptr;
+  }
+  RefPtr<gfx::DataSourceSurface> data =
+      gfx::Factory::CreateWrappingDataSourceSurface(
+          (uint8_t*)shm->GetImageData(), size.width * 4, size,
+          gfx::SurfaceFormat::B8G8R8A8);
+  if (!data) {
+    return nullptr;
+  }
+  GLuint fbo = 0;
+  gl->fGenFramebuffers(1, &fbo);
+  gl->fBindFramebuffer(LOCAL_GL_FRAMEBUFFER, fbo);
+  gl->fFramebufferTexture2D(LOCAL_GL_FRAMEBUFFER, LOCAL_GL_COLOR_ATTACHMENT0,
+                            LOCAL_GL_TEXTURE_2D, surface->GetTexture(0), 0);
+  const bool complete = gl->fCheckFramebufferStatus(LOCAL_GL_FRAMEBUFFER) ==
+                        LOCAL_GL_FRAMEBUFFER_COMPLETE;
+  if (complete) {
+    gl::ReadPixelsIntoDataSurface(gl, data);
+  }
+  gl->fBindFramebuffer(LOCAL_GL_FRAMEBUFFER, 0);
+  gl->fDeleteFramebuffers(1, &fbo);
+  if (!complete) {
+    return nullptr;
+  }
+  mSharedMemoryBuffer = shm;
+  return shm;
 }
 
 NativeLayerWaylandExternal::~NativeLayerWaylandExternal() {

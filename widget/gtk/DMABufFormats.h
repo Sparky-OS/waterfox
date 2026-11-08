@@ -86,6 +86,8 @@ class DMABufFormats final {
 
   DRMFormat* GetFormat(uint32_t aFormat, bool aRequestScanoutFormat = false);
   bool HasFeedback();
+  bool MainDeviceImports(uint32_t aFormat, uint64_t aModifier,
+                         bool* aFormatListed);
   DMABufFormats();
 
   void EnsureBasicFormats();

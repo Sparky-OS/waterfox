@@ -219,12 +219,14 @@ void DMABUFTextureHostOGL::PushDisplayItems(
   }
   bool preferCompositorSurface =
       aFlags.contains(PushDisplayItemFlag::PREFER_COMPOSITOR_SURFACE);
-  // A picture the compositor cannot import (another GPU's modifier) is drawn
-  // by WebRender into a layer instead, which is copied for the compositor.
+  // A decoded picture the compositor cannot import (another GPU's modifier) is
+  // drawn by WebRender into a layer instead, which is copied for the
+  // compositor; an RGB picture (a WebGL canvas) keeps its layer, and with it
+  // its stereo declaration, and the layer copies it.
   bool supportsDirectComposition =
       widget::GetGlobalDMABufFormats()->SupportsDirectComposition(
           mSurface->GetFormat()) &&
-      mSurface->CompositorCanImport();
+      (!mSurface->GetAsDMABufSurfaceYUV() || mSurface->CompositorCanImport());
 
   switch (mSurface->GetFormat()) {
     case gfx::SurfaceFormat::R8G8B8X8:

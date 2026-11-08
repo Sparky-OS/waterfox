@@ -475,6 +475,12 @@ class NativeLayerWaylandExternal final : public NativeLayerWayland {
  private:
   ~NativeLayerWaylandExternal() override;
 
+  // The compositor cannot import the picture's modifier (it runs on another
+  // GPU): it gets a copy in shared memory, the layer and its stereo
+  // declaration stay.
+  RefPtr<widget::WaylandBuffer> CopyToSharedMemoryLocked(
+      const RefPtr<widget::WaylandBuffer>& aSource);
+  RefPtr<widget::WaylandBuffer> mSharedMemoryBuffer;
   RefPtr<widget::WaylandBuffer> RepackStereoLocked(
       const widget::WaylandSurfaceLock& aProofOfLock);
   RefPtr<widget::WaylandBuffer> RepackStereoYUVLocked(
