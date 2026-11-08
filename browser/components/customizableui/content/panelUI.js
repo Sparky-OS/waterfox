@@ -196,6 +196,19 @@ const PanelUI = {
     ).addEventListener("command", this._onLibraryCommand);
     this.mainView.addEventListener("command", this);
     this.mainView.addEventListener("ViewShowing", this._onMainViewShow);
+    this._onStereoVideoShow = this._onStereoVideoShow.bind(this);
+    this._onStereoVideoCommand = this._onStereoVideoCommand.bind(this);
+    this._onStereoDisplayShow = this._onStereoDisplayShow.bind(this);
+    this._onStereoDisplayCommand = this._onStereoDisplayCommand.bind(this);
+    let stereoVideo = PanelMultiView.getViewNode(document, "appmenu-stereo-video");
+    stereoVideo.addEventListener("ViewShowing", this._onStereoVideoShow);
+    stereoVideo.addEventListener("command", this._onStereoVideoCommand);
+    let stereoDisplay = PanelMultiView.getViewNode(
+      document,
+      "appmenu-stereo-display"
+    );
+    stereoDisplay.addEventListener("ViewShowing", this._onStereoDisplayShow);
+    stereoDisplay.addEventListener("command", this._onStereoDisplayCommand);
     this._eventListenersAdded = true;
   },
 
@@ -441,9 +454,137 @@ const PanelUI = {
       case "appMenu-more-button2":
         this.showMoreToolsPanel(target);
         break;
+      case "appMenu-stereo-video-button":
+        this.showSubView("appmenu-stereo-video", target);
+        break;
+      case "appMenu-stereo-display-button":
+        this.showSubView("appmenu-stereo-display", target);
+        break;
       case "appMenu-help-button2":
         this.showSubView("PanelUI-helpView", target);
         break;
+    }
+  },
+
+  // The 3D Video and 3D Display menus (Sparky Stereo OS). They are the context
+  // menu's own, reachable from the application menu because a page (YouTube)
+  // takes the right click for its own menu. 3D Video acts on the page's main
+  // video: the playing one with the largest area, in the page or one of its
+  // frames. The choice is the video's own, kept per video as the context menu
+  // keeps it.
+  _STEREO_VIDEO_CHOICES: [
+    "auto",
+    "mono",
+    "side-by-side",
+    "side-by-side-right-first",
+    "top-bottom",
+    "top-bottom-right-first",
+  ],
+  _STEREO_XR: {
+    mode: { pref: "dom.vr.flat.mode", values: { tv: 0, headset: 1, phone: 2 } },
+    depth: {
+      pref: "dom.vr.flat.depth-strength",
+      values: { less: 50, normal: 100, more: 150, most: 200 },
+    },
+    plane: {
+      pref: "dom.vr.flat.screen-plane-mm",
+      values: { nearer: 600, default: 0, farther: 2000 },
+    },
+  },
+
+  // The main video of the selected tab as {actor, state}, or null.
+  async _stereoMainVideo(command, data) {
+    let best = null;
+    let browsingContext = gBrowser.selectedBrowser.browsingContext;
+    for (let context of browsingContext.getAllBrowsingContextsInSubtree()) {
+      let global = context.currentWindowGlobal;
+      if (!global) {
+        continue;
+      }
+      try {
+        let actor = global.getActor("ContextMenu");
+        let state = await actor.sendQuery("ContextMenu:MainVideoStereo", {
+          command: "query",
+        });
+        if (state && state.found && (!best || state.score > best.state.score)) {
+          best = { actor, state };
+        }
+      } catch (e) {
+        // A frame that is gone or has no actor has no video to offer.
+      }
+    }
+    if (best && command != "query") {
+      best.state = await best.actor.sendQuery("ContextMenu:MainVideoStereo", {
+        command,
+        data,
+      });
+    }
+    return best;
+  },
+
+  _showStereoVideoState(view, best) {
+    let choice = best ? best.state.choice || "auto" : null;
+    for (let name of this._STEREO_VIDEO_CHOICES) {
+      let button = view.querySelector("#appmenu-stereo-video-" + name);
+      button.toggleAttribute("disabled", !best);
+      button.setAttribute("checked", name == choice);
+    }
+    let swap = view.querySelector("#appmenu-stereo-video-swap");
+    swap.toggleAttribute("disabled", !best);
+    swap.setAttribute("checked", !!(best && best.state.swap));
+  },
+
+  async _onStereoVideoShow(event) {
+    let best = await this._stereoMainVideo("query");
+    this._showStereoVideoState(event.target, best);
+  },
+
+  async _onStereoVideoCommand(event) {
+    let id = event.target.id.slice("appmenu-stereo-video-".length);
+    let best =
+      id == "swap"
+        ? await this._stereoMainVideo("stereoSwap")
+        : await this._stereoMainVideo("stereoChoice", id == "auto" ? "" : id);
+    this._showStereoVideoState(
+      PanelMultiView.getViewNode(document, "appmenu-stereo-video"),
+      best
+    );
+  },
+
+  _onStereoDisplayShow(event) {
+    for (let [group, { pref, values }] of Object.entries(this._STEREO_XR)) {
+      let current = Services.prefs.getIntPref(pref, group == "depth" ? 100 : 0);
+      for (let [name, value] of Object.entries(values)) {
+        event.target
+          .querySelector("#appmenu-stereo-display-" + group + "-" + name)
+          .setAttribute("checked", value == current);
+      }
+    }
+  },
+
+  _onStereoDisplayCommand(event) {
+    let [group, name] = event.target.id
+      .slice("appmenu-stereo-display-".length)
+      .split("-");
+    let entry = this._STEREO_XR[group];
+    if (entry && name in entry.values) {
+      Services.prefs.setIntPref(entry.pref, entry.values[name]);
+    }
+    this._onStereoDisplayShow({
+      target: PanelMultiView.getViewNode(document, "appmenu-stereo-display"),
+    });
+  },
+
+  // 3D Video shows where the page can have a stereo video; 3D Display where
+  // the flat stereo display is offered as a WebXR device.
+  _showStereoButtons() {
+    let video = document.getElementById("appMenu-stereo-video-button");
+    let display = document.getElementById("appMenu-stereo-display-button");
+    if (video) {
+      video.hidden = false;
+    }
+    if (display) {
+      display.hidden = !Services.prefs.getBoolPref("dom.vr.flat.enabled", false);
     }
   },
 
@@ -718,6 +859,7 @@ const PanelUI = {
   },
 
   _onMainViewShow(event) {
+    PanelUI._showStereoButtons();
     let panelview = event.target;
     let messageId = panelview.getAttribute(
       MenuMessage.SHOWING_FXA_MENU_MESSAGE_ATTR

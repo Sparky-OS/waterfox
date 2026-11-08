@@ -74,6 +74,46 @@ export class ContextMenuChild extends JSWindowActorChild {
         });
       }
 
+      case "ContextMenu:MainVideoStereo": {
+        // The application menu's 3D Video menu (Sparky Stereo OS): the same
+        // per-video choices as the context menu, on the main video of this
+        // document, which is the playing one with the largest area.
+        let best = null;
+        let bestScore = -1;
+        for (let video of this.document.querySelectorAll("video")) {
+          if (video.stereoChoice === undefined) {
+            continue;
+          }
+          let rect = video.getBoundingClientRect();
+          let area = Math.max(0, rect.width) * Math.max(0, rect.height);
+          if (!area) {
+            continue;
+          }
+          let score = area + (video.paused || video.ended ? 0 : 1e12);
+          if (score > bestScore) {
+            best = video;
+            bestScore = score;
+          }
+        }
+        if (!best) {
+          return { found: false };
+        }
+        switch (message.data.command) {
+          case "stereoChoice":
+            best.stereoChoice = message.data.data;
+            break;
+          case "stereoSwap":
+            best.stereoSwap = !best.stereoSwap;
+            break;
+        }
+        return {
+          found: true,
+          score: bestScore,
+          choice: best.stereoChoice,
+          swap: !!best.stereoSwap,
+        };
+      }
+
       case "ContextMenu:Hiding": {
         this.context = null;
         this.target = null;
