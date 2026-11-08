@@ -227,6 +227,15 @@ void DMABUFTextureHostOGL::PushDisplayItems(
       widget::GetGlobalDMABufFormats()->SupportsDirectComposition(
           mSurface->GetFormat()) &&
       (!mSurface->GetAsDMABufSurfaceYUV() || mSurface->CompositorCanImport());
+  // A YUV picture that is not composited directly must not be a compositor
+  // surface at all: WebRender then draws it into a native render surface, and
+  // the Wayland native compositor's lock of an external image passes no GL
+  // context for any compositor surface (wr_renderer_lock_external_image), so
+  // the planes would be texture 0 and the picture solid green (Y, U and V all
+  // zero). As an ordinary image it is drawn by WebRender with textures made
+  // in the renderer's GL context.
+  const bool preferYuvCompositorSurface =
+      preferCompositorSurface && supportsDirectComposition;
 
   switch (mSurface->GetFormat()) {
     case gfx::SurfaceFormat::R8G8B8X8:
@@ -253,8 +262,8 @@ void DMABUFTextureHostOGL::PushDisplayItems(
       aBuilder.PushNV12Image(
           aBounds, aClip, true, aImageKeys[0], aImageKeys[1],
           wr::ColorDepth::Color8, wr::ToWrYuvColorSpace(GetYUVColorSpace()),
-          wr::ToWrColorRange(GetColorRange()), aFilter, preferCompositorSurface,
-          supportsDirectComposition);
+          wr::ToWrColorRange(GetColorRange()), aFilter,
+          preferYuvCompositorSurface, supportsDirectComposition);
       break;
     }
     case gfx::SurfaceFormat::YUV420: {
@@ -267,8 +276,8 @@ void DMABUFTextureHostOGL::PushDisplayItems(
       aBuilder.PushYCbCrPlanarImage(
           aBounds, aClip, true, aImageKeys[0], aImageKeys[1], aImageKeys[2],
           wr::ColorDepth::Color8, wr::ToWrYuvColorSpace(GetYUVColorSpace()),
-          wr::ToWrColorRange(GetColorRange()), aFilter, preferCompositorSurface,
-          supportsDirectComposition);
+          wr::ToWrColorRange(GetColorRange()), aFilter,
+          preferYuvCompositorSurface, supportsDirectComposition);
       break;
     }
     case gfx::SurfaceFormat::P010:
@@ -280,8 +289,8 @@ void DMABUFTextureHostOGL::PushDisplayItems(
       aBuilder.PushP010Image(
           aBounds, aClip, true, aImageKeys[0], aImageKeys[1],
           wr::ColorDepth::Color10, wr::ToWrYuvColorSpace(GetYUVColorSpace()),
-          wr::ToWrColorRange(GetColorRange()), aFilter, preferCompositorSurface,
-          supportsDirectComposition);
+          wr::ToWrColorRange(GetColorRange()), aFilter,
+          preferYuvCompositorSurface, supportsDirectComposition);
       break;
     }
     default: {
