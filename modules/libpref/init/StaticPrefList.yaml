@@ -12955,7 +12955,7 @@
 
 - name: media.hardware-video-decoding-vulkan.enabled
   type: bool
-  value: false
+  value: true
   mirror: once
 
 # Whether to map Vulkan decoder output directly to DRM PRIME (zero-copy).
