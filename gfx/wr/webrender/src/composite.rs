@@ -1191,12 +1191,15 @@ impl CompositeState {
                 tile: None,
             };
 
+            // The image is locked for direct compositing only when it is attached
+            // to the surface as an external image. One WebRender draws into the
+            // surface itself (image-rendering other than auto) needs the texture.
             let cache_item = resolve_image(
                 request,
                 resource_cache,
                 gpu_buffer,
                 deferred_resolves,
-                true,
+                external_surface.external_image_id.is_some(),
             );
 
             if cache_item.texture_id != TextureSource::Invalid {
@@ -1424,6 +1427,9 @@ pub struct CompositorCapabilities {
     /// Whether the compositor shows a tile WebRender draws once per eye
     /// (Compositor::set_tile_stereo) as two views, left eye first.
     pub supports_stereo_tiles: bool,
+    /// Whether the compositor applies the sampling filter (nearest or linear)
+    /// a surface asks for when it scales the surface.
+    pub supports_sampling_filter: bool,
 }
 
 impl Default for CompositorCapabilities {
@@ -1441,6 +1447,7 @@ impl Default for CompositorCapabilities {
             supports_surface_for_backdrop: false,
             supports_external_compositor_surface_negative_scaling: true,
             supports_stereo_tiles: false,
+            supports_sampling_filter: true,
         }
     }
 }

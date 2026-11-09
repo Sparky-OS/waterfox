@@ -1874,6 +1874,20 @@ impl TileCacheInstance {
         let local_to_raster = ScaleOffset::identity();
         let raster_to_device = normalized_prim_to_device;
 
+        // A native compositor that scales a surface itself cannot always be told
+        // to sample it nearest (Wayland has no such request): a scaled image
+        // that asks for pixelated sampling stays in the tiles, where WebRender
+        // draws it with the filter it asked for.
+        if image_rendering == ImageRendering::Pixelated {
+            if let CompositorKind::Native { capabilities, .. } = composite_state.compositor_kind {
+                if !capabilities.supports_sampling_filter
+                    && ((raster_to_device.scale.x - 1.0).abs() > 0.001
+                        || (raster_to_device.scale.y - 1.0).abs() > 0.001) {
+                    return Err(SamplingFilterUnsupported);
+                }
+            }
+        }
+
         // If this primitive is an external image, and supports being used
         // directly by a native compositor, then lookup the external image id
         // so we can pass that through.
@@ -3361,6 +3375,7 @@ enum SurfacePromotionFailure {
     SliceAtomic,
     SizeTooLarge,
     Translucent,
+    SamplingFilterUnsupported,
 }
 
 impl Display for SurfacePromotionFailure {
@@ -3380,6 +3395,7 @@ impl Display for SurfacePromotionFailure {
                 SurfacePromotionFailure::NotRootTileCache => "is not on a root tile cache",
                 SurfacePromotionFailure::ComplexTransform => "has a complex transform",
                 SurfacePromotionFailure::Translucent => "is drawn with an opacity",
+                SurfacePromotionFailure::SamplingFilterUnsupported => "is scaled with a sampling filter the compositor cannot apply",
                 SurfacePromotionFailure::SliceAtomic => "slice is atomic",
                 SurfacePromotionFailure::SizeTooLarge => "surface is too large for compositor",
             }.to_owned()

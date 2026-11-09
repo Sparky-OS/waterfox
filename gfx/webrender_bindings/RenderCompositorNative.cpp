@@ -134,6 +134,9 @@ void RenderCompositorNative::GetCompositorCapabilities(
 #if defined(MOZ_WAYLAND)
   // NativeLayerWaylandRender shows a tile drawn once per eye as two views.
   aCaps->supports_stereo_tiles = !!mNativeLayerRoot->AsNativeLayerRootWayland();
+  // NativeLayerWayland keeps the sampling filter a surface asks for, but
+  // Wayland has no request for it: the compositor scales with its own filter.
+  aCaps->supports_sampling_filter = !mNativeLayerRoot->AsNativeLayerRootWayland();
 #endif
 }
 
