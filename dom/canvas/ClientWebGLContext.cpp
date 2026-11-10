@@ -686,17 +686,18 @@ bool ClientWebGLContext::ReadStereoLimits(uint16_t* const aSunk,
   *aPopped = uint16_t(std::clamp(std::lround(popped * 10.0), 0L, 65535L));
   *aSunk = uint16_t(std::clamp(std::lround(sunk * 10.0), 0L, 65535L));
   // The limits are in pixels of a view as wide as the output: the canvas's
-  // separation is a share of its own on-screen width, in device pixels.
+  // separation is a share of its own on-screen width, in device pixels. A
+  // canvas with no frame yet (a script has just made it and no layout has
+  // run) is taken as shown at the size of its drawing buffer.
+  const int32_t outputWidth = nsDisplayStereoDepth::OutputWidthFor(frame);
+  double canvasWidth = double(mRequestedSize.x);
   if (nsIFrame* canvasFrame = mCanvasElement->GetPrimaryFrame()) {
-    const int32_t outputWidth =
-        nsDisplayStereoDepth::OutputWidthFor(canvasFrame);
-    const nscoord appUnits = canvasFrame->PresContext()->AppUnitsPerDevPixel();
-    const double canvasWidth =
-        double(canvasFrame->GetContentRect().Width()) / double(appUnits);
-    if (outputWidth > 0 && canvasWidth >= 1.0) {
-      *aViewRatio = uint32_t(std::clamp(
-          std::lround(1000.0 * outputWidth / canvasWidth), 1L, 4000000L));
-    }
+    canvasWidth = double(canvasFrame->GetContentRect().Width()) /
+                  double(canvasFrame->PresContext()->AppUnitsPerDevPixel());
+  }
+  if (outputWidth > 0 && canvasWidth >= 1.0) {
+    *aViewRatio = uint32_t(std::clamp(
+        std::lround(1000.0 * outputWidth / canvasWidth), 1L, 4000000L));
   }
   return true;
 }
