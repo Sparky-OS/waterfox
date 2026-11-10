@@ -1849,9 +1849,11 @@ bool WebGLContext::ReadSceneRangeFromFB(const GLuint aFB,
                "format 0x%x): error 0x%x",
                aFB, bits, format, error));
       mStereoSceneFB = 0;
+      mStereoReadError = error;
       return false;
     }
   }
+  mStereoReadError = 0;
   std::vector<float> depth;
   depth.reserve(kW * kH);
   for (int i = 0; i < kH; i++) {
@@ -1880,6 +1882,24 @@ bool WebGLContext::ReadSceneRange(const gl::MozFramebuffer& aSrc,
                               aNearest, aFarthest);
 }
 
+// A plane that stays the camera's own because the depth buffer cannot be read
+// is said on the page's web console, once for the canvas, with the reason:
+// the page's scene then sits at webgl.stereo-camera.convergence times the
+// camera's near distance, not at the scene's own plane.
+void WebGLContext::SaySceneUnreadable(const char* const aReason) {
+  if (mStereoSceneSaid) {
+    return;
+  }
+  mStereoSceneSaid = true;
+  MOZ_LOG(gWebGLStereoLog, LogLevel::Warning,
+          ("scene plane: the depth buffer cannot be read: %s", aReason));
+  GenerateWarning(
+      "Stereo camera: the depth buffer cannot be read, so the zero-parallax "
+      "plane stays at %.1f times the camera's near distance instead of "
+      "following the scene: %s.",
+      StaticPrefs::webgl_stereo_camera_convergence(), aReason);
+}
+
 // The scene's zero-parallax plane (webgl.stereo-camera.scene-plane): where the
 // nearest and the farthest thing the page drew have equal and opposite
 // parallax (parallax goes with 1 / distance), no nearer than the person's
@@ -1889,8 +1909,13 @@ bool WebGLContext::ReadSceneRange(const gl::MozFramebuffer& aSrc,
 // in 64; a plane that moves by more than 15 percent moves half the way.
 void WebGLContext::EstimateStereoPlane() {
   if (!StaticPrefs::webgl_stereo_camera_scene_plane() ||
-      !mStereoLastCamera || !mDefaultFB ||
-      !(mStereoSceneFB || mOptions.depth)) {
+      !mStereoLastCamera || !mDefaultFB) {
+    return;
+  }
+  if (!mStereoSceneFB && !(mOptions.depth && mDefaultFB->HasDepth())) {
+    SaySceneUnreadable(
+        "the canvas has no depth buffer (it was created with depth: false) "
+        "and the page draws into no framebuffer of its own");
     return;
   }
   const bool due = mStereoPresents < 4 || mStereoPresents % 64 == 0;
@@ -1913,8 +1938,19 @@ void WebGLContext::EstimateStereoPlane() {
     MOZ_LOG(gWebGLStereoLog, LogLevel::Debug,
             ("scene plane: no scene in the depth buffer (%s)",
              mStereoSceneFB ? "the page's framebuffer" : "the canvas"));
+    if (mStereoReadError) {
+      char reason[96];
+      SprintfLiteral(reason, "reading it failed with GL error 0x%x",
+                     mStereoReadError);
+      SaySceneUnreadable(reason);
+    } else if (++mStereoSceneMisses >= 4) {
+      SaySceneUnreadable(
+          "it holds no scene, only the far plane, in the first frames "
+          "looked at");
+    }
     return;
   }
+  mStereoSceneMisses = 0;
   mSceneNearest = nearest;
   mSceneFarthest = farthest;
   float plane = 2.0f * nearest * farthest / (nearest + farthest);
@@ -2128,13 +2164,42 @@ void InitSwapChain(gl::GLContext& gl, gl::SwapChain& swapChain,
   }
 }
 
-void WebGLContext::BeginStereoCamera(const uint8_t aDepth) {
+// The depth limits are the person's, built on the display (the window's
+// kde_stereo_depth_v1 depth_limits): a point at infinity shows the sunk limit
+// as its parallax, so the separation, a fraction of the view's width, is the
+// sunk limit over the 1920 pixels the limits are given in. The site's choice
+// scales that (Less, Normal, More, Most). Without limits (a worker's canvas, a
+// desktop with no stereo output) or with webgl.stereo-camera.separation-from-
+// limits off, the fixed percentage stands, and the site's choice is read as it
+// was before the limits: tenths of a percent.
+void WebGLContext::SetStereoSeparation(const uint8_t aDepth,
+                                       const uint16_t aSunk,
+                                       const uint16_t aPopped) {
+  mStereoPoppedPx = aPopped / 10.0f;
+  mStereoSunkPx = aSunk / 10.0f;
+  float separation;
+  if (aSunk > 0 && StaticPrefs::webgl_stereo_camera_separation_from_limits()) {
+    separation = mStereoSunkPx / 1920.0f * (aDepth ? aDepth / 20.0f : 1.0f);
+  } else {
+    separation = aDepth ? aDepth / 1000.0f
+                        : StaticPrefs::webgl_stereo_camera_separation() / 100.0f;
+  }
+  if (separation != mStereoSeparation) {
+    MOZ_LOG(gWebGLStereoLog, LogLevel::Info,
+            ("separation %.4f of the width (sunk %.1f px, popped %.1f px, "
+             "site depth %u, was %.4f)",
+             separation, mStereoSunkPx, mStereoPoppedPx, aDepth,
+             mStereoSeparation));
+  }
+  mStereoSeparation = separation;
+}
+
+void WebGLContext::BeginStereoCamera(const uint8_t aDepth, const uint16_t aSunk,
+                                     const uint16_t aPopped) {
   if (IsContextLost()) {
     return;
   }
-  mStereoSeparation =
-      aDepth ? aDepth / 1000.0f
-             : StaticPrefs::webgl_stereo_camera_separation() / 100.0f;
+  SetStereoSeparation(aDepth, aSunk, aPopped);
   mStereoCamera = true;
 }
 
@@ -2161,11 +2226,8 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
 
   // The camera hack's depth for the canvas's site.
   if (!xrFb && !webvr && options.stereoCamera) {
-    mStereoSeparation =
-        options.stereoDepth
-            ? options.stereoDepth / 1000.0f
-            : StaticPrefs::webgl_stereo_camera_separation() / 100.0f;
-    mStereoPoppedPx = options.stereoPopped / 10.0f;
+    SetStereoSeparation(options.stereoDepth, options.stereoSunk,
+                        options.stereoPopped);
   }
   // The camera hack: the canvas presents both eyes from now on.
   if (!xrFb && !webvr && options.stereoCamera != mStereoCamera) {

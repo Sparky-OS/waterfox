@@ -179,8 +179,9 @@ class HostWebGLContext final : public SupportsWeakPtr {
   void EndOfFrame() const { return (void)mContext->EndOfFrame(); }
   // The camera hack starts before the canvas is first presented
   // (ClientWebGLContext::OnStereoCameraStarted).
-  void SetStereoCamera(const uint8_t depth) const {
-    mContext->BeginStereoCamera(depth);
+  void SetStereoCamera(const uint8_t depth, const uint16_t sunk,
+                       const uint16_t popped) const {
+    mContext->BeginStereoCamera(depth, sunk, popped);
   }
   Maybe<layers::SurfaceDescriptor> GetFrontBuffer(ObjectId xrFb,
                                                   const bool webvr) const;

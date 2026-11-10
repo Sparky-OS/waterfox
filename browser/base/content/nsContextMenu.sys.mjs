@@ -107,8 +107,9 @@ const IMAGE_ONLY_PROTOCOLS = [
   "page-icon:",
 ];
 
-// The 3D Canvas menu's depths: the eyes' separation in tenths of a percent
-// of the view's width (permission "stereo-camera-depth").
+// The 3D Canvas menu's depths: the person's choice on top of the separation
+// the depth limits give, in twentieths (20 is Normal; permission
+// "stereo-camera-depth").
 // The flat stereo display as a WebXR device: the person's modes, depths (in
 // percent of the display's own default) and screen planes (in millimetres,
 // 0 for the default).
@@ -2691,9 +2692,15 @@ export class nsContextMenu {
     if (perm >= 5 && perm <= 100) {
       return perm;
     }
-    return Math.round(
-      10 * Services.prefs.getFloatPref("webgl.stereo-camera.separation", 2.0)
-    );
+    // No choice for the site: the separation the person's limits give.
+    return Services.prefs.getBoolPref(
+      "webgl.stereo-camera.separation-from-limits",
+      true
+    )
+      ? 20
+      : Math.round(
+          10 * Services.prefs.getFloatPref("webgl.stereo-camera.separation", 2.0)
+        );
   }
 
   setCanvasStereo(on) {

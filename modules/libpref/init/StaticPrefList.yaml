@@ -20101,10 +20101,24 @@
   mirror: always
 
 # The separation of the two eyes' views, in percent of the view's width,
-# which a point at infinity shows.
+# which a point at infinity shows. Used where the person's depth limits are
+# not known (a canvas in a worker, a desktop with no stereo output) and when
+# webgl.stereo-camera.separation-from-limits is off.
 - name: webgl.stereo-camera.separation
   type: AtomicFloat
   value: 2.0f
+  mirror: always
+
+# The separation from the person's depth limits for the window, built on the
+# output's display (kde_stereo_depth_v1 depth_limits): the sunk limit, in
+# pixels of a view 1920 wide, is what a point at infinity shows, so the
+# separation is that over 1920. The 3D Canvas menu's Less, Normal, More and
+# Most for the site scale it (half, once, one and a half, twice). False: the
+# fixed webgl.stereo-camera.separation, and the site's choice is that
+# percentage in tenths.
+- name: webgl.stereo-camera.separation-from-limits
+  type: RelaxedAtomicBool
+  value: true
   mirror: always
 
 # The zero-parallax distance, as a multiple of the camera's near distance.

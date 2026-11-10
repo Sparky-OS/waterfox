@@ -33,6 +33,7 @@
 #include "mozilla/dom/GeneratePlaceholderCanvasData.h"
 #include "mozilla/dom/HTMLCanvasElement.h"
 #include "mozilla/PermissionManager.h"
+#include "mozilla/PresShell.h"
 #include "nsIFrame.h"
 #include "mozilla/dom/ToJSValue.h"
 #include "mozilla/dom/TypedArray.h"
@@ -563,19 +564,10 @@ void ClientWebGLContext::Present(WebGLFramebufferJS* const xrFb,
     // The camera hack: both eyes, full side by side, left eye first.
     asyncOptions.stereoCamera = true;
     asyncOptions.stereoDepth = mStereoDepth;
-    // The person's limits for this window keep the scene's plane from
-    // letting anything come nearer than the popped limit.
-    double sunk = 0, popped = 0;
-    if (NS_IsMainThread() && mCanvasElement) {
-      if (nsIFrame* frame = mCanvasElement->GetPrimaryFrame()) {
-        if (nsDisplayStereoDepth::LimitsFor(frame, &sunk, &popped)) {
-          asyncOptions.stereoPopped =
-              uint16_t(std::clamp(std::lround(popped * 10.0), 0L, 65535L));
-          asyncOptions.stereoSunk =
-              uint16_t(std::clamp(std::lround(sunk * 10.0), 0L, 65535L));
-        }
-      }
-    }
+    // The person's limits for this window: the separation of the eyes, and
+    // how far the scene's plane lets the nearest thing come. Read at every
+    // present, so a change in the person's limits is followed.
+    ReadStereoLimits(&asyncOptions.stereoSunk, &asyncOptions.stereoPopped);
     asyncOptions.stereoMode = uint8_t(StereoMode::LEFT_RIGHT);
   }
   Run<RPROC(Present)>(xrFb ? xrFb->mId : 0, type, webvr, asyncOptions);
@@ -666,6 +658,34 @@ void ClientWebGLContext::LookForStereoCamera(const GLenum target,
   }
 }
 
+// The person's depth limits for the window the canvas is in, in tenths of a
+// pixel of a view 1920 wide; false (both 0) where they are not known.
+bool ClientWebGLContext::ReadStereoLimits(uint16_t* const aSunk,
+                                          uint16_t* const aPopped) const {
+  *aSunk = *aPopped = 0;
+  if (!NS_IsMainThread() || !mCanvasElement) {
+    return false;
+  }
+  // The limits are the window's, so the page's root frame tells them as well
+  // as the canvas's own, which a canvas just made by a script does not have
+  // yet (no layout has run).
+  nsIFrame* frame = mCanvasElement->GetPrimaryFrame();
+  if (!frame) {
+    if (PresShell* presShell = mCanvasElement->OwnerDoc()->GetPresShell()) {
+      frame = presShell->GetRootFrame();
+    }
+  }
+  double sunk = 0, popped = 0;
+  if (!frame || !nsDisplayStereoDepth::LimitsFor(frame, &sunk, &popped)) {
+    return false;
+  }
+  *aPopped = uint16_t(std::clamp(std::lround(popped * 10.0), 0L, 65535L));
+  *aSunk = uint16_t(std::clamp(std::lround(sunk * 10.0), 0L, 65535L));
+  return true;
+}
+
+static LazyLogModule gWebGLStereoClientLog("WebGLStereo");
+
 void ClientWebGLContext::OnStereoCameraStarted() {
   // The canvas's frames change size: a new canvas renderer, which only a full
   // paint of the canvas's frame makes.
@@ -698,7 +718,12 @@ void ClientWebGLContext::BeginStereoCameraOnHost() {
     return;
   }
   mStereoCameraBegun = true;
-  Run<RPROC(SetStereoCamera)>(mStereoDepth);
+  uint16_t sunk = 0, popped = 0;
+  const bool known = ReadStereoLimits(&sunk, &popped);
+  MOZ_LOG(gWebGLStereoClientLog, LogLevel::Info,
+          ("camera begins on the host, limits %s (sunk %.1f, popped %.1f)",
+           known ? "known" : "not known yet", sunk / 10.0, popped / 10.0));
+  Run<RPROC(SetStereoCamera)>(mStereoDepth, sunk, popped);
 }
 
 // Only where the two views are declared on a surface of their own: anywhere
@@ -710,9 +735,10 @@ bool ClientWebGLContext::StereoCameraPresents() const {
 
 // The 3D Canvas menu sets, for the page's site, whether its WebGL scenes are
 // drawn once per eye (permission "stereo-camera", allow or deny) and the
-// eyes' separation ("stereo-camera-depth", in tenths of a percent of the
-// view's width); without them the preferences decide
-// (webgl.stereo-camera.enabled, webgl.stereo-camera.separation). A canvas
+// choice of depth ("stereo-camera-depth", in twentieths of the separation the
+// person's depth limits give: 10 Less, 20 Normal, 30 More, 40 Most); without
+// them the preferences decide (webgl.stereo-camera.enabled; the depth is the
+// limits' own). A canvas
 // in a worker follows the preferences.
 bool ClientWebGLContext::UpdateStereoCameraSite() {
   bool allowed = StaticPrefs::webgl_stereo_camera_enabled();
