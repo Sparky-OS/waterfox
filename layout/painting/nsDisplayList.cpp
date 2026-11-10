@@ -5415,18 +5415,12 @@ static widget::StereoDepthState StereoDepthStateOf(nsIFrame* aFrame) {
   return widget::StereoDepthState();
 }
 
-/* static */
-Maybe<int32_t> nsDisplayStereoDepth::ShiftForLevel(nsIFrame* aFrame,
-                                                   float aLevel) {
-  if (!gfx::gfxVars::StereoOutputs()) {
-    return Nothing();
-  }
-  const widget::StereoDepthState state = StereoDepthStateOf(aFrame);
-  // KWin says whether the window may show depth now (the active window, a
-  // popup...), as for a 2D output otherwise.
-  if (!state.mAwake) {
-    return Nothing();
-  }
+// The person's depth limits for the window a frame is shown in, in pixels of
+// a view 1920 wide: from the compositor, else libstereo-policy's default for
+// the display. False while the default is not yet known.
+static bool StereoDepthLimitsOf(nsIFrame* aFrame,
+                                const widget::StereoDepthState& state,
+                                double* aSunk, double* aPopped) {
   double sunk = 0, popped = 0;
   if (state.mFromCompositor) {
     sunk = state.mSunk100 / 100.0;
@@ -5489,7 +5483,7 @@ Maybe<int32_t> nsDisplayStereoDepth::ShiftForLevel(nsIFrame* aFrame,
 #endif
       }
       if (!sStereoDepthDefault.mReady) {
-        return Nothing();
+        return false;
       }
     }
     if (!sStereoDepthDefault.mNoticed) {
@@ -5502,6 +5496,37 @@ Maybe<int32_t> nsDisplayStereoDepth::ShiftForLevel(nsIFrame* aFrame,
     }
     sunk = sStereoDepthDefault.mSunk;
     popped = sStereoDepthDefault.mPopped;
+  }
+  *aSunk = sunk;
+  *aPopped = popped;
+  return true;
+}
+
+/* static */
+bool nsDisplayStereoDepth::LimitsFor(nsIFrame* aFrame, double* aSunkPx,
+                                     double* aPoppedPx) {
+  if (!gfx::gfxVars::StereoOutputs()) {
+    return false;
+  }
+  return StereoDepthLimitsOf(aFrame, StereoDepthStateOf(aFrame), aSunkPx,
+                             aPoppedPx);
+}
+
+/* static */
+Maybe<int32_t> nsDisplayStereoDepth::ShiftForLevel(nsIFrame* aFrame,
+                                                   float aLevel) {
+  if (!gfx::gfxVars::StereoOutputs()) {
+    return Nothing();
+  }
+  const widget::StereoDepthState state = StereoDepthStateOf(aFrame);
+  // KWin says whether the window may show depth now (the active window, a
+  // popup...), as for a 2D output otherwise.
+  if (!state.mAwake) {
+    return Nothing();
+  }
+  double sunk = 0, popped = 0;
+  if (!StereoDepthLimitsOf(aFrame, state, &sunk, &popped)) {
+    return Nothing();
   }
   // The width of the view: the output's, in device pixels (the unit of the
   // limits is a view 1920 wide, scaled to the output as KWin does).

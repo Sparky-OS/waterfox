@@ -685,12 +685,17 @@ static bool HasInstancedDrawing(const WebGLContext& webgl) {
 // post-processing (StereoTargetPerEye), once otherwise (shadow maps). The
 // right eye's draw samples the right eye's copies of the textures it reads.
 void WebGLContext::DrawPerEye(const std::function<void()>& aDraw) {
-  const float s = mStereoSeparation;
+  // The left eye's shift and the right eye's: the page's camera between the
+  // eyes (-s, s) or the page's camera as the left eye (0, 2s), the same
+  // parallax between them either way.
+  const bool pageIsLeft = StaticPrefs::webgl_stereo_camera_left_eye_is_page_camera();
+  const float left = pageIsLeft ? 0.0f : -mStereoSeparation;
+  const float right = pageIsLeft ? 2.0f * mStereoSeparation : mStereoSeparation;
   if (StereoCameraDraws()) {
-    UploadStereoCameras(-s);
+    UploadStereoCameras(left);
     aDraw();
     gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mStereoRightFB->mFB);
-    UploadStereoCameras(s);
+    UploadStereoCameras(right);
     const bool swapped = BindStereoTwins(true);
     aDraw();
     if (swapped) {
@@ -703,11 +708,21 @@ void WebGLContext::DrawPerEye(const std::function<void()>& aDraw) {
   }
   if (mBoundDrawFramebuffer && StereoTargetPerEye(*mBoundDrawFramebuffer)) {
     auto& fb = *mBoundDrawFramebuffer;
+    if (const auto* info = fb.GetCompletenessInfo()) {
+      if (info->width && info->height &&
+          (fb.DepthAttachment().HasAttachment() ||
+           fb.DepthStencilAttachment().HasAttachment())) {
+        mStereoSceneFB = fb.mGLName;
+        mStereoSceneDepthStencil =
+            !fb.DepthAttachment().HasAttachment();
+        mStereoSceneSize = gfx::IntSize(info->width, info->height);
+      }
+    }
     SyncStereoTwin(fb);
-    UploadStereoCameras(-s);
+    UploadStereoCameras(left);
     aDraw();
     ApplyStereoTwinDrawBuffers(fb);
-    UploadStereoCameras(s);
+    UploadStereoCameras(right);
     const bool swapped = BindStereoTwins(true);
     aDraw();
     if (swapped) {
@@ -722,6 +737,22 @@ void WebGLContext::DrawPerEye(const std::function<void()>& aDraw) {
   aDraw();
   if (mBoundDrawFramebuffer) {
     mStereoOffscreenDraws++;
+    // An immersive session on the flat display draws its scene into a
+    // framebuffer of the page's own when it post-processes: the one with a
+    // depth buffer drawn last is the scene (the session's plane is looked for
+    // in it).
+    if (mSceneWatch) {
+      const auto& fb = *mBoundDrawFramebuffer;
+      if (const auto* info = fb.GetCompletenessInfo()) {
+        if (info->width && info->height &&
+            (fb.DepthAttachment().HasAttachment() ||
+             fb.DepthStencilAttachment().HasAttachment())) {
+          mStereoSceneFB = fb.mGLName;
+          mStereoSceneSize = gfx::IntSize(info->width, info->height);
+          mStereoSceneDepthStencil = !fb.DepthAttachment().HasAttachment();
+        }
+      }
+    }
   }
 }
 

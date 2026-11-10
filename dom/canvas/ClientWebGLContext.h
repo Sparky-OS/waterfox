@@ -778,6 +778,14 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
   bool mStereoCameraSiteRead = false;
   bool mStereoCameraSiteAllowed = false;
   bool mStereoCameraAllowed = false;
+  // The host has been told that the camera hack begins (before the first
+  // present).
+  bool mStereoCameraBegun = false;
+  float mXRDepthA = 0.0f;
+  float mXRDepthNumerator = 0.0f;
+  float mSceneNearest = 0.0f;
+  float mSceneFarthest = 0.0f;
+  uint32_t mSceneAsked = 0;
   uint8_t mStereoDepth = 0;
   uvec2 mRequestedSize = {};
 
@@ -1121,7 +1129,14 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
   uvec2 PresentedSize();
   bool IsPresentingFlatXR() const { return mFlatXR; }
   bool StereoCameraPresents() const;
+  // An immersive session on the flat display tells the context the depth range
+  // of its projection, so that the host can read the scene's distances.
+  void SetXRDepthRange(double aNear, double aFar);
+  // The nearest and the farthest thing of the session's last frames looked at,
+  // in metres; false while none was.
+  bool GetStereoScene(float* aNearest, float* aFarthest);
   void OnStereoCameraStarted();
+  void BeginStereoCameraOnHost();
   // Reads the site's choice; true when it differs from the one in effect.
   bool UpdateStereoCameraSite();
   void LookForStereoCamera(GLenum target, const Span<const uint8_t>& aData);

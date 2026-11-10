@@ -5752,6 +5752,16 @@
   value: 0
   mirror: always
 
+# Where the screen plane is when the person has not set one (0 in
+# dom.vr.flat.screen-plane-mm): from the scene the page draws, the distance
+# that puts the nearest and the farthest thing at equal and opposite
+# parallax, no nearer than the person's popped limit lets the nearest thing
+# come (the page's frames are looked at in the depth buffer). False: 1000.
+- name: dom.vr.flat.scene-plane
+  type: RelaxedAtomicBool
+  value: true
+  mirror: always
+
 # Expert overrides of the display's own geometry, in millimetres, 0 for the
 # display's own: the distance the screen is seen from, and a physical eye
 # separation (which, when set, replaces the depth of the display).
@@ -20101,6 +20111,28 @@
 - name: webgl.stereo-camera.convergence
   type: AtomicFloat
   value: 5.0f
+  mirror: always
+
+# Where the two eyes' cameras sit. True: the left eye is the page's own
+# camera (the picture the page draws without the hack) and the right eye is
+# one separation to its right, so an output that shows only the left eye, a
+# 2D output or a window the compositor does not show depth in, shows exactly
+# what the page draws. False: the page's camera is between the eyes, each
+# half a separation away, and a 2D output shows the left eye half a
+# separation off the page's own view.
+- name: webgl.stereo-camera.left-eye-is-page-camera
+  type: RelaxedAtomicBool
+  value: true
+  mirror: always
+
+# The zero-parallax plane from the scene: the distance that puts the nearest
+# and the farthest thing the page drew at equal and opposite parallax, read
+# from the depth buffer of the canvas's frames and kept inside the person's
+# depth limits. False: webgl.stereo-camera.convergence times the camera's near
+# distance.
+- name: webgl.stereo-camera.scene-plane
+  type: RelaxedAtomicBool
+  value: true
   mirror: always
 
 # Per-eye render targets: a page framebuffer the page draws its scene into

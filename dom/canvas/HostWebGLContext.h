@@ -177,6 +177,11 @@ class HostWebGLContext final : public SupportsWeakPtr {
     mContext->WaitForTxn(aOwnerId, txnType, txnId);
   }
   void EndOfFrame() const { return (void)mContext->EndOfFrame(); }
+  // The camera hack starts before the canvas is first presented
+  // (ClientWebGLContext::OnStereoCameraStarted).
+  void SetStereoCamera(const uint8_t depth) const {
+    mContext->BeginStereoCamera(depth);
+  }
   Maybe<layers::SurfaceDescriptor> GetFrontBuffer(ObjectId xrFb,
                                                   const bool webvr) const;
 
@@ -205,6 +210,9 @@ class HostWebGLContext final : public SupportsWeakPtr {
   void Resize(const uvec2& size) { return mContext->Resize(size); }
 
   uvec2 DrawingBufferSize() { return mContext->DrawingBufferSize(); }
+  void GetStereoScene(float* const nearest, float* const farthest) const {
+    mContext->GetStereoScene(nearest, farthest);
+  }
 
   void OnMemoryPressure() { return mContext->OnMemoryPressure(); }
 

@@ -265,6 +265,13 @@ IPCResult WebGLParent::RecvCreateOpaqueFramebuffer(
   return IPC_OK();
 }
 
+void WebGLParent::StereoSceneOfHost(float* const nearest,
+                                    float* const farthest) const {
+  if (mHost) {
+    mHost->GetStereoScene(nearest, farthest);
+  }
+}
+
 IPCResult WebGLParent::RecvDrawingBufferSize(uvec2* const ret) {
   if (!mHost) {
     return IPC_FAIL(this, "HostWebGLContext is not initialized.");

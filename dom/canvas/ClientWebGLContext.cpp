@@ -548,6 +548,10 @@ void ClientWebGLContext::Present(WebGLFramebufferJS* const xrFb,
   }
   webgl::SwapChainOptions asyncOptions =
       PrepareAsyncSwapChainOptions(xrFb, webvr, options);
+  if (xrFb && options.flatXR) {
+    asyncOptions.stereoDepthA = mXRDepthA;
+    asyncOptions.stereoDepthNumerator = mXRDepthNumerator;
+  }
   if (!xrFb && mFlatXR) {
     // The canvas shows the frames of an immersive session on the flat stereo
     // display: both eyes side by side, the left eye first.
@@ -559,9 +563,60 @@ void ClientWebGLContext::Present(WebGLFramebufferJS* const xrFb,
     // The camera hack: both eyes, full side by side, left eye first.
     asyncOptions.stereoCamera = true;
     asyncOptions.stereoDepth = mStereoDepth;
+    // The person's limits for this window keep the scene's plane from
+    // letting anything come nearer than the popped limit.
+    double sunk = 0, popped = 0;
+    if (NS_IsMainThread() && mCanvasElement) {
+      if (nsIFrame* frame = mCanvasElement->GetPrimaryFrame()) {
+        if (nsDisplayStereoDepth::LimitsFor(frame, &sunk, &popped)) {
+          asyncOptions.stereoPopped =
+              uint16_t(std::clamp(std::lround(popped * 10.0), 0L, 65535L));
+          asyncOptions.stereoSunk =
+              uint16_t(std::clamp(std::lround(sunk * 10.0), 0L, 65535L));
+        }
+      }
+    }
     asyncOptions.stereoMode = uint8_t(StereoMode::LEFT_RIGHT);
   }
   Run<RPROC(Present)>(xrFb ? xrFb->mId : 0, type, webvr, asyncOptions);
+}
+
+// A standard WebGL projection (right-handed, depth range 0 to 1) built from
+// the session's depth range, in the terms of StereoCamera::depthA and
+// depthNumerator.
+void ClientWebGLContext::SetXRDepthRange(const double aNear, const double aFar) {
+  if (!(aNear > 0.0) || !(aFar > aNear)) {
+    mXRDepthA = 0.0f;
+    mXRDepthNumerator = 0.0f;
+    return;
+  }
+  mXRDepthA = float((aFar + aNear) / (aFar - aNear));
+  mXRDepthNumerator = float(-2.0 * aFar * aNear / (aFar - aNear));
+}
+
+// Asked of the host (asynchronously) every 15th time: the host looks at the
+// frames now and then, and the session asks once a frame. The answer is the
+// one before.
+bool ClientWebGLContext::GetStereoScene(float* const aNearest,
+                                        float* const aFarthest) {
+  if (IsContextLost() || !mNotLost) {
+    return false;
+  }
+  if (mSceneAsked++ % 15 == 0 && NS_IsMainThread()) {
+    RefPtr<webgl::NotLostData> notLost(mNotLost);
+    const auto& child = notLost->outOfProcess;
+    child->FlushPendingCmds();
+    child->SendGetStereoScene()->Then(
+        GetMainThreadSerialEventTarget(), __func__,
+        [self = RefPtr{this}](const std::tuple<float, float>& aAnswer) {
+          self->mSceneNearest = std::get<0>(aAnswer);
+          self->mSceneFarthest = std::get<1>(aAnswer);
+        },
+        [](mozilla::ipc::ResponseRejectReason) {});
+  }
+  *aNearest = mSceneNearest;
+  *aFarthest = mSceneFarthest;
+  return mSceneNearest > 0.0f && mSceneFarthest >= mSceneNearest;
 }
 
 void ClientWebGLContext::SetFlatXR(const bool flatXR, const uvec2 size) {
@@ -620,6 +675,30 @@ void ClientWebGLContext::OnStereoCameraStarted() {
       frame->InvalidateFrame();
     }
   }
+  BeginStereoCameraOnHost();
+}
+
+// A canvas that has not been painted yet (it is below the fold, in a hidden
+// tab or not yet on an output) is not presented, so the host would draw the
+// page's frames with one camera until the first present: a page that draws
+// once, as an on-demand renderer does, would show that one picture to both
+// eyes. Tell the host as soon as the camera is known, from the next draw on.
+// A canvas that is painted already switches at its next present with its
+// frames' new size.
+void ClientWebGLContext::BeginStereoCameraOnHost() {
+  if (mStereoCameraBegun || !mStereoCamera || IsContextLost() || !mNotLost ||
+      mNotLost->mCanvasRenderer) {
+    return;
+  }
+  if (!mStereoCameraSiteRead) {
+    UpdateStereoCameraSite();
+  }
+  if (!mStereoCameraSiteAllowed || mFlatXR || mInlineStereo ||
+      !gfx::gfxVars::StereoContentDeclaration()) {
+    return;
+  }
+  mStereoCameraBegun = true;
+  Run<RPROC(SetStereoCamera)>(mStereoDepth);
 }
 
 // Only where the two views are declared on a surface of their own: anywhere

@@ -840,13 +840,24 @@ struct SwapChainOptions final {
   // eyes' separation in tenths of a percent of the view's width, 0 for
   // webgl.stereo-camera.separation.
   uint8_t stereoDepth = 0;
-  // Pad to sizeof(u64):
+  // The person's depth limits for the window the canvas is in, in tenths of a
+  // pixel of a view 1920 wide (0: not known): how far in front of the screen
+  // the zero-parallax plane may let the nearest thing come.
+  uint16_t stereoPopped = 0;
+  uint16_t stereoSunk = 0;
   uint16_t padding3 = 0;
+  // An immersive session on the flat display: its projection's depth range
+  // (StereoCamera::depthA and depthNumerator, 0 when not given).
+  float stereoDepthA = 0.0f;
+  float stereoDepthNumerator = 0.0f;
+  // Pad to sizeof(u64):
+  uint32_t padding4 = 0;
 
   auto MutTiedFields() {
     return std::tie(remoteTextureId, remoteTextureOwnerId, bgra,
                     forceAsyncPresent, stereoMode, flatXR, stereoCamera,
-                    stereoDepth, padding3);
+                    stereoDepth, stereoPopped, stereoSunk, padding3, stereoDepthA,
+                    stereoDepthNumerator, padding4);
   }
 };
 

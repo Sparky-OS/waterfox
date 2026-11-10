@@ -482,6 +482,41 @@ void XRSession::AskFlatDepth(int32_t aKind, int32_t aWidthMm, int32_t aHeightMm,
           [](mozilla::ipc::ResponseRejectReason) {});
 }
 
+// The screen plane from the scene the page draws (dom.vr.flat.scene-plane),
+// in millimetres: the host looks at the session's frames in their depth
+// buffer (WebGLContext::ReadSceneRange) and the plane sits where the nearest
+// and the farthest thing have equal and opposite parallax (parallax goes with
+// 1 / distance), no nearer than the person's popped limit lets the nearest
+// thing come: the display's far parallax is the sunk limit, so an object at
+// distance z has a parallax of the sunk limit times (1 - plane / z), and the
+// popped limit allows the plane up to nearest * (1 + popped / sunk). A plane
+// that moves by more than 15 percent moves half the way. aDefault stands
+// until a frame has been looked at.
+double XRSession::FlatScenePlaneMm(const double aDefault) const {
+  if (!StaticPrefs::dom_vr_flat_scene_plane() || !mActiveRenderState) {
+    return aDefault;
+  }
+  XRWebGLLayer* layer = mActiveRenderState->GetBaseLayer();
+  float nearest = 0, farthest = 0;
+  if (!layer || !layer->mWebGL ||
+      !layer->mWebGL->GetStereoScene(&nearest, &farthest)) {
+    return mFlatScenePlaneMm > 0 ? mFlatScenePlaneMm : aDefault;
+  }
+  double plane = 2000.0 * double(nearest) * double(farthest) /
+                 double(nearest + farthest);
+  if (mFlatDepth.mReady && mFlatDepth.mSunkPx > 0) {
+    plane = std::min(plane, 1000.0 * double(nearest) *
+                                (1.0 + mFlatDepth.mPoppedPx /
+                                           mFlatDepth.mSunkPx));
+  }
+  if (mFlatScenePlaneMm <= 0) {
+    mFlatScenePlaneMm = plane;
+  } else if (std::fabs(plane / mFlatScenePlaneMm - 1.0) > 0.15) {
+    mFlatScenePlaneMm += 0.5 * (plane - mFlatScenePlaneMm);
+  }
+  return mFlatScenePlaneMm;
+}
+
 XRSession::WindowViews XRSession::GetWindowViews() const {
   // The window: its size in device pixels and in millimetres.
   RefPtr<widget::Screen> screen =
@@ -550,7 +585,7 @@ XRSession::WindowViews XRSession::GetWindowViews() const {
     // that fraction of the window times (1 - plane / z), so it sinks
     // towards the far limit and pops in front of the plane.
     const double person = StaticPrefs::dom_vr_flat_screen_plane_mm();
-    plane = person > 0 ? person : 1000.0;
+    plane = person > 0 ? person : FlatScenePlaneMm(1000.0);
     const double windowWidth = width * plane / viewer;
     separation = mFlatDepth.mSunkPx / 1920.0 * windowWidth;
     // the window as the eyes at the plane see it
@@ -671,6 +706,10 @@ void XRSession::StartFrame() {
   XRWebGLLayer* baseLayer = mActiveRenderState->GetBaseLayer();
   if (!baseLayer) {
     return;
+  }
+  if (baseLayer->mWebGL) {
+    baseLayer->mWebGL->SetXRDepthRange(mActiveRenderState->DepthNear(),
+                                       mActiveRenderState->DepthFar());
   }
 
   if (!IsImmersive() && mActiveRenderState->GetOutputCanvas() == nullptr) {

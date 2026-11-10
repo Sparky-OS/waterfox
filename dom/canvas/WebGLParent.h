@@ -44,6 +44,7 @@ class WebGLParent : public PWebGLParent, public SupportsWeakPtr {
   }
 
   IPCResult RecvSyncPing() { return IPC_OK(); }
+  void StereoSceneOfHost(float* nearest, float* farthest) const;
 
   IPCResult RecvDispatchCommands(mozilla::ipc::BigBuffer&&, uint64_t);
   IPCResult RecvTexImage(uint32_t level, uint32_t respecFormat,
@@ -70,6 +71,13 @@ class WebGLParent : public PWebGLParent, public SupportsWeakPtr {
                                         const OpaqueFramebufferOptions&,
                                         bool* ret);
   IPCResult RecvDrawingBufferSize(uvec2* ret);
+  template <class ResolveT>
+  IPCResult RecvGetStereoScene(const ResolveT& Resolve) {
+    float nearest = 0, farthest = 0;
+    StereoSceneOfHost(&nearest, &farthest);
+    Resolve(std::tuple<float, float>(nearest, farthest));
+    return IPC_OK();
+  }
   IPCResult RecvFinish();
   IPCResult RecvGetBufferParameter(GLenum target, GLenum pname,
                                    Maybe<double>* ret);

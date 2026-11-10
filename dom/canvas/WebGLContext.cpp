@@ -634,8 +634,10 @@ void WebGLContext::UploadStereoCameras(const float aShift) const {
     return;
   }
   const auto& link = *mActiveProgramLinkInfo;
+  const float plane = mStereoPlane;
   for (const auto& [loc, camera] : link.stereoCameras) {
-    const auto m = webgl::StereoCameraEye(camera, aShift);
+    mStereoLastCamera = Some(camera);
+    const auto m = webgl::StereoCameraEye(camera, aShift, plane);
     gl->fUniformMatrix4fv(static_cast<GLint>(loc), 1, false, m.data());
   }
 
@@ -648,8 +650,9 @@ void WebGLContext::UploadStereoCameras(const float aShift) const {
         const auto& shadow = buffer.mStereoShadow;
         std::vector<uint8_t> bytes(shadow.begin() + offset,
                                    shadow.begin() + offset + length);
+        mStereoLastCamera = Some(camera);
         if (aShift != 0.0f) {
-          const auto eye = webgl::StereoCameraEye(camera, aShift);
+          const auto eye = webgl::StereoCameraEye(camera, aShift, plane);
           for (int i = 0; i < 16; i++) {
             const int major = rowMajor ? i % 4 : i / 4;
             const int minor = rowMajor ? i / 4 : i % 4;
@@ -1743,12 +1746,210 @@ static void SetStereoMode(gl::SharedSurface* const surf,
 }
 #endif
 
+// The nearest and the farthest thing among depth buffer samples (the
+// background, at the far plane, is not a thing); false with too few things.
+static bool SceneRangeOf(const std::vector<float>& aDepth, const float aA,
+                         const float aNumerator, float* const aNearest,
+                         float* const aFarthest) {
+  std::vector<float> distances;
+  distances.reserve(aDepth.size());
+  webgl::StereoCamera camera;
+  camera.depthA = aA;
+  camera.depthNumerator = aNumerator;
+  for (const float z : aDepth) {
+    if (z > 0.0f && z < 0.99999f) {
+      const float d = webgl::StereoCameraDistance(camera, z);
+      if (d > 0.0f) {
+        distances.push_back(d);
+      }
+    }
+  }
+  if (distances.size() < 24) {
+    return false;
+  }
+  std::sort(distances.begin(), distances.end());
+  *aNearest = distances[distances.size() / 50];
+  *aFarthest = distances[distances.size() - 1 - distances.size() / 50];
+  return true;
+}
+
+// The same for a framebuffer of the page's own (the scene is drawn into one
+// when the page post-processes it): its depth attachment is read at its size
+// and reduced to 64 by 36 samples. A multisampled one cannot be read, which
+// the error says.
+bool WebGLContext::ReadSceneRangeFromFB(const GLuint aFB,
+                                        const gfx::IntSize aSize,
+                                        const bool aDepthStencil,
+                                        const float aA,
+                                        const float aNumerator,
+                                        float* const aNearest,
+                                        float* const aFarthest) {
+  constexpr int kW = 64;
+  constexpr int kH = 36;
+  if (!aFB || aSize.width <= 0 || aSize.height <= 0) {
+    return false;
+  }
+  const ScopedFBRebinder saveFB(this);
+  if (mScissorTestEnabled) {
+    gl->fDisable(LOCAL_GL_SCISSOR_TEST);
+  }
+  const auto cleanup = MakeScopeExit([&]() {
+    if (mScissorTestEnabled) {
+      gl->fEnable(LOCAL_GL_SCISSOR_TEST);
+    }
+  });
+  std::vector<float> full(size_t(aSize.width) * size_t(aSize.height));
+  {
+    gl::GLContext::LocalErrorScope errorScope(*gl);
+    // The depth is resolved by a blit into a single-sample renderbuffer of
+    // the same format (a blit needs equal formats, and a multisampled
+    // framebuffer cannot be read), then read.
+    gl->fBindFramebuffer(LOCAL_GL_READ_FRAMEBUFFER, aFB);
+    GLint bits = 0;
+    gl->fGetFramebufferAttachmentParameteriv(
+        LOCAL_GL_READ_FRAMEBUFFER,
+        aDepthStencil ? LOCAL_GL_DEPTH_STENCIL_ATTACHMENT
+                      : LOCAL_GL_DEPTH_ATTACHMENT,
+        LOCAL_GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE, &bits);
+    const GLenum format = aDepthStencil ? LOCAL_GL_DEPTH24_STENCIL8
+                          : bits >= 32  ? LOCAL_GL_DEPTH_COMPONENT32F
+                          : bits >= 24  ? LOCAL_GL_DEPTH_COMPONENT24
+                                        : LOCAL_GL_DEPTH_COMPONENT16;
+    if (!mStereoResolveFB || mStereoResolveSize != aSize ||
+        mStereoResolveFormat != format) {
+      if (mStereoResolveFB) {
+        gl->fDeleteFramebuffers(1, &mStereoResolveFB);
+        gl->fDeleteRenderbuffers(1, &mStereoResolveRB);
+      }
+      gl->fGenFramebuffers(1, &mStereoResolveFB);
+      gl->fGenRenderbuffers(1, &mStereoResolveRB);
+      gl->fBindRenderbuffer(LOCAL_GL_RENDERBUFFER, mStereoResolveRB);
+      gl->fRenderbufferStorage(LOCAL_GL_RENDERBUFFER, format, aSize.width,
+                               aSize.height);
+      gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mStereoResolveFB);
+      gl->fFramebufferRenderbuffer(
+          LOCAL_GL_DRAW_FRAMEBUFFER,
+          aDepthStencil ? LOCAL_GL_DEPTH_STENCIL_ATTACHMENT
+                        : LOCAL_GL_DEPTH_ATTACHMENT,
+          LOCAL_GL_RENDERBUFFER, mStereoResolveRB);
+      mStereoResolveSize = aSize;
+      mStereoResolveFormat = format;
+      gl->fBindRenderbuffer(LOCAL_GL_RENDERBUFFER, 0);
+    }
+    gl->fBindFramebuffer(LOCAL_GL_DRAW_FRAMEBUFFER, mStereoResolveFB);
+    gl->fBlitFramebuffer(0, 0, aSize.width, aSize.height, 0, 0, aSize.width,
+                         aSize.height, LOCAL_GL_DEPTH_BUFFER_BIT,
+                         LOCAL_GL_NEAREST);
+    gl->fBindFramebuffer(LOCAL_GL_READ_FRAMEBUFFER, mStereoResolveFB);
+    gl->fReadPixels(0, 0, aSize.width, aSize.height, LOCAL_GL_DEPTH_COMPONENT,
+                    LOCAL_GL_FLOAT, full.data());
+    if (const GLenum error = errorScope.GetError()) {
+      MOZ_LOG(gWebGLStereoLog, LogLevel::Debug,
+              ("scene plane: reading the depth of framebuffer %u (%d bits, "
+               "format 0x%x): error 0x%x",
+               aFB, bits, format, error));
+      mStereoSceneFB = 0;
+      return false;
+    }
+  }
+  std::vector<float> depth;
+  depth.reserve(kW * kH);
+  for (int i = 0; i < kH; i++) {
+    for (int j = 0; j < kW; j++) {
+      const size_t x = size_t(j) * aSize.width / kW;
+      const size_t y = size_t(i) * aSize.height / kH;
+      depth.push_back(full[y * aSize.width + x]);
+    }
+  }
+  return SceneRangeOf(depth, aA, aNumerator, aNearest, aFarthest);
+}
+
+// The nearest and the farthest thing in the depth buffer of aSrc, in
+// distance along the view's axis (aA and aNumerator: StereoCamera::depthA and
+// depthNumerator); the background, at the far plane, is not a thing. The
+// depth buffer is resolved at its size, then reduced to 64 by 36 samples,
+// which are read back.
+bool WebGLContext::ReadSceneRange(const gl::MozFramebuffer& aSrc,
+                                  const float aA, const float aNumerator,
+                                  float* const aNearest,
+                                  float* const aFarthest) {
+  if (!aSrc.HasDepth()) {
+    return false;
+  }
+  return ReadSceneRangeFromFB(aSrc.mFB, aSrc.mSize, false, aA, aNumerator,
+                              aNearest, aFarthest);
+}
+
+// The scene's zero-parallax plane (webgl.stereo-camera.scene-plane): where the
+// nearest and the farthest thing the page drew have equal and opposite
+// parallax (parallax goes with 1 / distance), no nearer than the person's
+// popped limit lets the nearest thing come: the parallax of a point at
+// distance z is separation * (plane / z - 1) of the view's width, and the limit
+// is in pixels of a view 1920 wide. The first frames are looked at, then one
+// in 64; a plane that moves by more than 15 percent moves half the way.
+void WebGLContext::EstimateStereoPlane() {
+  if (!StaticPrefs::webgl_stereo_camera_scene_plane() ||
+      !mStereoLastCamera || !mDefaultFB ||
+      !(mStereoSceneFB || mOptions.depth)) {
+    return;
+  }
+  const bool due = mStereoPresents < 4 || mStereoPresents % 64 == 0;
+  mStereoPresents++;
+  if (!due) {
+    return;
+  }
+  float nearest = 0, farthest = 0;
+  const bool read =
+      mStereoSceneFB
+          ? ReadSceneRangeFromFB(mStereoSceneFB, mStereoSceneSize,
+                                 mStereoSceneDepthStencil,
+                                 mStereoLastCamera->depthA,
+                                 mStereoLastCamera->depthNumerator, &nearest,
+                                 &farthest)
+          : ReadSceneRange(*mDefaultFB, mStereoLastCamera->depthA,
+                           mStereoLastCamera->depthNumerator, &nearest,
+                           &farthest);
+  if (!read) {
+    MOZ_LOG(gWebGLStereoLog, LogLevel::Debug,
+            ("scene plane: no scene in the depth buffer (%s)",
+             mStereoSceneFB ? "the page's framebuffer" : "the canvas"));
+    return;
+  }
+  mSceneNearest = nearest;
+  mSceneFarthest = farthest;
+  float plane = 2.0f * nearest * farthest / (nearest + farthest);
+  bool limited = false;
+  if (mStereoPoppedPx > 0.0f && mStereoSeparation > 0.0f) {
+    const float reach =
+        nearest * (1.0f + mStereoPoppedPx / (1920.0f * mStereoSeparation));
+    if (plane > reach) {
+      plane = reach;
+      limited = true;
+    }
+  }
+  const float before = mStereoPlane;
+  if (before <= 0.0f) {
+    mStereoPlane = plane;
+  } else if (std::fabs(plane / before - 1.0f) > 0.15f) {
+    mStereoPlane = before + 0.5f * (plane - before);
+  }
+  MOZ_LOG(gWebGLStereoLog, LogLevel::Info,
+          ("scene plane: nearest %.3f farthest %.3f -> %.3f%s, in use %.3f "
+           "(was %.3f)",
+           nearest, farthest, plane, limited ? " (popped limit)" : "",
+           mStereoPlane, before));
+}
+
 // For an overview of how WebGL compositing works, see:
 // https://wiki.mozilla.org/Platform/GFX/WebGL/Compositing
 bool WebGLContext::PresentInto(gl::SwapChain& swapChain) {
   OnEndOfFrame();
 
   if (!ValidateAndInitFB(nullptr)) return false;
+
+  if (mStereoCamera) {
+    EstimateStereoPlane();
+  }
 
   const auto size = mDefaultFB->mSize;
   // The camera hack presents both eyes, full side by side, left eye first.
@@ -1927,6 +2128,16 @@ void InitSwapChain(gl::GLContext& gl, gl::SwapChain& swapChain,
   }
 }
 
+void WebGLContext::BeginStereoCamera(const uint8_t aDepth) {
+  if (IsContextLost()) {
+    return;
+  }
+  mStereoSeparation =
+      aDepth ? aDepth / 1000.0f
+             : StaticPrefs::webgl_stereo_camera_separation() / 100.0f;
+  mStereoCamera = true;
+}
+
 void WebGLContext::Present(WebGLFramebuffer* const xrFb,
                            const layers::TextureType consumerType,
                            const bool webvr,
@@ -1954,6 +2165,7 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
         options.stereoDepth
             ? options.stereoDepth / 1000.0f
             : StaticPrefs::webgl_stereo_camera_separation() / 100.0f;
+    mStereoPoppedPx = options.stereoPopped / 10.0f;
   }
   // The camera hack: the canvas presents both eyes from now on.
   if (!xrFb && !webvr && options.stereoCamera != mStereoCamera) {
@@ -1961,6 +2173,8 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
     if (!mStereoCamera) {
       mStereoRightFB = nullptr;
       mStereoRightResolvedFB = nullptr;
+      mStereoPlane = 0.0f;
+      mStereoPresents = 0;
     }
   }
 
@@ -1976,7 +2190,7 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
   InitSwapChain(*gl, *swapChain, consumerType, useAsync);
 
   if (maybeFB && options.flatXR) {
-    PresentFlatXR(*maybeFB, consumerType);
+    PresentFlatXR(*maybeFB, consumerType, options);
   }
 
   bool valid = true;
@@ -2002,7 +2216,37 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
 }
 
 void WebGLContext::PresentFlatXR(const gl::MozFramebuffer& fb,
-                                 const layers::TextureType consumerType) {
+                                 const layers::TextureType consumerType,
+                                 const webgl::SwapChainOptions& options) {
+  // The scene the session drew, for the flat display's zero-parallax plane
+  // (XRSession::GetWindowViews asks for it).
+  if (StaticPrefs::webgl_stereo_camera_scene_plane() &&
+      options.stereoDepthNumerator != 0.0f) {
+    const bool due = mStereoXRPresents < 4 || mStereoXRPresents % 16 == 0;
+    mStereoXRPresents++;
+    mSceneWatch = true;
+    float nearest = 0, farthest = 0;
+    const bool read =
+        due && (mStereoSceneFB
+                    ? ReadSceneRangeFromFB(mStereoSceneFB, mStereoSceneSize,
+                                           mStereoSceneDepthStencil,
+                                           options.stereoDepthA,
+                                           options.stereoDepthNumerator,
+                                           &nearest, &farthest)
+                    : ReadSceneRange(fb, options.stereoDepthA,
+                                     options.stereoDepthNumerator, &nearest,
+                                     &farthest));
+    if (read) {
+      mSceneNearest = nearest;
+      mSceneFarthest = farthest;
+      MOZ_LOG(gWebGLStereoLog, LogLevel::Info,
+              ("scene (flat session): nearest %.3f farthest %.3f", nearest,
+               farthest));
+    } else if (due) {
+      MOZ_LOG(gWebGLStereoLog, LogLevel::Debug,
+              ("scene (flat session): none in the depth buffer"));
+    }
+  }
   InitSwapChain(*gl, mFlatXRSwapChain, consumerType, true);
   const auto colorSpace = ToColorSpace2ForOutput(mDrawingBufferColorSpace);
   auto presenter = mFlatXRSwapChain.Acquire(fb.mSize, colorSpace,

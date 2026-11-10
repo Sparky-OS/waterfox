@@ -124,6 +124,7 @@ class XRSession final : public DOMEventTargetHelper, public nsARefreshObserver {
   bool IsInlineStereo() const { return mInlineStereo; }
   void SetInlineStereo(bool aInlineStereo) { mInlineStereo = aInlineStereo; }
   WindowViews GetWindowViews() const;
+  double FlatScenePlaneMm(double aDefault) const;
   // The person's choice of how the screen is seen (dom.vr.flat.mode): 0 flat
   // TV or output, 1 flat headset, 2 VR over the phone.
   static int32_t FlatMode();
@@ -205,6 +206,7 @@ class XRSession final : public DOMEventTargetHelper, public nsARefreshObserver {
   };
   mutable FlatDepth mFlatDepth;
   mutable uint64_t mFlatDepthAsked = 0;
+  mutable double mFlatScenePlaneMm = 0;
   mutable bool mFlatSizeNoticed = false;
   void AskFlatDepth(int32_t aKind, int32_t aWidthMm, int32_t aHeightMm,
                     uint32_t aStrength, uint64_t aKey) const;

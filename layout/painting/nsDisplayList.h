@@ -5287,6 +5287,9 @@ class nsDisplayStereoDepth : public nsDisplayWrapList {
   // popped) for a frame's window, or Nothing while the display's limits are
   // not known yet (asked of the parent) or no output shows stereo 3D.
   static mozilla::Maybe<int32_t> ShiftForLevel(nsIFrame* aFrame, float aLevel);
+  // The depth limits of the window the frame is shown in, in pixels of a view
+  // 1920 wide (sunk, popped), whether or not the window is awake now.
+  static bool LimitsFor(nsIFrame* aFrame, double* aSunkPx, double* aPoppedPx);
 
  private:
   float mLevel;

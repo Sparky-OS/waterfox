@@ -31,6 +31,10 @@ struct StereoCamera {
   std::array<float, 16> mono = {};
   // The zero-parallax distance, in the camera's units of depth.
   float convergence = 0.0f;
+  // The distance along the view's axis of what a depth buffer value z (0 to
+  // 1) holds: (mDepthNumerator) / (2 z - 1 - mDepthA).
+  float depthNumerator = 0.0f;
+  float depthA = 0.0f;
 };
 
 inline bool StereoCameraFinite(const float* aM) {
@@ -84,17 +88,41 @@ inline Maybe<StereoCamera> ClassifyStereoCamera(const float* aM,
     camera.mono[i] = aM[i];
   }
   camera.convergence = near * aNearFactor;
+  // The clip w of a perspective camera is the distance along the view's
+  // axis, and z_clip = P22 * z_eye + P23: z_ndc = a' + P23 / distance, with
+  // a = -P22 for the right-handed camera and P22 for the left-handed one
+  // (the same row product as the near distance above).
+  {
+    const float a = aM[2] * aM[3] + aM[6] * aM[7] + aM[10] * aM[11];
+    camera.depthA = a;
+    camera.depthNumerator = aM[14] - a * aM[15];
+  }
   return Some(camera);
 }
 
-// One eye's camera: aShift is -s for the left eye, +s for the right eye.
+// The distance along the view's axis of a depth buffer value (0 to 1, the
+// default range), 0 where the camera has no such distance.
+inline float StereoCameraDistance(const StereoCamera& aCamera, float aDepth) {
+  const float denominator = 2.0f * aDepth - 1.0f - aCamera.depthA;
+  if (denominator == 0.0f) {
+    return 0.0f;
+  }
+  const float d = aCamera.depthNumerator / denominator;
+  return std::isfinite(d) && d > 0.0f ? d : 0.0f;
+}
+
+// One eye's camera: aShift is the eye's shift as a share of the view's width
+// (-s for the left eye and +s for the right with the page's camera between
+// them, 0 and 2s with the page's camera as the left eye), aConvergence the
+// zero-parallax distance (0: the camera's own).
 inline std::array<float, 16> StereoCameraEye(const StereoCamera& aCamera,
-                                             float aShift) {
+                                             float aShift,
+                                             float aConvergence = 0.0f) {
   std::array<float, 16> m = aCamera.mono;
   for (int column = 0; column < 4; column++) {
     m[4 * column] += aShift * aCamera.mono[4 * column + 3];
   }
-  m[12] -= aShift * aCamera.convergence;
+  m[12] -= aShift * (aConvergence > 0.0f ? aConvergence : aCamera.convergence);
   return m;
 }
 

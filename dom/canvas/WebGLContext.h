@@ -37,6 +37,7 @@
 #include "WebGLContextLossHandler.h"
 #include "WebGLExtensions.h"
 #include "WebGLObjectModel.h"
+#include "WebGLStereoCamera.h"
 #include "WebGLStrongTypes.h"
 #include "WebGLTypes.h"
 
@@ -505,7 +506,8 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   bool PresentInto(gl::SwapChain& swapChain);
   bool PresentIntoXR(gl::SwapChain& swapChain, const gl::MozFramebuffer& xrFb);
   void PresentFlatXR(const gl::MozFramebuffer& xrFb,
-                     layers::TextureType consumerType);
+                     layers::TextureType consumerType,
+                     const webgl::SwapChainOptions& options);
 
   // The camera hack (WebGLStereoCamera.h): while the canvas presents two
   // eyes, each draw into the default framebuffer is drawn once per eye, the
@@ -514,7 +516,29 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   bool StereoCameraDraws() const;
   bool EnsureStereoRightFB();
   void UploadStereoCameras(float aShift) const;
+  void EstimateStereoPlane();
+  bool ReadSceneRangeFromFB(GLuint aFB, gfx::IntSize aSize,
+                            bool aDepthStencil, float aA,
+                            float aNumerator, float* aNearest,
+                            float* aFarthest);
+  bool ReadSceneRange(const gl::MozFramebuffer& aSrc, float aA,
+                      float aNumerator, float* aNearest, float* aFarthest);
+ public:
+  // The nearest and the farthest thing of the last frame looked at, in
+  // distance along the view (0 until one was), for the immersive session on
+  // the flat display, which draws its own plane.
+  void GetStereoScene(float* aNearest, float* aFarthest) const {
+    *aNearest = mSceneNearest;
+    *aFarthest = mSceneFarthest;
+  }
+ private:
   void BlitStereoRightToCurDriverFB(const gfx::IntSize& aEyeSize);
+ public:
+  // The page's draws are made once per eye from now on, not from the
+  // canvas's first presentation: a canvas that is drawn once while it is out
+  // of view (never presented until it scrolls in) shows two views.
+  void BeginStereoCamera(uint8_t aDepth);
+ private:
 
   void DrawPerEye(const std::function<void()>& aDraw);
 
@@ -1371,6 +1395,26 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   // The eyes' separation, a fraction of the view's width: the site's
   // (SwapChainOptions::stereoDepth) or webgl.stereo-camera.separation.
   float mStereoSeparation = 0.02f;
+  // The scene's zero-parallax distance (webgl.stereo-camera.scene-plane), in
+  // the camera's units of depth, 0 until a frame has been looked at; the
+  // camera of the last draw; the depth buffer's resolve and its small copy.
+  float mStereoPlane = 0.0f;
+  mutable Maybe<webgl::StereoCamera> mStereoLastCamera;
+  uint32_t mStereoPresents = 0;
+  float mStereoPoppedPx = 0.0f;
+  float mSceneNearest = 0.0f;
+  float mSceneFarthest = 0.0f;
+  // The page's own framebuffer the scene was last drawn into per eye (0: the
+  // canvas's own) and its size.
+  GLuint mStereoSceneFB = 0;
+  bool mSceneWatch = false;
+  gfx::IntSize mStereoSceneSize;
+  bool mStereoSceneDepthStencil = false;
+  GLuint mStereoResolveFB = 0;
+  GLuint mStereoResolveRB = 0;
+  gfx::IntSize mStereoResolveSize;
+  GLenum mStereoResolveFormat = 0;
+  uint32_t mStereoXRPresents = 0;
   gl::SwapChain mSnapshotSwapChain;
 
   RefPtr<layers::RemoteTextureOwnerClient> mRemoteTextureOwner;

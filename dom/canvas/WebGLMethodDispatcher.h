@@ -147,6 +147,7 @@ DEFINE_ASYNC(HostWebGLContext::SetFramebufferIsInOpaqueRAF)
 DEFINE_ASYNC(HostWebGLContext::ClearVRSwapChain)
 DEFINE_ASYNC(HostWebGLContext::CopyToSwapChain)
 DEFINE_ASYNC(HostWebGLContext::EndOfFrame)
+DEFINE_ASYNC(HostWebGLContext::SetStereoCamera)
 
 #undef DEFINE_ASYNC
 #undef DEFINE_METHOD_DISPATCHER
