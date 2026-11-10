@@ -2177,48 +2177,43 @@ void InitSwapChain(gl::GLContext& gl, gl::SwapChain& swapChain,
 // The depth limits are the person's, built on the display (the window's
 // kde_stereo_depth_v1 depth_limits, pixels of a view 1920 wide, scaled to the
 // output's width): a point at infinity shows the sunk limit as its parallax,
-// so it lands at the sunk limit in the output's pixels. The separation is a
-// share of the canvas's own width, so it is the sunk limit over 1920 times
-// the output's width over the canvas's on-screen width (aViewRatio, in
-// thousandths). The site's choice scales that (Less, Normal, More, Most) and
-// never takes it past the limit. Without limits (a worker's canvas, a desktop
-// with no stereo output) or with webgl.stereo-camera.separation-from-limits
-// off, the fixed percentage stands, and the site's choice is read as it was
-// before the limits: tenths of a percent.
-void WebGLContext::SetStereoSeparation(const uint8_t aDepth,
-                                       const uint16_t aSunk,
+// so it lands at the sunk limit in the output's pixels, and no choice of the
+// browser scales it. The separation is a share of the canvas's own width, so
+// it is the sunk limit over 1920 times the output's width over the canvas's
+// on-screen width (aViewRatio, in thousandths). Where no limits are known (a
+// worker's canvas, a desktop with no stereo output, where nothing shows the
+// canvas in stereo) 2 percent of the canvas's width stands.
+void WebGLContext::SetStereoSeparation(const uint16_t aSunk,
                                        const uint16_t aPopped,
                                        const uint32_t aViewRatio) {
   mStereoPoppedPx = aPopped / 10.0f;
   mStereoSunkPx = aSunk / 10.0f;
   float separation;
-  if (aSunk > 0 && StaticPrefs::webgl_stereo_camera_separation_from_limits()) {
-    mStereoLimitShare = std::min(aDepth ? aDepth / 20.0f : 1.0f, 1.0f);
+  if (aSunk > 0) {
+    mStereoLimitShare = 1.0f;
     const float ratio = aViewRatio ? aViewRatio / 1000.0f : 1.0f;
-    separation = std::min(
-        mStereoSunkPx / 1920.0f * ratio * mStereoLimitShare, 0.25f);
+    separation = std::min(mStereoSunkPx / 1920.0f * ratio, 0.25f);
   } else {
     mStereoLimitShare = 0.0f;
-    separation = aDepth ? aDepth / 1000.0f
-                        : StaticPrefs::webgl_stereo_camera_separation() / 100.0f;
+    separation = 0.02f;
   }
   if (separation != mStereoSeparation) {
     MOZ_LOG(gWebGLStereoLog, LogLevel::Info,
             ("separation %.4f of the width (sunk %.1f px, popped %.1f px, "
-             "site depth %u, view ratio %.3f, was %.4f)",
-             separation, mStereoSunkPx, mStereoPoppedPx, aDepth,
-             aViewRatio / 1000.0, mStereoSeparation));
+             "view ratio %.3f, was %.4f)",
+             separation, mStereoSunkPx, mStereoPoppedPx, aViewRatio / 1000.0,
+             mStereoSeparation));
   }
   mStereoSeparation = separation;
 }
 
-void WebGLContext::BeginStereoCamera(const uint8_t aDepth, const uint16_t aSunk,
+void WebGLContext::BeginStereoCamera(const uint16_t aSunk,
                                      const uint16_t aPopped,
                                      const uint32_t aViewRatio) {
   if (IsContextLost()) {
     return;
   }
-  SetStereoSeparation(aDepth, aSunk, aPopped, aViewRatio);
+  SetStereoSeparation(aSunk, aPopped, aViewRatio);
   mStereoCamera = true;
 }
 
@@ -2245,8 +2240,8 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
 
   // The camera hack's depth for the canvas's site.
   if (!xrFb && !webvr && options.stereoCamera) {
-    SetStereoSeparation(options.stereoDepth, options.stereoSunk,
-                        options.stereoPopped, options.stereoViewRatio);
+    SetStereoSeparation(options.stereoSunk, options.stereoPopped,
+                        options.stereoViewRatio);
   }
   // The camera hack: the canvas presents both eyes from now on.
   if (!xrFb && !webvr && options.stereoCamera != mStereoCamera) {

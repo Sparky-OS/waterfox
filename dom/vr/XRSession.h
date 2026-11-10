@@ -125,9 +125,6 @@ class XRSession final : public DOMEventTargetHelper, public nsARefreshObserver {
   void SetInlineStereo(bool aInlineStereo) { mInlineStereo = aInlineStereo; }
   WindowViews GetWindowViews() const;
   double FlatScenePlaneMm(double aDefault) const;
-  // The person's choice of how the screen is seen (dom.vr.flat.mode): 0 flat
-  // TV or output, 1 flat headset, 2 VR over the phone.
-  static int32_t FlatMode();
   // With no controllers, the viewer turns with the mouse and moves with the
   // keys and the wheel; this is the viewer's pose in the session's space.
   gfx::QuaternionDouble FlatOrientation() const;

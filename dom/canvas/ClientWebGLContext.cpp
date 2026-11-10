@@ -564,7 +564,6 @@ void ClientWebGLContext::Present(WebGLFramebufferJS* const xrFb,
   } else if (!xrFb && StereoCameraPresents()) {
     // The camera hack: both eyes, full side by side, left eye first.
     asyncOptions.stereoCamera = true;
-    asyncOptions.stereoDepth = mStereoDepth;
     // The person's limits for this window: the separation of the eyes, and
     // how far the scene's plane lets the nearest thing come. Read at every
     // present, so a change in the person's limits is followed.
@@ -742,7 +741,7 @@ void ClientWebGLContext::BeginStereoCameraOnHost() {
   MOZ_LOG(gWebGLStereoClientLog, LogLevel::Info,
           ("camera begins on the host, limits %s (sunk %.1f, popped %.1f)",
            known ? "known" : "not known yet", sunk / 10.0, popped / 10.0));
-  Run<RPROC(SetStereoCamera)>(mStereoDepth, sunk, popped, viewRatio);
+  Run<RPROC(SetStereoCamera)>(sunk, popped, viewRatio);
 }
 
 // Only where the two views are declared on a surface of their own: anywhere
@@ -753,15 +752,11 @@ bool ClientWebGLContext::StereoCameraPresents() const {
 }
 
 // The 3D Canvas menu sets, for the page's site, whether its WebGL scenes are
-// drawn once per eye (permission "stereo-camera", allow or deny) and the
-// choice of depth ("stereo-camera-depth", in twentieths of the separation the
-// person's depth limits give: 10 Less, 20 Normal, 30 More, 40 Most); without
-// them the preferences decide (webgl.stereo-camera.enabled; the depth is the
-// limits' own). A canvas
-// in a worker follows the preferences.
+// drawn once per eye (permission "stereo-camera", allow or deny); without it
+// webgl.stereo-camera.enabled decides. The depth is the person's limits, never
+// a choice of the page's site. A canvas in a worker follows the preference.
 bool ClientWebGLContext::UpdateStereoCameraSite() {
   bool allowed = StaticPrefs::webgl_stereo_camera_enabled();
-  uint8_t depth = 0;
   if (NS_IsMainThread() && mCanvasElement) {
     if (RefPtr<PermissionManager> perms = PermissionManager::GetInstance()) {
       nsIPrincipal* principal = mCanvasElement->NodePrincipal();
@@ -774,15 +769,8 @@ bool ClientWebGLContext::UpdateStereoCameraSite() {
           allowed = false;
         }
       }
-      perm = nsIPermissionManager::UNKNOWN_ACTION;
-      if (NS_SUCCEEDED(perms->TestPermissionFromPrincipal(
-              principal, "stereo-camera-depth"_ns, &perm)) &&
-          perm >= 5 && perm <= 100) {
-        depth = uint8_t(perm);
-      }
     }
   }
-  mStereoDepth = depth;
   mStereoCameraSiteAllowed = allowed;
   mStereoCameraSiteRead = true;
   return allowed != mStereoCameraAllowed;

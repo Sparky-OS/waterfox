@@ -431,10 +431,6 @@ void XRSession::StopFlatPresentation() {
   }
 }
 
-int32_t XRSession::FlatMode() {
-  return std::clamp<int32_t>(StaticPrefs::dom_vr_flat_mode(), 0, 2);
-}
-
 void XRSession::AskFlatDepth(int32_t aKind, int32_t aWidthMm, int32_t aHeightMm,
                              uint32_t aStrength, uint64_t aKey) const {
   mFlatDepthAsked = aKey;
@@ -552,12 +548,12 @@ XRSession::WindowViews XRSession::GetWindowViews() const {
   double separation = StaticPrefs::dom_vr_flat_eye_separation_mm();
   double plane = viewer;
   if (separation <= 0) {
-    // The depth of the display, under the person's choice (WebXR is in
-    // metres, the display's depth in pixels of a 1920 wide view): the
-    // screen's own size (that of the display, not of an inline canvas) and
-    // the mode decide what is comfortable, the person's strength scales it.
-    const int32_t kind = FlatMode() == 0 ? 0 : 2;
-    const uint32_t strength = StaticPrefs::dom_vr_flat_depth_strength();
+    // The depth of the display (WebXR is in metres, the display's depth in
+    // pixels of a 1920 wide view): the screen's own size (that of the
+    // display, not of an inline canvas) decides what is comfortable; no
+    // choice of the browser scales it.
+    const int32_t kind = 0;
+    const uint32_t strength = 100;
     const gfx::IntSize screenPixels =
         screen ? screen->GetRect().Size().ToUnknownSize() : pixels;
     const int32_t screenWidthMm =
@@ -584,8 +580,7 @@ XRSession::WindowViews XRSession::GetWindowViews() const {
     // fraction of that window: an object at distance z has a parallax of
     // that fraction of the window times (1 - plane / z), so it sinks
     // towards the far limit and pops in front of the plane.
-    const double person = StaticPrefs::dom_vr_flat_screen_plane_mm();
-    plane = person > 0 ? person : FlatScenePlaneMm(1000.0);
+    plane = FlatScenePlaneMm(1000.0);
     const double windowWidth = width * plane / viewer;
     separation = mFlatDepth.mSunkPx / 1920.0 * windowWidth;
     // the window as the eyes at the plane see it

@@ -16,7 +16,6 @@
 // session on it, with or without full screen (WebXR Device API, "shut down the
 // session").
 
-const MODES = ["tv", "headset", "phone"];
 const HINT_SECONDS = 9;
 
 export class StereoXRChild extends JSWindowActorChild {
@@ -91,15 +90,11 @@ export class StereoXRChild extends JSWindowActorChild {
     if (!doc || !win) {
       return;
     }
-    const mode = Math.min(
-      Math.max(Services.prefs.getIntPref("dom.vr.flat.mode", 0), 0),
-      2
-    );
     const l10n = new Localization(["browser/browserContext.ftl"], true);
     const [exit, hint, modeName] = l10n.formatValuesSync([
       "stereo-xr-exit",
-      mode == 2 ? "stereo-xr-hint-phone" : "stereo-xr-hint-flat",
-      "stereo-xr-mode-" + MODES[mode],
+      "stereo-xr-hint-flat",
+      "stereo-xr-mode-tv",
     ]);
 
     const content = doc.insertAnonymousContent();

@@ -5442,11 +5442,8 @@ static bool StereoDepthLimitsOf(nsIFrame* aFrame,
           widthMm = int32_t(rect.Width() / dpi * 25.4);
           heightMm = int32_t(rect.Height() / dpi * 25.4);
         }
-        const int32_t kind =
-            std::clamp<int32_t>(StaticPrefs::dom_vr_flat_mode(), 0, 2) == 0 ? 0
-                                                                            : 2;
-        const double strength =
-            double(StaticPrefs::dom_vr_flat_depth_strength());
+        const int32_t kind = 0;
+        const double strength = 100.0;
         nsPresContext* pc = aFrame->PresContext();
         RefPtr<nsPresContext> keep(pc);
         if (XRE_IsContentProcess()) {

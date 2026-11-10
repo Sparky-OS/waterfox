@@ -107,17 +107,37 @@ const IMAGE_ONLY_PROTOCOLS = [
   "page-icon:",
 ];
 
-// The 3D Canvas menu's depths: the person's choice on top of the separation
-// the depth limits give, in twentieths (20 is Normal; permission
-// "stereo-camera-depth").
-// The flat stereo display as a WebXR device: the person's modes, depths (in
-// percent of the display's own default) and screen planes (in millimetres,
-// 0 for the default).
-const XR_STEREO_MODES = { tv: 0, headset: 1, phone: 2 };
-const XR_STEREO_DEPTHS = { less: 50, normal: 100, more: 150, most: 200 };
-const XR_STEREO_PLANES = { nearer: 600, default: 0, farther: 2000 };
+// Sparky Stereo OS: the browser has no setting for the depth of a 3D picture,
+// for where the screen plane is or for the kind of device: the person's depth
+// limits come from the compositor, built on the display, and are changed in
+// KDE's Display Settings. This item opens them.
+const DISPLAY_SETTINGS_COMMANDS = [
+  ["systemsettings", ["kcm_kscreen"]],
+  ["kcmshell6", ["kcm_kscreen"]],
+];
 
-const CANVAS_STEREO_DEPTHS = { less: 10, normal: 20, more: 30, most: 40 };
+export async function openStereoDisplaySettings() {
+  const { Subprocess } = ChromeUtils.importESModule(
+    "resource://gre/modules/Subprocess.sys.mjs"
+  );
+  for (const [name, args] of DISPLAY_SETTINGS_COMMANDS) {
+    let command;
+    try {
+      command = await Subprocess.pathSearch(name);
+    } catch (e) {
+      continue;
+    }
+    try {
+      await Subprocess.call({ command, arguments: args });
+      return;
+    } catch (e) {
+      console.error("Stereo: " + name + " could not be started", e);
+    }
+  }
+  console.error(
+    "Stereo: KDE's Display Settings could not be opened: neither systemsettings nor kcmshell6 was found or started (open System Settings, Display & Monitor)."
+  );
+}
 
 export class nsContextMenu {
   /**
@@ -1100,64 +1120,12 @@ export class nsContextMenu {
       this.onVideo && this.target.stereoChoice !== undefined
     );
     // A WebGL scene drawn once per eye from its own camera, for the page's
-    // site, and the depth (Sparky Stereo OS).
-    // The flat stereo display as a WebXR device: how the person sees it
-    // (mode, depth, screen plane), global preferences, never derived from the
-    // output.
-    const xrMenu =
-      Services.prefs.getBoolPref("dom.vr.flat.enabled", false) &&
-      (this.onCanvas ||
-        !(
-          this.onLink ||
-          this.onImage ||
-          this.onVideo ||
-          this.onAudio ||
-          this.isContentSelected ||
-          this.onTextInput
-        ));
-    this.showItem("context-xr-stereo", xrMenu);
-    if (xrMenu) {
-      const mode = Services.prefs.getIntPref("dom.vr.flat.mode", 0);
-      for (const [name, value] of Object.entries(XR_STEREO_MODES)) {
-        this.setItemAttr(
-          "context-xr-stereo-mode-" + name,
-          "checked",
-          value == mode
-        );
-      }
-      const strength = Services.prefs.getIntPref(
-        "dom.vr.flat.depth-strength",
-        100
-      );
-      for (const [name, value] of Object.entries(XR_STEREO_DEPTHS)) {
-        this.setItemAttr(
-          "context-xr-stereo-depth-" + name,
-          "checked",
-          value == strength
-        );
-      }
-      const plane = Services.prefs.getIntPref("dom.vr.flat.screen-plane-mm", 0);
-      for (const [name, value] of Object.entries(XR_STEREO_PLANES)) {
-        this.setItemAttr(
-          "context-xr-stereo-plane-" + name,
-          "checked",
-          value == plane
-        );
-      }
-    }
+    // site (Sparky Stereo OS).
     this.showItem("context-canvas-stereo", this.onCanvas);
     if (this.onCanvas) {
       const on = this.canvasStereoOn();
       this.setItemAttr("context-canvas-stereo-on", "checked", on);
       this.setItemAttr("context-canvas-stereo-off", "checked", !on);
-      const depth = this.canvasStereoDepth();
-      for (const [name, value] of Object.entries(CANVAS_STEREO_DEPTHS)) {
-        this.setItemAttr(
-          "context-canvas-stereo-depth-" + name,
-          "checked",
-          value == depth
-        );
-      }
     }
     this.showItem(
       "context-media-showcontrols",
@@ -2684,25 +2652,6 @@ export class nsContextMenu {
     return Services.prefs.getBoolPref("webgl.stereo-camera.enabled", false);
   }
 
-  canvasStereoDepth() {
-    const perm = Services.perms.testPermissionFromPrincipal(
-      this.principal,
-      "stereo-camera-depth"
-    );
-    if (perm >= 5 && perm <= 100) {
-      return perm;
-    }
-    // No choice for the site: the separation the person's limits give.
-    return Services.prefs.getBoolPref(
-      "webgl.stereo-camera.separation-from-limits",
-      true
-    )
-      ? 20
-      : Math.round(
-          10 * Services.prefs.getFloatPref("webgl.stereo-camera.separation", 2.0)
-        );
-  }
-
   setCanvasStereo(on) {
     Services.perms.addFromPrincipal(
       this.principal,
@@ -2711,34 +2660,8 @@ export class nsContextMenu {
     );
   }
 
-  // The 3D Display menu: mode, depth (percent of the display's own) and the
-  // screen plane's distance (mm, 0 for the default).
-  setXRStereo(item) {
-    const [kind, name] = [item.split("-")[0], item.split("-").slice(1).join("-")];
-    if (kind == "mode" && name in XR_STEREO_MODES) {
-      Services.prefs.setIntPref("dom.vr.flat.mode", XR_STEREO_MODES[name]);
-    } else if (kind == "depth" && name in XR_STEREO_DEPTHS) {
-      Services.prefs.setIntPref(
-        "dom.vr.flat.depth-strength",
-        XR_STEREO_DEPTHS[name]
-      );
-    } else if (kind == "plane" && name in XR_STEREO_PLANES) {
-      Services.prefs.setIntPref(
-        "dom.vr.flat.screen-plane-mm",
-        XR_STEREO_PLANES[name]
-      );
-    }
-  }
-
-  setCanvasStereoDepth(name) {
-    const value = CANVAS_STEREO_DEPTHS[name];
-    if (value) {
-      Services.perms.addFromPrincipal(
-        this.principal,
-        "stereo-camera-depth",
-        value
-      );
-    }
+  openStereoDisplaySettings() {
+    openStereoDisplaySettings();
   }
 
   mediaCommand(command, data) {

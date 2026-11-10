@@ -198,17 +198,9 @@ const PanelUI = {
     this.mainView.addEventListener("ViewShowing", this._onMainViewShow);
     this._onStereoVideoShow = this._onStereoVideoShow.bind(this);
     this._onStereoVideoCommand = this._onStereoVideoCommand.bind(this);
-    this._onStereoDisplayShow = this._onStereoDisplayShow.bind(this);
-    this._onStereoDisplayCommand = this._onStereoDisplayCommand.bind(this);
     let stereoVideo = PanelMultiView.getViewNode(document, "appmenu-stereo-video");
     stereoVideo.addEventListener("ViewShowing", this._onStereoVideoShow);
     stereoVideo.addEventListener("command", this._onStereoVideoCommand);
-    let stereoDisplay = PanelMultiView.getViewNode(
-      document,
-      "appmenu-stereo-display"
-    );
-    stereoDisplay.addEventListener("ViewShowing", this._onStereoDisplayShow);
-    stereoDisplay.addEventListener("command", this._onStereoDisplayCommand);
     this._eventListenersAdded = true;
   },
 
@@ -458,7 +450,10 @@ const PanelUI = {
         this.showSubView("appmenu-stereo-video", target);
         break;
       case "appMenu-stereo-display-button":
-        this.showSubView("appmenu-stereo-display", target);
+        ChromeUtils.importESModule(
+          "chrome://browser/content/nsContextMenu.sys.mjs"
+        ).openStereoDisplaySettings();
+        this.hide();
         break;
       case "appMenu-help-button2":
         this.showSubView("PanelUI-helpView", target);
@@ -480,18 +475,6 @@ const PanelUI = {
     "top-bottom",
     "top-bottom-right-first",
   ],
-  _STEREO_XR: {
-    mode: { pref: "dom.vr.flat.mode", values: { tv: 0, headset: 1, phone: 2 } },
-    depth: {
-      pref: "dom.vr.flat.depth-strength",
-      values: { less: 50, normal: 100, more: 150, most: 200 },
-    },
-    plane: {
-      pref: "dom.vr.flat.screen-plane-mm",
-      values: { nearer: 600, default: 0, farther: 2000 },
-    },
-  },
-
   // The main video of the selected tab as {actor, state}, or null.
   async _stereoMainVideo(command, data) {
     let best = null;
@@ -551,32 +534,8 @@ const PanelUI = {
     );
   },
 
-  _onStereoDisplayShow(event) {
-    for (let [group, { pref, values }] of Object.entries(this._STEREO_XR)) {
-      let current = Services.prefs.getIntPref(pref, group == "depth" ? 100 : 0);
-      for (let [name, value] of Object.entries(values)) {
-        event.target
-          .querySelector("#appmenu-stereo-display-" + group + "-" + name)
-          .setAttribute("checked", value == current);
-      }
-    }
-  },
-
-  _onStereoDisplayCommand(event) {
-    let [group, name] = event.target.id
-      .slice("appmenu-stereo-display-".length)
-      .split("-");
-    let entry = this._STEREO_XR[group];
-    if (entry && name in entry.values) {
-      Services.prefs.setIntPref(entry.pref, entry.values[name]);
-    }
-    this._onStereoDisplayShow({
-      target: PanelMultiView.getViewNode(document, "appmenu-stereo-display"),
-    });
-  },
-
-  // 3D Video shows where the page can have a stereo video; 3D Display where
-  // the flat stereo display is offered as a WebXR device.
+  // 3D Video shows where the page can have a stereo video; Display Settings
+  // opens KDE's, where the person's depth limits are.
   _showStereoButtons() {
     let video = document.getElementById("appMenu-stereo-video-button");
     let display = document.getElementById("appMenu-stereo-display-button");
@@ -584,7 +543,7 @@ const PanelUI = {
       video.hidden = false;
     }
     if (display) {
-      display.hidden = !Services.prefs.getBoolPref("dom.vr.flat.enabled", false);
+      display.hidden = false;
     }
   },
 

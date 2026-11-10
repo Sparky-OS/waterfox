@@ -772,7 +772,7 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
   // is on for the page's site (mStereoCameraAllowed).
   mutable bool mStereoCamera = false;
   // The camera hack for the canvas's site (the 3D Canvas menu, permissions
-  // "stereo-camera" and "stereo-camera-depth"), else the preferences: as
+  // "stereo-camera"), else the preferences: as
   // last read (UpdateStereoCameraSite), and in effect, which follows with
   // the next canvas renderer (the presented frames change size).
   bool mStereoCameraSiteRead = false;
@@ -786,7 +786,6 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
   float mSceneNearest = 0.0f;
   float mSceneFarthest = 0.0f;
   uint32_t mSceneAsked = 0;
-  uint8_t mStereoDepth = 0;
   uvec2 mRequestedSize = {};
 
  public:

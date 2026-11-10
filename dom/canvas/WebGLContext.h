@@ -537,12 +537,10 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   // The page's draws are made once per eye from now on, not from the
   // canvas's first presentation: a canvas that is drawn once while it is out
   // of view (never presented until it scrolls in) shows two views.
-  void BeginStereoCamera(uint8_t aDepth, uint16_t aSunk, uint16_t aPopped,
-                         uint32_t aViewRatio);
+  void BeginStereoCamera(uint16_t aSunk, uint16_t aPopped, uint32_t aViewRatio);
   // The eyes' separation: the person's depth limits for the window (in tenths
-  // of a pixel of a view 1920 wide) scaled by the site's choice, else the
-  // fixed percentage of webgl.stereo-camera.separation.
-  void SetStereoSeparation(uint8_t aDepth, uint16_t aSunk, uint16_t aPopped,
+  // of a pixel of a view 1920 wide), in the output's pixels.
+  void SetStereoSeparation(uint16_t aSunk, uint16_t aPopped,
                            uint32_t aViewRatio);
  private:
 
@@ -1398,8 +1396,8 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   uint32_t mStereoOffscreenDraws = 0;
   // Draws once per eye into the page's own framebuffers.
   uint32_t mStereoTargetDraws = 0;
-  // The eyes' separation, a fraction of the view's width: the site's
-  // (SwapChainOptions::stereoDepth) or webgl.stereo-camera.separation.
+  // The eyes' separation, a fraction of the view's width: the person's depth
+  // limits for the window (SwapChainOptions::stereoSunk).
   float mStereoSeparation = 0.02f;
   // The scene's zero-parallax distance (webgl.stereo-camera.scene-plane), in
   // the camera's units of depth, 0 until a frame has been looked at; the
@@ -1409,8 +1407,7 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   uint32_t mStereoPresents = 0;
   float mStereoPoppedPx = 0.0f;
   float mStereoSunkPx = 0.0f;
-  // The person's choice as a share of the sunk limit, never above 1, while
-  // the separation comes from the limits (0 when it does not).
+  // 1 while the separation comes from the limits, 0 where none are known.
   float mStereoLimitShare = 0.0f;
   // The depth buffer could not be read for the scene's plane: said once on
   // the page's console. Reads that found no scene (only the far plane).

@@ -273,7 +273,8 @@ main-context-menu-video-stereo-swap =
 
 ## A WebGL scene that has no stereo 3D of its own, drawn once per eye from
 ## the page's own camera (Sparky Stereo OS), for the page's site: on or
-## off, and how deep the picture looks (the distance between the eyes).
+## off. How deep the picture looks is the person's depth limits, changed in
+## KDE's Display Settings, which this menu opens.
 
 main-context-menu-canvas-stereo =
     .label = 3D Canvas
@@ -285,64 +286,15 @@ main-context-menu-canvas-stereo-off =
 main-context-menu-canvas-stereo-on =
     .label = On
 
-main-context-menu-canvas-stereo-depth-less =
-    .label = Less Depth
+main-context-menu-stereo-display-settings =
+    .label = Display Settings…
 
-main-context-menu-canvas-stereo-depth-normal =
-    .label = Normal Depth
-
-main-context-menu-canvas-stereo-depth-more =
-    .label = More Depth
-
-main-context-menu-canvas-stereo-depth-most =
-    .label = Most Depth
-
-## The flat stereo display as a WebXR device (Sparky Stereo OS): how the person
-## sees it, never derived from the output (a 3D television and a headset can be
-## shown at once): the mode, the depth, and where the screen plane is. The
-## browser's own overlay shows the hint and the Exit control while a session
-## lasts.
-
-main-context-menu-xr-stereo =
-    .label = 3D Display
-    .accesskey = 3
-
-main-context-menu-xr-stereo-mode-tv =
-    .label = Flat TV or output
-
-main-context-menu-xr-stereo-mode-headset =
-    .label = Flat headset
-
-main-context-menu-xr-stereo-mode-phone =
-    .label = VR over the phone
-
-main-context-menu-xr-stereo-depth-less =
-    .label = Less depth
-
-main-context-menu-xr-stereo-depth-normal =
-    .label = Normal depth
-
-main-context-menu-xr-stereo-depth-more =
-    .label = More depth
-
-main-context-menu-xr-stereo-depth-most =
-    .label = Most depth
-
-main-context-menu-xr-stereo-plane-nearer =
-    .label = Screen plane: nearer
-
-main-context-menu-xr-stereo-plane-default =
-    .label = Screen plane: default
-
-main-context-menu-xr-stereo-plane-farther =
-    .label = Screen plane: farther
+## The flat stereo display as a WebXR device (Sparky Stereo OS): the browser's
+## own overlay shows the hint and the Exit control while a session lasts.
 
 stereo-xr-exit = Exit 3D
 stereo-xr-hint-flat = Esc leaves 3D. Drag with the mouse to look; W, A, S, D or the arrow keys and the wheel move you.
-stereo-xr-hint-phone = Esc leaves 3D. The phone headset's head tracking and controllers are not connected yet: the mouse and keyboard move the view.
 stereo-xr-mode-tv = Flat TV or output
-stereo-xr-mode-headset = Flat headset
-stereo-xr-mode-phone = VR over the phone
 
 ## The access keys for "Show Controls" and "Hide Controls" are the same
 ## because the two context-menu items are mutually exclusive.

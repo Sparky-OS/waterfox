@@ -5720,40 +5720,16 @@
 # shows each eye its half (gfx/vr/service/FlatSession.cpp). It also offers
 # inline-stereo.
 #
-# The person picks how it is seen, never the output (they may show a 3D
-# television and a headset at once): the mode, then the depth, both read
-# with the display's own default under them (libstereo-policy's display
-# depth, the one source the desktop reads too).
-#   0 flat TV or output: a framed screen, gentle separation around the
-#     screen plane, a gentle pop;
-#   1 flat headset: the screen as a window in a headset, more separation;
-#   2 VR over the phone: the phone headset's own session, with head tracking
-#     and controllers once the tracked phone headset delivers them.
+# It is a flat display with a framed screen, gentle separation around the
+# screen plane, a gentle pop: the separation is the person's depth limits for
+# the window (the compositor's, built on the display), never a choice of the
+# browser, and the screen plane is taken from the scene.
 - name: dom.vr.flat.enabled
   type: RelaxedAtomicBool
   value: false
   mirror: always
 
-- name: dom.vr.flat.mode
-  type: RelaxedAtomicInt32
-  value: 0
-  mirror: always
-
-# The person's depth, in percent of the display's default (100).
-- name: dom.vr.flat.depth-strength
-  type: RelaxedAtomicUint32
-  value: 100
-  mirror: always
-
-# Where the screen plane is in the page's world, in millimetres: the distance
-# at which an object has no parallax. 0 is the default, 1000.
-- name: dom.vr.flat.screen-plane-mm
-  type: RelaxedAtomicUint32
-  value: 0
-  mirror: always
-
-# Where the screen plane is when the person has not set one (0 in
-# dom.vr.flat.screen-plane-mm): from the scene the page draws, the distance
+# Where the screen plane is: from the scene the page draws, the distance
 # that puts the nearest and the farthest thing at equal and opposite
 # parallax, no nearer than the person's popped limit lets the nearest thing
 # come (the page's frames are looked at in the depth buffer). False: 1000.
@@ -20098,28 +20074,6 @@
 - name: webgl.stereo-camera.enabled
   type: RelaxedAtomicBool
   value: false
-  mirror: always
-
-# The separation of the two eyes' views, in percent of the view's width,
-# which a point at infinity shows. Used where the person's depth limits are
-# not known (a canvas in a worker, a desktop with no stereo output) and when
-# webgl.stereo-camera.separation-from-limits is off.
-- name: webgl.stereo-camera.separation
-  type: AtomicFloat
-  value: 2.0f
-  mirror: always
-
-# The separation from the person's depth limits for the window, built on the
-# output's display (kde_stereo_depth_v1 depth_limits): a point at infinity
-# lands at the sunk limit in the output's pixels (the limit is in pixels of a
-# view 1920 wide, scaled to the output's width; the separation is a share of
-# the canvas's own on-screen width). The 3D Canvas menu's Less, Normal, More
-# and Most for the site scale it (half, once, one and a half, twice), never
-# past the limit. False: the fixed webgl.stereo-camera.separation, and the
-# site's choice is that percentage in tenths.
-- name: webgl.stereo-camera.separation-from-limits
-  type: RelaxedAtomicBool
-  value: true
   mirror: always
 
 # The zero-parallax distance, as a multiple of the camera's near distance.

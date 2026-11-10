@@ -836,12 +836,7 @@ struct SwapChainOptions final {
   bool flatXR = false;
   // The camera hack (WebGLStereoCamera.h): the canvas presents both eyes.
   bool stereoCamera = false;
-  // The camera hack's depth for the canvas's site (the 3D Canvas menu): the
-  // person's choice on top of the separation built from the depth limits,
-  // in twentieths (20 is Normal, 10 Less, 30 More, 40 Most; before the
-  // limits drove the separation it was tenths of a percent of the view's
-  // width, 20 being 2 percent), 0 for none.
-  uint8_t stereoDepth = 0;
+  uint8_t padding2 = 0;
   // The person's depth limits for the window the canvas is in, in tenths of a
   // pixel of a view 1920 wide (0: not known): how far in front of the screen
   // the zero-parallax plane may let the nearest thing come.
@@ -861,7 +856,7 @@ struct SwapChainOptions final {
   auto MutTiedFields() {
     return std::tie(remoteTextureId, remoteTextureOwnerId, bgra,
                     forceAsyncPresent, stereoMode, flatXR, stereoCamera,
-                    stereoDepth, stereoPopped, stereoSunk, padding3, stereoDepthA,
+                    padding2, stereoPopped, stereoSunk, padding3, stereoDepthA,
                     stereoDepthNumerator, stereoViewRatio);
   }
 };
