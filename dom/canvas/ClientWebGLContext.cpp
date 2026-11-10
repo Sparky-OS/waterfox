@@ -34,6 +34,7 @@
 #include "mozilla/dom/HTMLCanvasElement.h"
 #include "mozilla/PermissionManager.h"
 #include "mozilla/PresShell.h"
+#include "nsPresContext.h"
 #include "nsIFrame.h"
 #include "mozilla/dom/ToJSValue.h"
 #include "mozilla/dom/TypedArray.h"
@@ -567,7 +568,8 @@ void ClientWebGLContext::Present(WebGLFramebufferJS* const xrFb,
     // The person's limits for this window: the separation of the eyes, and
     // how far the scene's plane lets the nearest thing come. Read at every
     // present, so a change in the person's limits is followed.
-    ReadStereoLimits(&asyncOptions.stereoSunk, &asyncOptions.stereoPopped);
+    ReadStereoLimits(&asyncOptions.stereoSunk, &asyncOptions.stereoPopped,
+                     &asyncOptions.stereoViewRatio);
     asyncOptions.stereoMode = uint8_t(StereoMode::LEFT_RIGHT);
   }
   Run<RPROC(Present)>(xrFb ? xrFb->mId : 0, type, webvr, asyncOptions);
@@ -661,8 +663,10 @@ void ClientWebGLContext::LookForStereoCamera(const GLenum target,
 // The person's depth limits for the window the canvas is in, in tenths of a
 // pixel of a view 1920 wide; false (both 0) where they are not known.
 bool ClientWebGLContext::ReadStereoLimits(uint16_t* const aSunk,
-                                          uint16_t* const aPopped) const {
+                                          uint16_t* const aPopped,
+                                          uint32_t* const aViewRatio) const {
   *aSunk = *aPopped = 0;
+  *aViewRatio = 0;
   if (!NS_IsMainThread() || !mCanvasElement) {
     return false;
   }
@@ -681,6 +685,19 @@ bool ClientWebGLContext::ReadStereoLimits(uint16_t* const aSunk,
   }
   *aPopped = uint16_t(std::clamp(std::lround(popped * 10.0), 0L, 65535L));
   *aSunk = uint16_t(std::clamp(std::lround(sunk * 10.0), 0L, 65535L));
+  // The limits are in pixels of a view as wide as the output: the canvas's
+  // separation is a share of its own on-screen width, in device pixels.
+  if (nsIFrame* canvasFrame = mCanvasElement->GetPrimaryFrame()) {
+    const int32_t outputWidth =
+        nsDisplayStereoDepth::OutputWidthFor(canvasFrame);
+    const nscoord appUnits = canvasFrame->PresContext()->AppUnitsPerDevPixel();
+    const double canvasWidth =
+        double(canvasFrame->GetContentRect().Width()) / double(appUnits);
+    if (outputWidth > 0 && canvasWidth >= 1.0) {
+      *aViewRatio = uint32_t(std::clamp(
+          std::lround(1000.0 * outputWidth / canvasWidth), 1L, 4000000L));
+    }
+  }
   return true;
 }
 
@@ -719,11 +736,12 @@ void ClientWebGLContext::BeginStereoCameraOnHost() {
   }
   mStereoCameraBegun = true;
   uint16_t sunk = 0, popped = 0;
-  const bool known = ReadStereoLimits(&sunk, &popped);
+  uint32_t viewRatio = 0;
+  const bool known = ReadStereoLimits(&sunk, &popped, &viewRatio);
   MOZ_LOG(gWebGLStereoClientLog, LogLevel::Info,
           ("camera begins on the host, limits %s (sunk %.1f, popped %.1f)",
            known ? "known" : "not known yet", sunk / 10.0, popped / 10.0));
-  Run<RPROC(SetStereoCamera)>(mStereoDepth, sunk, popped);
+  Run<RPROC(SetStereoCamera)>(mStereoDepth, sunk, popped, viewRatio);
 }
 
 // Only where the two views are declared on a surface of their own: anywhere

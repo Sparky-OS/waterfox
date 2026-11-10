@@ -180,8 +180,8 @@ class HostWebGLContext final : public SupportsWeakPtr {
   // The camera hack starts before the canvas is first presented
   // (ClientWebGLContext::OnStereoCameraStarted).
   void SetStereoCamera(const uint8_t depth, const uint16_t sunk,
-                       const uint16_t popped) const {
-    mContext->BeginStereoCamera(depth, sunk, popped);
+                       const uint16_t popped, const uint32_t viewRatio) const {
+    mContext->BeginStereoCamera(depth, sunk, popped, viewRatio);
   }
   Maybe<layers::SurfaceDescriptor> GetFrontBuffer(ObjectId xrFb,
                                                   const bool webvr) const;

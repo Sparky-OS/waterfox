@@ -537,11 +537,13 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   // The page's draws are made once per eye from now on, not from the
   // canvas's first presentation: a canvas that is drawn once while it is out
   // of view (never presented until it scrolls in) shows two views.
-  void BeginStereoCamera(uint8_t aDepth, uint16_t aSunk, uint16_t aPopped);
+  void BeginStereoCamera(uint8_t aDepth, uint16_t aSunk, uint16_t aPopped,
+                         uint32_t aViewRatio);
   // The eyes' separation: the person's depth limits for the window (in tenths
   // of a pixel of a view 1920 wide) scaled by the site's choice, else the
   // fixed percentage of webgl.stereo-camera.separation.
-  void SetStereoSeparation(uint8_t aDepth, uint16_t aSunk, uint16_t aPopped);
+  void SetStereoSeparation(uint8_t aDepth, uint16_t aSunk, uint16_t aPopped,
+                           uint32_t aViewRatio);
  private:
 
   void DrawPerEye(const std::function<void()>& aDraw);
@@ -1407,6 +1409,9 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   uint32_t mStereoPresents = 0;
   float mStereoPoppedPx = 0.0f;
   float mStereoSunkPx = 0.0f;
+  // The person's choice as a share of the sunk limit, never above 1, while
+  // the separation comes from the limits (0 when it does not).
+  float mStereoLimitShare = 0.0f;
   // The depth buffer could not be read for the scene's plane: said once on
   // the page's console. Reads that found no scene (only the far plane).
   bool mStereoSceneSaid = false;

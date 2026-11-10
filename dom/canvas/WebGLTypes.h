@@ -852,14 +852,17 @@ struct SwapChainOptions final {
   // (StereoCamera::depthA and depthNumerator, 0 when not given).
   float stereoDepthA = 0.0f;
   float stereoDepthNumerator = 0.0f;
-  // Pad to sizeof(u64):
-  uint32_t padding4 = 0;
+  // The output's width over the canvas's on-screen width, in thousandths
+  // (0: not known, taken as 1000): the person's limits are pixels of a view
+  // 1920 wide scaled to the output, and the camera hack's separation is a
+  // share of the canvas's own width.
+  uint32_t stereoViewRatio = 0;
 
   auto MutTiedFields() {
     return std::tie(remoteTextureId, remoteTextureOwnerId, bgra,
                     forceAsyncPresent, stereoMode, flatXR, stereoCamera,
                     stereoDepth, stereoPopped, stereoSunk, padding3, stereoDepthA,
-                    stereoDepthNumerator, padding4);
+                    stereoDepthNumerator, stereoViewRatio);
   }
 };
 

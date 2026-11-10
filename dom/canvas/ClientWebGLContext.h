@@ -1137,7 +1137,8 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
   bool GetStereoScene(float* aNearest, float* aFarthest);
   void OnStereoCameraStarted();
   void BeginStereoCameraOnHost();
-  bool ReadStereoLimits(uint16_t* aSunk, uint16_t* aPopped) const;
+  bool ReadStereoLimits(uint16_t* aSunk, uint16_t* aPopped,
+                        uint32_t* aViewRatio) const;
   // Reads the site's choice; true when it differs from the one in effect.
   bool UpdateStereoCameraSite();
   void LookForStereoCamera(GLenum target, const Span<const uint8_t>& aData);

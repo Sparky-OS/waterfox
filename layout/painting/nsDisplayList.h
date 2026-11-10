@@ -5290,6 +5290,9 @@ class nsDisplayStereoDepth : public nsDisplayWrapList {
   // The depth limits of the window the frame is shown in, in pixels of a view
   // 1920 wide (sunk, popped), whether or not the window is awake now.
   static bool LimitsFor(nsIFrame* aFrame, double* aSunkPx, double* aPoppedPx);
+  // The width of the view the limits are scaled to, in device pixels: the
+  // output's the window mainly sits on; 0 when not known.
+  static int32_t OutputWidthFor(nsIFrame* aFrame);
 
  private:
   float mLevel;

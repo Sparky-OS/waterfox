@@ -5513,6 +5513,21 @@ bool nsDisplayStereoDepth::LimitsFor(nsIFrame* aFrame, double* aSunkPx,
 }
 
 /* static */
+int32_t nsDisplayStereoDepth::OutputWidthFor(nsIFrame* aFrame) {
+  if (!gfx::gfxVars::StereoOutputs()) {
+    return 0;
+  }
+  int32_t width = StereoDepthStateOf(aFrame).mOutputWidth;
+  if (width <= 0) {
+    if (RefPtr<widget::Screen> screen =
+            widget::ScreenManager::GetSingleton().GetPrimaryScreen()) {
+      width = screen->GetRect().Width();
+    }
+  }
+  return std::max(width, 0);
+}
+
+/* static */
 Maybe<int32_t> nsDisplayStereoDepth::ShiftForLevel(nsIFrame* aFrame,
                                                    float aLevel) {
   if (!gfx::gfxVars::StereoOutputs()) {
