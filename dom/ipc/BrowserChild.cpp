@@ -1265,6 +1265,10 @@ mozilla::ipc::IPCResult BrowserChild::RecvStereoDepth(
   state.mPopped100 = aPopped100;
   state.mOutputEdges = aOutputEdges;
   state.mOutputWidth = aOutputWidth;
+  if (aFromCompositor) {
+    widget::StereoDepthProcessLimits::Publish(aSunk100, aPopped100,
+                                              aOutputWidth);
+  }
   if (state == mStereoDepth) {
     return IPC_OK();
   }

@@ -2180,9 +2180,9 @@ void InitSwapChain(gl::GLContext& gl, gl::SwapChain& swapChain,
 // so it lands at the sunk limit in the output's pixels, and no choice of the
 // browser scales it. The separation is a share of the canvas's own width, so
 // it is the sunk limit over 1920 times the output's width over the canvas's
-// on-screen width (aViewRatio, in thousandths). Where no limits are known (a
-// worker's canvas, a desktop with no stereo output, where nothing shows the
-// canvas in stereo) 2 percent of the canvas's width stands.
+// on-screen width (aViewRatio, in thousandths). The client presents in stereo
+// only where limits are known, so none made up stands here: no limits, no
+// separation.
 void WebGLContext::SetStereoSeparation(const uint16_t aSunk,
                                        const uint16_t aPopped,
                                        const uint32_t aViewRatio) {
@@ -2195,7 +2195,7 @@ void WebGLContext::SetStereoSeparation(const uint16_t aSunk,
     separation = std::min(mStereoSunkPx / 1920.0f * ratio, 0.25f);
   } else {
     mStereoLimitShare = 0.0f;
-    separation = 0.02f;
+    separation = 0.0f;
   }
   if (separation != mStereoSeparation) {
     MOZ_LOG(gWebGLStereoLog, LogLevel::Info,

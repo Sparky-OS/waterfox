@@ -1398,7 +1398,7 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   uint32_t mStereoTargetDraws = 0;
   // The eyes' separation, a fraction of the view's width: the person's depth
   // limits for the window (SwapChainOptions::stereoSunk).
-  float mStereoSeparation = 0.02f;
+  float mStereoSeparation = 0.0f;
   // The scene's zero-parallax distance (webgl.stereo-camera.scene-plane), in
   // the camera's units of depth, 0 until a frame has been looked at; the
   // camera of the last draw; the depth buffer's resolve and its small copy.

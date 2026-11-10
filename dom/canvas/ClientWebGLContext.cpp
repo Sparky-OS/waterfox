@@ -28,6 +28,7 @@
 #include "mozilla/ResultVariant.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/StaticPrefs_webgl.h"
+#include "mozilla/widget/StereoDepthState.h"
 #include "mozilla/dom/BufferSourceBinding.h"
 #include "mozilla/dom/Document.h"
 #include "mozilla/dom/GeneratePlaceholderCanvasData.h"
@@ -667,7 +668,23 @@ bool ClientWebGLContext::ReadStereoLimits(uint16_t* const aSunk,
   *aSunk = *aPopped = 0;
   *aViewRatio = 0;
   if (!NS_IsMainThread() || !mCanvasElement) {
-    return false;
+    // A canvas in a worker has no window to ask: the limits the process was
+    // last told (BrowserChild, or a main thread canvas), the canvas taken as
+    // shown at the size of its drawing buffer.
+    const int32_t sunk100 = widget::StereoDepthProcessLimits::sSunk100;
+    if (sunk100 <= 0) {
+      return false;
+    }
+    *aSunk = uint16_t(std::clamp<int32_t>(sunk100 / 10, 0, 65535));
+    *aPopped = uint16_t(std::clamp<int32_t>(
+        widget::StereoDepthProcessLimits::sPopped100 / 10, 0, 65535));
+    const int32_t outputWidth = widget::StereoDepthProcessLimits::sOutputWidth;
+    if (outputWidth > 0 && mRequestedSize.x >= 1) {
+      *aViewRatio = uint32_t(std::clamp(
+          std::lround(1000.0 * outputWidth / double(mRequestedSize.x)), 1L,
+          4000000L));
+    }
+    return true;
   }
   // The limits are the window's, so the page's root frame tells them as well
   // as the canvas's own, which a canvas just made by a script does not have
@@ -698,10 +715,34 @@ bool ClientWebGLContext::ReadStereoLimits(uint16_t* const aSunk,
     *aViewRatio = uint32_t(std::clamp(
         std::lround(1000.0 * outputWidth / canvasWidth), 1L, 4000000L));
   }
+  widget::StereoDepthProcessLimits::Publish(
+      int32_t(std::lround(sunk * 100.0)), int32_t(std::lround(popped * 100.0)),
+      outputWidth);
   return true;
 }
 
 static LazyLogModule gWebGLStereoClientLog("WebGLStereo");
+
+// The browser's own notification bar tells the person that a 3D scene stays
+// flat because the desktop does not tell the browser the person's depth limits
+// (no Stereo KWin), once for the canvas; pages do not see the event. Where the
+// compositor is there and the limits come later, nothing is said.
+void ClientWebGLContext::TellNoStereoLimits() {
+  if (mNoStereoLimitsTold || !NS_IsMainThread() || !mCanvasElement ||
+      gfx::gfxVars::StereoContentDeclaration()) {
+    return;
+  }
+  mNoStereoLimitsTold = true;
+  nsContentUtils::LogSimpleConsoleError(
+      u"Stereo: this scene stays flat: the desktop does not tell the "
+      u"browser the depth limits (kde_stereo_depth_v1), so no separation is "
+      u"made up."_ns,
+      "WebGL"_ns, false, true);
+  dom::Document* doc = mCanvasElement->OwnerDoc();
+  nsContentUtils::DispatchEventOnlyToChrome(
+      doc, doc, u"MozStereoCanvasNoLimits"_ns, CanBubble::eYes,
+      Cancelable::eNo);
+}
 
 void ClientWebGLContext::OnStereoCameraStarted() {
   // The canvas's frames change size: a new canvas renderer, which only a full
@@ -769,6 +810,17 @@ bool ClientWebGLContext::UpdateStereoCameraSite() {
           allowed = false;
         }
       }
+    }
+  }
+  // No limits, no separation: the edition invents none, so a canvas whose
+  // limits are not known stays as the page drew it (flat), and where the
+  // desktop has no Stereo KWin at all the person is told why.
+  if (allowed && mStereoCamera) {
+    uint16_t sunk = 0, popped = 0;
+    uint32_t viewRatio = 0;
+    if (!ReadStereoLimits(&sunk, &popped, &viewRatio) || sunk == 0) {
+      allowed = false;
+      TellNoStereoLimits();
     }
   }
   mStereoCameraSiteAllowed = allowed;

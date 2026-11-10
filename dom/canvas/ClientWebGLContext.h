@@ -781,6 +781,8 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
   // The host has been told that the camera hack begins (before the first
   // present).
   bool mStereoCameraBegun = false;
+  // The person has been told that the scene stays flat for want of limits.
+  bool mNoStereoLimitsTold = false;
   float mXRDepthA = 0.0f;
   float mXRDepthNumerator = 0.0f;
   float mSceneNearest = 0.0f;
@@ -1136,6 +1138,7 @@ class ClientWebGLContext final : public nsICanvasRenderingContextInternal,
   bool GetStereoScene(float* aNearest, float* aFarthest);
   void OnStereoCameraStarted();
   void BeginStereoCameraOnHost();
+  void TellNoStereoLimits();
   bool ReadStereoLimits(uint16_t* aSunk, uint16_t* aPopped,
                         uint32_t* aViewRatio) const;
   // Reads the site's choice; true when it differs from the one in effect.

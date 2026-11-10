@@ -287,10 +287,16 @@ main-context-menu-canvas-stereo-on =
     .label = On
 
 main-context-menu-stereo-display-settings =
-    .label = Display Settings…
+    .label = Display Configuration
 
 ## The flat stereo display as a WebXR device (Sparky Stereo OS): the browser's
 ## own overlay shows the hint and the Exit control while a session lasts.
+
+## Said in the browser's own notification bar (Sparky Stereo OS). The label of
+## "main-context-menu-stereo-display-settings" is KDE's own name for the page.
+
+stereo-canvas-no-limits = This page's 3D scene stays flat: the desktop does not tell the browser your depth limits (Stereo KWin is missing).
+stereo-display-settings-failed = KDE's Display Configuration could not be opened: systemsettings was not found or did not start.
 
 stereo-xr-exit = Exit 3D
 stereo-xr-hint-flat = Esc leaves 3D. Drag with the mouse to look; W, A, S, D or the arrow keys and the wheel move you.

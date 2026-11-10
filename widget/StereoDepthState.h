@@ -7,6 +7,8 @@
 
 #include <cstdint>
 
+#include "mozilla/Atomics.h"
+
 namespace mozilla::widget {
 
 // What the desktop tells one window about depth (Sparky Stereo OS, CSS depth;
@@ -35,6 +37,26 @@ struct StereoDepthState {
   }
   bool operator!=(const StereoDepthState& aOther) const {
     return !(*this == aOther);
+  }
+};
+
+// The limits the content process last had told (by the compositor for a
+// window, or the display default the main thread read), for a canvas in a
+// worker, which has no window to ask: the limits are the person's, the same
+// for the windows of one output. Limits in pixels of a view 1920 wide, times
+// 100, and the output's width in device pixels; 0 while none is known.
+struct StereoDepthProcessLimits {
+  static inline mozilla::Atomic<int32_t, mozilla::Relaxed> sSunk100{0};
+  static inline mozilla::Atomic<int32_t, mozilla::Relaxed> sPopped100{0};
+  static inline mozilla::Atomic<int32_t, mozilla::Relaxed> sOutputWidth{0};
+
+  static void Publish(int32_t aSunk100, int32_t aPopped100,
+                      int32_t aOutputWidth) {
+    if (aSunk100 > 0) {
+      sSunk100 = aSunk100;
+      sPopped100 = aPopped100;
+      sOutputWidth = aOutputWidth;
+    }
   }
 };
 

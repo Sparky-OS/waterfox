@@ -452,7 +452,7 @@ const PanelUI = {
       case "appMenu-stereo-display-button":
         ChromeUtils.importESModule(
           "chrome://browser/content/nsContextMenu.sys.mjs"
-        ).openStereoDisplaySettings();
+        ).openStereoDisplaySettings(window);
         this.hide();
         break;
       case "appMenu-help-button2":

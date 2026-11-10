@@ -110,33 +110,32 @@ const IMAGE_ONLY_PROTOCOLS = [
 // Sparky Stereo OS: the browser has no setting for the depth of a 3D picture,
 // for where the screen plane is or for the kind of device: the person's depth
 // limits come from the compositor, built on the display, and are changed in
-// KDE's Display Settings. This item opens them.
-const DISPLAY_SETTINGS_COMMANDS = [
-  ["systemsettings", ["kcm_kscreen"]],
-  ["kcmshell6", ["kcm_kscreen"]],
-];
-
-export async function openStereoDisplaySettings() {
-  const { Subprocess } = ChromeUtils.importESModule(
-    "resource://gre/modules/Subprocess.sys.mjs"
-  );
-  for (const [name, args] of DISPLAY_SETTINGS_COMMANDS) {
-    let command;
-    try {
-      command = await Subprocess.pathSearch(name);
-    } catch (e) {
-      continue;
-    }
-    try {
-      await Subprocess.call({ command, arguments: args });
-      return;
-    } catch (e) {
-      console.error("Stereo: " + name + " could not be started", e);
-    }
+// KDE's Display Configuration (kcm_kscreen). This item opens it; when it
+// cannot, the notification bar says so.
+export async function openStereoDisplaySettings(aWindow) {
+  let failure;
+  try {
+    const { Subprocess } = ChromeUtils.importESModule(
+      "resource://gre/modules/Subprocess.sys.mjs"
+    );
+    const command = await Subprocess.pathSearch("systemsettings");
+    await Subprocess.call({ command, arguments: ["kcm_kscreen"] });
+    return;
+  } catch (e) {
+    failure = e;
   }
-  console.error(
-    "Stereo: KDE's Display Settings could not be opened: neither systemsettings nor kcmshell6 was found or started (open System Settings, Display & Monitor)."
-  );
+  console.error("Stereo: KDE's Display Configuration could not be opened", failure);
+  const box = aWindow?.gBrowser?.getNotificationBox();
+  if (box && !box.getNotificationWithValue("stereo-display-settings-failed")) {
+    box.appendNotification(
+      "stereo-display-settings-failed",
+      {
+        label: { "l10n-id": "stereo-display-settings-failed" },
+        priority: box.PRIORITY_WARNING_MEDIUM,
+      },
+      []
+    );
+  }
 }
 
 export class nsContextMenu {
@@ -2661,7 +2660,7 @@ export class nsContextMenu {
   }
 
   openStereoDisplaySettings() {
-    openStereoDisplaySettings();
+    openStereoDisplaySettings(this.window);
   }
 
   mediaCommand(command, data) {

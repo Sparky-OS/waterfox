@@ -839,6 +839,23 @@ let JSWINDOWACTORS = {
     allFrames: true,
   },
 
+  // Sparky Stereo OS: a 3D scene that stays flat because the desktop does not
+  // tell the browser the person's depth limits is said in the notification bar.
+  StereoNotice: {
+    parent: {
+      esModuleURI: "resource:///actors/StereoNoticeParent.sys.mjs",
+    },
+    child: {
+      esModuleURI: "resource:///actors/StereoNoticeChild.sys.mjs",
+      events: {
+        MozStereoCanvasNoLimits: {},
+      },
+    },
+
+    messageManagerGroups: ["browsers"],
+    allFrames: true,
+  },
+
   // Sparky Stereo OS: the hint, the mode and the Exit control while an
   // immersive WebXR session shows the flat stereo display.
   StereoXR: {
