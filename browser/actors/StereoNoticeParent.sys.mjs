@@ -8,7 +8,7 @@ export class StereoNoticeParent extends JSWindowActorParent {
       return;
     }
     const browser = this.browsingContext.top.embedderElement;
-    const win = browser?.ownerGlobal;
+    const win = browser?.ownerGlobal ?? browser?.ownerDocument?.defaultView;
     if (!win?.gBrowser) {
       return;
     }
