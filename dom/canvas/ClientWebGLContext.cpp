@@ -644,15 +644,22 @@ uvec2 ClientWebGLContext::PresentedSize() {
 // is looked at, as the block's layout is the program's.
 void ClientWebGLContext::LookForStereoCamera(const GLenum target,
                                              const Span<const uint8_t>& aData) {
-  if (mStereoCamera || target != LOCAL_GL_UNIFORM_BUFFER ||
-      aData.size() > 64 * 1024 || !gfx::gfxVars::StereoContentDeclaration()) {
+  if (mStereoCamera || mNoStereoLimitsTold || target != LOCAL_GL_UNIFORM_BUFFER ||
+      aData.size() > 64 * 1024) {
     return;
   }
+  const bool declared = gfx::gfxVars::StereoContentDeclaration();
   const float factor = StaticPrefs::webgl_stereo_camera_convergence();
   for (size_t offset = 0; offset + 64 <= aData.size(); offset += 16) {
     std::array<float, 16> m;
     memcpy(m.data(), aData.data() + offset, 64);
     if (webgl::ClassifyStereoCamera(m.data(), {}, factor)) {
+      if (!declared) {
+        // No Stereo KWin: the scene stays as the page drew it, and the person
+        // is told why (TellNoStereoLimits, once).
+        TellNoStereoLimits();
+        return;
+      }
       mStereoCamera = true;
       OnStereoCameraStarted();
       return;
