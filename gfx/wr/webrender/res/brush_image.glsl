@@ -259,11 +259,12 @@ void brush_vs(
         v_uv *= vi.world_pos.w;
     }
 
-#ifdef WR_FEATURE_TEXTURE_RECT
-    v_uv_bounds = vec4(0.0, 0.0, vec2(textureSize(sColor0)));
-#else
+    // The bounds start at min_uv, which v_uv was made relative to above, for a
+    // rectangle texture too (texture_size is 1 there): a part of the image that
+    // does not start at its origin, such as the right eye's view of a stereo
+    // picture drawn per eye, otherwise samples from the texture's origin and is
+    // clamped to the part's first column. For a whole image min_uv is 0.
     v_uv_bounds = vec4(min_uv, max_uv) / texture_size.xyxy;
-#endif
 
 #ifdef WR_FEATURE_REPETITION
     // Normalize UV to 0..1 scale only if using repetition. Otherwise, leave
