@@ -220,9 +220,11 @@ class RemoteTextureOwnerClient final {
   void NotifyContextLost(const RemoteTextureOwnerIdSet* aOwnerIds = nullptr);
   void NotifyContextRestored(
       const RemoteTextureOwnerIdSet* aOwnerIds = nullptr);
+  // aStereoMark: the picture's stereo mark (EncodeStereoMark), 0 for none.
   void PushTexture(const RemoteTextureId aTextureId,
                    const RemoteTextureOwnerId aOwnerId,
-                   UniquePtr<TextureData>&& aTextureData);
+                   UniquePtr<TextureData>&& aTextureData,
+                   uint32_t aStereoMark = 0);
   void PushTexture(const RemoteTextureId aTextureId,
                    const RemoteTextureOwnerId aOwnerId,
                    const std::shared_ptr<gl::SharedSurface>& aSharedSurface,

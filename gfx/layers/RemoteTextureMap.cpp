@@ -133,7 +133,7 @@ void RemoteTextureOwnerClient::NotifyContextRestored(
 
 void RemoteTextureOwnerClient::PushTexture(
     const RemoteTextureId aTextureId, const RemoteTextureOwnerId aOwnerId,
-    UniquePtr<TextureData>&& aTextureData) {
+    UniquePtr<TextureData>&& aTextureData, uint32_t aStereoMark) {
   MOZ_ASSERT(IsRegistered(aOwnerId));
 
   RefPtr<TextureHost> textureHost = RemoteTextureMap::CreateRemoteTexture(
@@ -141,6 +141,9 @@ void RemoteTextureOwnerClient::PushTexture(
   if (!textureHost) {
     MOZ_ASSERT_UNREACHABLE("unexpected to be called");
     return;
+  }
+  if (aStereoMark) {
+    textureHost->SetStereoMark(aStereoMark);
   }
 
   RemoteTextureMap::Get()->PushTexture(aTextureId, aOwnerId, mForPid,

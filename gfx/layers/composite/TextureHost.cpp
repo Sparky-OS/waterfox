@@ -580,6 +580,11 @@ void BufferTextureHost::PushResourceUpdates(
     }
     wr::ImageDescriptor descriptor(GetSize(), stride.value(), *format,
                                    wr::ToOpacityType(GetFormat()));
+    // Two views the browser drew side by side (WebXR's flat display, the
+    // camera hack) read back from WebGL for software WebRender: the mark goes
+    // to the compositor surface WebRender draws the picture into, as a
+    // DMABuf's does, so that surface is declared to the desktop.
+    descriptor.stereo = mStereoMark;
     (aResources.*method)(aImageKeys[0], descriptor, aExtID, imageType, 0,
                          /* aNormalizedUvs */ false);
   } else {

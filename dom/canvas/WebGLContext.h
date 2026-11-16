@@ -1435,7 +1435,8 @@ class WebGLContext : public VRefCounted, public SupportsWeakPtr {
   bool PushRemoteTexture(
       WebGLFramebuffer*, gl::SwapChain&, std::shared_ptr<gl::SharedSurface>,
       const webgl::SwapChainOptions& options,
-      layers::RemoteTextureOwnerClient* ownerClient = nullptr);
+      layers::RemoteTextureOwnerClient* ownerClient = nullptr,
+      uint32_t aStereoMark = 0);
 
   void EnsureContextLostRemoteTextureOwner(
       const webgl::SwapChainOptions& options);

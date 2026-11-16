@@ -1730,19 +1730,25 @@ GLuint GLNameOrZero(const T& t) {
 
 #ifdef MOZ_WIDGET_GTK
 // The front buffer carries the canvas's stereo mode to the compositor, which
-// declares it on the canvas's own surface.
-static void SetStereoMode(gl::SharedSurface* const surf,
-                          const uint8_t stereoMode, const bool camera) {
-  if (!surf || surf->mDesc.type != gl::SharedSurfaceType::EGLSurfaceDMABUF) {
-    return;
-  }
+// declares it on the canvas's own surface. A DMABuf holds the mode itself.
+// Any other front buffer (software WebRender's, which is read back into a
+// buffer for the compositor) has the returned mark carried with that buffer:
+// 0 for one picture, so a 2D canvas reaches the compositor as before.
+static uint32_t SetStereoMode(gl::SharedSurface* const surf,
+                              const uint8_t stereoMode, const bool camera) {
   const auto mode = stereoMode < uint8_t(StereoMode::MAX)
                         ? StereoMode(stereoMode)
                         : StereoMode::MONO;
-  static_cast<gl::SharedSurface_DMABUF*>(surf)->mSurface->SetStereoMode(
-      mode, mode == StereoMode::MONO ? StereoSource::NONE
-            : camera                 ? StereoSource::CAMERA
-                                     : StereoSource::XR);
+  const auto source = mode == StereoMode::MONO ? StereoSource::NONE
+                      : camera                 ? StereoSource::CAMERA
+                                               : StereoSource::XR;
+  if (surf && surf->mDesc.type == gl::SharedSurfaceType::EGLSurfaceDMABUF) {
+    static_cast<gl::SharedSurface_DMABUF*>(surf)->mSurface->SetStereoMode(
+        mode, source);
+  }
+  return mode == StereoMode::MONO
+             ? 0
+             : EncodeStereoMark(mode, source, /* aIsVideo */ false);
 }
 #endif
 
@@ -2279,15 +2285,17 @@ void WebGLContext::Present(WebGLFramebuffer* const xrFb,
     EnsureContextLostRemoteTextureOwner(options);
     return;
   }
+  uint32_t stereoMark = 0;
 #ifdef MOZ_WIDGET_GTK
   if (!maybeFB) {
-    SetStereoMode(swapChain->FrontBuffer().get(), options.stereoMode,
-                  options.stereoCamera);
+    stereoMark = SetStereoMode(swapChain->FrontBuffer().get(),
+                               options.stereoMode, options.stereoCamera);
   }
 #endif
 
   if (useAsync) {
-    PushRemoteTexture(nullptr, *swapChain, swapChain->FrontBuffer(), options);
+    PushRemoteTexture(nullptr, *swapChain, swapChain->FrontBuffer(), options,
+                      nullptr, stereoMark);
   }
 }
 
@@ -2414,7 +2422,7 @@ bool WebGLContext::PushRemoteTexture(
     WebGLFramebuffer* fb, gl::SwapChain& swapChain,
     std::shared_ptr<gl::SharedSurface> surf,
     const webgl::SwapChainOptions& options,
-    layers::RemoteTextureOwnerClient* ownerClient) {
+    layers::RemoteTextureOwnerClient* ownerClient, uint32_t aStereoMark) {
   const auto onFailure = [&]() -> bool {
     GenerateWarning("Remote texture creation failed.");
     LoseContext();
@@ -2511,7 +2519,9 @@ bool WebGLContext::PushRemoteTexture(
       MOZ_RELEASE_ASSERT(rv, "SwizzleData failed!");
     }
 
-    ownerClient->PushTexture(textureId, ownerId, std::move(data));
+    // The buffer read back holds what the front buffer holds: two views side
+    // by side when the canvas presents both eyes, so their mark goes with it.
+    ownerClient->PushTexture(textureId, ownerId, std::move(data), aStereoMark);
     return true;
   }
 

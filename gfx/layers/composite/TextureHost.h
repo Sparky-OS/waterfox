@@ -617,6 +617,10 @@ class TextureHost : public AtomicRefCountedWithFinalize<TextureHost> {
   // video pictures (DMABuf and YCbCr buffers) carry stereo modes.
   virtual void ApplyStereoChoice(StereoMode aChoice) {}
   virtual void ApplyStereoSwap(bool aSwap) {}
+  // The stereo mark (EncodeStereoMark) of a picture the browser drew with
+  // both views in it (WebXR's flat display, the camera hack), for a texture
+  // that cannot hold the mark itself: an RGB buffer read back from WebGL.
+  virtual void SetStereoMark(uint32_t aMark) {}
 
   virtual BufferTextureHost* AsBufferTextureHost() { return nullptr; }
   virtual ShmemTextureHost* AsShmemTextureHost() { return nullptr; }
@@ -870,6 +874,7 @@ class BufferTextureHost : public TextureHost {
     mStereoChoice = Some(aChoice);
   }
   void ApplyStereoSwap(bool aSwap) override { mStereoSwap = aSwap; }
+  void SetStereoMark(uint32_t aMark) override { mStereoMark = aMark; }
 
   uint8_t* GetYChannel();
   uint8_t* GetCbChannel();
@@ -892,6 +897,8 @@ class BufferTextureHost : public TextureHost {
   // The user's choice for a picture without a mark, and "Swap eyes".
   Maybe<StereoMode> mStereoChoice;
   bool mStereoSwap = false;
+  // The mark of an RGB picture holding both views (SetStereoMark), 0 for none.
+  uint32_t mStereoMark = 0;
 
   class DataTextureSourceYCbCrBasic;
 };
