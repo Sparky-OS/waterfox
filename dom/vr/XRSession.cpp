@@ -38,6 +38,7 @@
 #include "mozilla/dom/HTMLCanvasElement.h"
 #include "mozilla/dom/KeyboardEvent.h"
 #include "mozilla/dom/MouseEvent.h"
+#include "mozilla/widget/StereoDepthState.h"
 #include "mozilla/dom/WheelEvent.h"
 #include "mozilla/widget/Screen.h"
 #include "mozilla/widget/ScreenManager.h"
@@ -582,7 +583,21 @@ XRSession::WindowViews XRSession::GetWindowViews() const {
     // towards the far limit and pops in front of the plane.
     plane = FlatScenePlaneMm(1000.0);
     const double windowWidth = width * plane / viewer;
-    separation = mFlatDepth.mSunkPx / 1920.0 * windowWidth;
+    // The limits are the screen's, in pixels of a view as wide as the output
+    // the window is on, so the separation is a share of the window that
+    // is the output's width over the width the window is shown at: the
+    // canvas of an inline session is shown at its own width, the canvas of an
+    // immersive session fills the output. A unit conversion, never the
+    // window's size alone.
+    const int32_t processOutput =
+        widget::StereoDepthProcessLimits::sOutputWidth;
+    const double outputWidth =
+        processOutput > 0 ? double(processOutput) : double(screenPixels.width);
+    const double shownWidth = IsImmersive() ? outputWidth : double(pixels.width);
+    separation = shownWidth > 0
+                     ? mFlatDepth.mSunkPx / 1920.0 * windowWidth *
+                           outputWidth / shownWidth
+                     : 0.0;
     // the window as the eyes at the plane see it
   } else {
     // The expert's own physical separation: the screen at the viewer's
